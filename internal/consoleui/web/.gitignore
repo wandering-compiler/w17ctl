@@ -1,0 +1,5 @@
+node_modules/
+*.tsbuildinfo
+# dist/ is intentionally committed — the Go binary embeds it via
+# //go:embed so a plain `go build` needs no node toolchain.
+</content>

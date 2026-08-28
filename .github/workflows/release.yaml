@@ -1,0 +1,86 @@
+# Build and publish w17ctl binaries for a tag.
+#
+# Lives in the PUBLIC w17ctl repo, mirrored there from the private monorepo by
+# scripts/publish-w17ctl.sh. It is inert in the monorepo — GitHub reads
+# workflows only from a repository's ROOT .github/workflows, and this file sits
+# under w17ctl/.
+#
+# Public repo, so Actions minutes are unmetered. That is the reason releases
+# belong here rather than in the monorepo, whose minutes are a finite monthly
+# allowance the console image build already spends.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Buildable without cutting a release, so the matrix can be proven before a
+  # tag exists — a tag is the one thing that cannot be taken back quietly.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve version
+        id: v
+        run: |
+          # A dispatch run has no tag; it still produces artefacts, named for
+          # the commit so they cannot be mistaken for a release.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-dev+${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          BUILT: ${{ steps.v.outputs.date }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          PKG=github.com/wandering-compiler/w17ctl/internal/core
+          # CGO off so one binary runs on any libc — a CLI people download
+          # should not care what the host ships.
+          # The console default is baked, but it is only the LAST resort:
+          # --console and a logged-in console both win over it, so a user who
+          # has logged in anywhere is unaffected by this value.
+          LDFLAGS="-s -w \
+            -X ${PKG}.Version=${VERSION} \
+            -X ${PKG}.Commit=${GITHUB_SHA::12} \
+            -X ${PKG}.BuildDate=${BUILT} \
+            -X ${PKG}.DefaultConsoleAddr=grpcs://api.w17.app:50051"
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            echo "--- $os/$arch"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "$LDFLAGS" -o "w17ctl" .
+            tar -czf "dist/w17ctl_${VERSION}_${os}_${arch}.tar.gz" w17ctl LICENSE README.md
+            rm -f w17ctl
+          done
+          # One checksum file over every asset. `install.sh` verifies against
+          # it, so a truncated or swapped download fails loudly instead of
+          # installing.
+          ( cd dist && sha256sum *.tar.gz > SHA256SUMS )
+          cat dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: w17ctl-${{ steps.v.outputs.version }}
+          path: dist/
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes --verify-tag

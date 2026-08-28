@@ -1,0 +1,1103 @@
+syntax = "proto3";
+
+package w17.common.ir;
+
+import "w17/pg/module.proto";  // w17.pg.CustomType — D36 registry
+
+option go_package = "github.com/MrS1lentcz/wandering-compiler/srcgo/pb/common/ir;irpb";
+
+// Compiler-shared schema IR. Produced by srcgo/domains/migrator/ir.Build,
+// consumed by:
+//   - migrator: differ (plan), SQL emitters, back-compat lint
+//   - storage:  DQL typecheck (alias resolution → column resolution → type
+//               validation), per-dialect SQL emitter
+//   - future:   gateway / console (codegen), visual editor, changelog
+//
+// Cross-domain shape — lives under proto/common/ir/ per
+// docs/conventions-global/structure.md ("Shared package across domains")
+// and tech-spec.md Strategic Decision #8 (proto, not Go structs).
+// Originally landed at proto/domains/migrator/types/ir.proto under the
+// `w17.migrator.ir` package; lifted to common/ when DQL typecheck became
+// a second consumer (2026-05-01).
+//
+// SourceLocation replaces live protoreflect.FieldDescriptor handles that
+// the first cut of this IR stored as Go fields; descriptors aren't
+// serializable and the IR must cross processes/languages.
+
+// Schema is a validated authoring input ready for the differ and emitters.
+message Schema {
+  repeated Table tables = 1;
+
+  // Module-level namespace (D19). Populated from (w17.module).
+  // `namespace_mode` + `namespace` together describe how emitters
+  // qualify every table / index / FK / DROP in this schema. Empty
+  // `namespace` with NAMESPACE_MODE_NONE = bare names + default
+  // dialect schema.
+  NamespaceMode namespace_mode = 2;
+  string namespace = 3;
+
+  // Connection scope (D26). Every Schema is scoped to exactly one
+  // (dialect, version) connection. M1 defaults to the project-wide
+  // default connection when (w17.module).connection is unset;
+  // M3 activates multi-connection dispatch with per-connection
+  // Schema instances.
+  Connection connection = 4;
+
+  // D36 — PG custom_types registry keyed by alias. Project-level
+  // entries merged with domain-level entries by ir.BuildMany;
+  // collisions rejected at build time. Engine consumes this for
+  // custom_type_change Op rendering (D36 Commit B) — looks up the
+  // `convertible_to` / `convertible_from` template between prev
+  // and curr alias when user resolves to a non-CUSTOM strategy.
+  //
+  // Empty on non-PG schemas (REDIS / future MYSQL keep their own
+  // per-dialect registries in parallel fields when they arrive).
+  map<string, w17.pg.CustomType> pg_custom_types = 5;
+
+  // REV-024 (F1, 2026-05-09) — PG custom_functions registry keyed
+  // by lowercase function name. Project + domain levels merged by
+  // ir.BuildMany; collisions rejected at build time. DQL typecheck
+  // consults this set after the builtin function table — unknown
+  // names that match a registered entry pass; truly unknown names
+  // surface as "function not found".
+  //
+  // Empty on non-PG schemas (REDIS / future MYSQL keep their own
+  // per-dialect registries in parallel fields when they arrive).
+  map<string, w17.pg.CustomFunction> pg_custom_functions = 7;
+
+  // Raw FileDescriptorSet bytes for the proto files this schema
+  // was loaded from (D-iter3-24). Populated by the loader
+  // (`srcgo/domains/migrator/loader`) when at least one connection
+  // declares `encoding = STORAGE_PROTOBUF`. Empty otherwise — most
+  // schemas don't need it on the wire.
+  //
+  // Consumers: emit/redis + emit/s3's data migration emitter
+  // bundles a base64-encoded copy into every YAML body whose
+  // connection has `encoding=PROTOBUF`, so the apply tool's
+  // dynamicpb codec (D-iter3-19) has the descriptors it needs to
+  // decode + transform stored values.
+  bytes file_descriptor_set = 6;
+}
+
+// Connection identifies one DB target (dialect + version + capability +
+// logical name). Connection name is unique within a domain (D26 revised
+// 2026-04-26): two connections sharing the same logical name are
+// rejected. (dialect, version) collision is allowed — two Redis
+// instances both as KV (cache + sessions) is a legitimate setup.
+//
+// `name` is the logical label used in `(w17.db.table).connection`
+// overrides. `used_capability` picks which capability of the dialect
+// this connection exposes (Redis-as-KV vs Redis-as-QUEUE).
+message Connection {
+  string name = 1;
+  Dialect dialect = 2;
+  string version = 3;
+
+  // Which capability of the dialect this connection uses (D42).
+  // BuildMany validates: this is in DialectCapabilities(dialect) +
+  // auto-fills it to the sole capability when the dialect is
+  // single-capability.
+  Capability used_capability = 4;
+
+  // How values are serialised on this connection (D-iter3-24).
+  // Only meaningful for KV capability — RELATIONAL connections
+  // encode per-column via SQL types. Drives Phase E data-migration
+  // emit: PROTOBUF bundles the schema's FileDescriptorSet + table
+  // message FQN into every YAML body; JSON/unspecified emit
+  // `encoding: json`.
+  StorageEncoding encoding = 5;
+
+  // Author-supplied per-query memory budget (REV-055 Fáze 1a).
+  // Bytes. 0 = unset → optimizer uses the dialect default. Mirror
+  // of (w17.module).Connection.query_memory_budget_bytes. See
+  // the authoring vocabulary docstring for the full contract;
+  // IR consumers (storage codegen optimizer) read this at
+  // decision time.
+  uint64 query_memory_budget_bytes = 6;
+}
+
+// StorageEncoding mirrors w17/db.proto's enum for IR-internal
+// consumers (per D2.x — IR types don't import the authoring
+// vocabulary).
+enum StorageEncoding {
+  STORAGE_ENCODING_UNSPECIFIED = 0;
+  STORAGE_JSON = 1;
+  STORAGE_PROTOBUF = 2;
+}
+
+enum Dialect {
+  DIALECT_UNSPECIFIED = 0;
+  POSTGRES = 1;
+  MYSQL = 2;
+  SQLITE = 3;
+  // Redis (or other whole-model KV stores). Multi-capability: KV +
+  // QUEUE (Streams). Connection picks one via used_capability.
+  REDIS = 10;
+  // NATS — message broker (JetStream). Single capability: QUEUE.
+  NATS = 11;
+  // S3 (or compatible object stores: GCS, MinIO, R2). Single
+  // capability: KV — bucket-as-namespace, object key = lookup key.
+  S3 = 12;
+  // Local filesystem KV. Single capability: KV. See w17.proto for
+  // semantic notes (no TTL, no built-in replication; suited to
+  // service-managed file uploads on single-node deploys + dev).
+  LOCAL_FS = 13;
+}
+
+// Capability — what programming model a connection exposes (D42).
+// Each Dialect declares the set of capabilities it supports;
+// Connection.used_capability picks one. Mirrors the same enum in
+// w17/db.proto so consumers don't import the authoring vocabulary.
+//
+// RELATIONAL — table-shaped DDL, SQL DML. (PG, MySQL, SQLite.)
+// KV         — key-value store, manifest-only "schema". (Redis-KV, S3.)
+// QUEUE      — message broker / streams, manifest-only. (Redis-streams, NATS.)
+// DOCUMENT   — reserved for document stores. No dialect today.
+// GRAPH      — reserved for graph stores. No dialect today.
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  RELATIONAL = 1;
+  KV = 2;
+  QUEUE = 3;
+  DOCUMENT = 4;
+  GRAPH = 5;
+}
+
+// NamespaceMode — which strategy the module picked (D19). Mirrors the
+// oneof in (w17.module) 1:1; kept as an IR enum so consumers don't
+// import the authoring vocabulary. NONE = module option unset.
+enum NamespaceMode {
+  NAMESPACE_MODE_NONE = 0;
+  NAMESPACE_MODE_SCHEMA = 1;    // PG schema qualification: <namespace>.<table>
+  NAMESPACE_MODE_PREFIX = 2;    // name prefixing: <namespace>_<table>
+}
+
+// SourceLocation anchors an IR node to its originating position in the
+// source .proto. Populated from
+// protoreflect.FileDescriptor.SourceLocations().ByDescriptor(d) at build
+// time. Line / col are 1-based, 0 means "unknown" (source info missing).
+message SourceLocation {
+  string file = 1;
+  int32 line = 2;
+  int32 col  = 3;
+}
+
+message Table {
+  string name = 1;                     // SQL table name
+  string message_fqn = 2;              // FQN of the source proto message
+  SourceLocation location = 3;
+  repeated Column columns = 4;
+  repeated Index indexes = 5;
+  repeated ForeignKey foreign_keys = 6;
+  // proto_name of each PK column, in declaration order. Derived view over
+  // Columns with pk=true, kept explicit so consumers don't re-walk the list.
+  repeated string primary_key = 7;
+
+  // Escape-hatch CHECK / INDEX bodies from (w17.db.table).raw_checks /
+  // .raw_indexes. Carry the opaque SQL body verbatim; name is validated
+  // like any other identifier. See proto/w17/db.proto for the author
+  // contract.
+  repeated RawCheck raw_checks = 8;
+  repeated RawIndex raw_indexes = 9;
+
+  // Module namespace (D19). Copied onto every Table from Schema so
+  // emitters see the information Op-local (plan Ops only carry Table,
+  // not Schema). PREFIX mode: Table.Name is already prefixed in IR
+  // (derived index / check / enum-type names inherit); emitter uses
+  // Name as-is. SCHEMA mode: Table.Name is bare; emitter qualifies
+  // <namespace>.<Name> at every identifier emission site. NONE:
+  // bare everywhere.
+  NamespaceMode namespace_mode = 10;
+  string namespace = 11;
+
+  // Resolved SQL-visible comment (D22). Emitter renders as
+  // `COMMENT ON TABLE <qualified> IS '<text>';` when non-empty.
+  // ir.Build resolves precedence: (w17.db.table).comment override
+  // wins; otherwise falls back to the proto message's leading
+  // comment; otherwise empty (no COMMENT statement emitted).
+  string comment = 12;
+
+  // Per-table effective connection (D26). Every Table carries the
+  // full Connection it targets — either the module's declared
+  // connection (inherited) or the per-table `(w17.db.table).connection`
+  // override resolved against the domain's connection registry.
+  // Empty when no module in the domain declared a connection (the
+  // iter-1 default path).
+  //
+  // D43 (designed 2026-04-26, implementation deferred): a Table will
+  // become materializable across multiple connections (relational
+  // PK store + KV cache, or relational + QUEUE for CDC). Field will
+  // graduate to `repeated Connection connections` when DQL exercises
+  // cross-DB read/write routing. Singular today because no consumer
+  // uses cross-DB yet.
+  Connection connection = 13;
+
+  // Redis storage layout (G3-KV-04). Mirrored from
+  // (w17.db.table).redis_layout; non-default value enables the
+  // HASH dispatch in the redis emitter + storage codegen body
+  // emit. Meaningful only when Connection.dialect == REDIS &&
+  // used_capability == KV. JSON (default / unset) keeps the
+  // legacy one-STRING-per-key shape; HASH splits per-field via
+  // HSET / HGETALL / HDEL. See proto/w17/db.proto for the
+  // wire-contract rationale.
+  RedisLayout redis_layout = 14;
+
+  // Reverse FK accessors registered on this table by other
+  // tables' FKs (REV-016). Each entry corresponds to one FK
+  // pointing at this table; `name` is the accessor's DQL-side
+  // identifier, defaulting to `<lowercase_source_model>_set`
+  // unless the source declared `(w17.field).related_name`.
+  // Populated by ir.Build's resolveFKs pass after target tables
+  // are resolved. Empty when no other table FKs into this one.
+  //
+  // DQL-only — emitters do not materialise reverse accessors
+  // into Go (no navigation collections). The list exists so the
+  // DQL parser can resolve `<target>.<accessor>` references to
+  // a JOIN on `<source_table>.<source_column> = <target>.<pk>`
+  // without re-walking the schema.
+  repeated ReverseAccessor reverse_accessors = 15;
+
+  // Author-supplied row-count estimate (REV-055 Fáze 1a). Mirror
+  // of (w17.db.table).estimated_row_count. 0 = unset (optimizer
+  // falls back to the row-shape heuristic). The storage codegen
+  // optimizer reads this at decision time.
+  uint64 estimated_row_count = 16;
+
+  // REV-087 — bucket discriminator column for HASH_BUCKETED Redis
+  // tables. Mirror of (w17.db.table).redis_bucket_by. Names the
+  // proto column whose value drives the Redis HASH key; the
+  // entity's PK becomes the HASH field name. Empty unless
+  // redis_layout == REDIS_LAYOUT_HASH_BUCKETED. Validated by IR
+  // build (existence + non-PK + layout consistency).
+  string redis_bucket_by = 17;
+
+  // REV-147 — the model's data-scope axes, mirrored from
+  // `(w17.db.scope)`. Storage codegen reads the annotation directly to
+  // emit the auto-WHERE / auto-stamp; this carries the same fact into
+  // the IR, which is what the migrator and the compat engine see.
+  //
+  // It is here because a scope is a SCHEMA fact with schema
+  // consequences, not a codegen detail:
+  //
+  //   - compat could not classify a scope change at all. Adding,
+  //     removing or re-pointing an axis decides which rows a caller
+  //     reads — dropping one silently widens every query on the table
+  //     from "this tenant's rows" to "all rows" — and the diff engine
+  //     was blind to it because the fact never reached the IR.
+  //   - a reference between two models scoped by the SAME axis must not
+  //     cross it, which is a constraint the migrator can only emit if it
+  //     can see both ends' scopes.
+  //
+  // Empty for an unscoped table, which is the overwhelming majority —
+  // so an absent list means "no scope", never "not recorded".
+  repeated ScopeAxis scope_axes = 18;
+
+  // A-F5 — UNIQUE constraints this table must declare INLINE because a
+  // scope-preserving foreign key elsewhere references those columns.
+  //
+  // It lives on the TABLE rather than as a synthesised Index for a reason
+  // that only shows up at apply time: an AddTable op does not carry the
+  // table's indexes (they arrive as their own ops, after every table), so an
+  // index is emitted ~250 lines after the child that references it — and PG
+  // rejects `REFERENCES notes (tenant_id, id)` outright unless the unique
+  // already exists at that moment ("there is no unique constraint matching
+  // given keys for referenced table"). A fact the CREATE TABLE emitter needs
+  // has to travel with the table.
+  repeated ScopeFkUnique scope_fk_uniques = 19;
+}
+
+// ScopeFkUnique is one (scope column, referenced column) pair a parent must
+// declare as an inline UNIQUE so a scope-preserving FK can reference it.
+message ScopeFkUnique {
+  string scope_column = 1;
+  string ref_column = 2;
+}
+
+// ScopeAxis is one (w17.db.scope) entry as the IR carries it: the axis
+// NAME (the identifier threading through AuthResp.scopes and the
+// `x-w17-scope-<name>` metadata key) and the COLUMN it filters on.
+//
+// `column` is the resolved SQL column name, not the authored path. The
+// annotation's `path` is a DQL-side dotted access whose only supported
+// form today is a direct column; storing the resolved name keeps every
+// IR consumer off the parsing question, and a path the builder cannot
+// resolve to a column produces no axis rather than a half-recorded one.
+message ScopeAxis {
+  string name = 1;
+  string column = 2;
+}
+
+// ReverseAccessor — DQL-side reverse navigation registered on a
+// table by another table's FK (REV-016). Authoritative source for
+// resolving `<target>.<accessor>` JOIN references at DQL parse
+// time.
+message ReverseAccessor {
+  // DQL-side identifier. Default = `<lowercase_source_model>_set`
+  // (Django convention); override via (w17.field).related_name on
+  // the FK field. Unique per target table; collisions refused at
+  // ir.Build time.
+  string name = 1;
+
+  // Source table this accessor reads from — the table whose row
+  // carries the FK column referencing the owning table.
+  string source_table = 2;
+
+  // FK column on `source_table` (proto field name, matching
+  // Column.proto_name + ForeignKey.column).
+  string source_column = 3;
+
+  // Whether the author wrote an explicit related_name. Kept for
+  // diagnostics (collision messages distinguish "two defaults
+  // collided" vs "two explicit names collided") and --verbose
+  // tooling output.
+  bool explicit = 4;
+
+  // Column on the OWNING table (the table this ReverseAccessor is
+  // registered on) that the FK points at — mirrors the
+  // corresponding ForeignKey.target_column. Almost always the
+  // owning table's PK, but FKs may reference a UNIQUE non-PK
+  // column too. Carrying it on the accessor lets the DQL JOIN
+  // resolver build the ON predicate self-containedly:
+  // `<src>.<owning_column> = <new>.<source_column>`. Populated by
+  // ir.Build's resolveFKs at registration time (REV-019).
+  string owning_column = 5;
+
+  // The SOURCE table's message FQN, the reverse-accessor twin of
+  // ForeignKey.target_message_fqn (T1-4 pass #13, C-F1). `source_table` is a
+  // SQL name and carries the same collision: a reverse hop resolved by
+  // scanning for it can land on another connection's same-named table.
+  string source_message_fqn = 6;
+}
+
+// RedisLayout — IR mirror of (w17.db.table).redis_layout. Same
+// values + meaning; lives here so consumers reading the IR don't
+// have to depend on dbpb just to dispatch on the layout.
+enum RedisLayout {
+  REDIS_LAYOUT_UNSPECIFIED = 0;
+  REDIS_LAYOUT_JSON = 1;
+  REDIS_LAYOUT_HASH = 2;
+  REDIS_LAYOUT_HASH_BUCKETED = 3;  // REV-082 — bucket per parent
+}
+
+message RawCheck {
+  string name = 1;   // constraint identifier (validated)
+  string expr = 2;   // opaque — body between `CHECK (…)`
+}
+
+message RawIndex {
+  string name = 1;   // index identifier (validated; collision-checked vs. derived + explicit Index names)
+  bool   unique = 2;
+  string body = 3;   // opaque — everything after `ON <table>`
+}
+
+message Column {
+  string name = 1;        // SQL column name (after (w17.db.column).name override)
+  string proto_name = 2;  // original proto field name (for indexes / FK refs)
+  SourceLocation location = 3;
+
+  // Proto field number — the inviolable contract iter-2 alter-diff
+  // uses as the column identity key (D10). Required: every IR column
+  // is built from a real proto field, so this is always > 0. Two
+  // columns within the same table can never share a number (proto
+  // itself enforces); two columns across (prev, curr) sharing a
+  // number ARE the same column even if the name / type / nullability
+  // differ — the differ emits AlterColumn rather than DropColumn +
+  // AddColumn for that case.
+  int32 field_number = 4;
+
+  Carrier carrier = 10;
+  SemType type = 11;
+  bool nullable = 12;
+  // Primary key. Table.primary_key is derived from this flag, so the
+  // two must agree — a fixture that fills the table-level list while
+  // leaving this false is a shape ir.Build never produces. Also read
+  // by the whole-message expansion, which drops PK columns on the two
+  // UPDATE-side SET sites (the WHERE addresses the row by them).
+  bool pk = 13;
+  bool unique = 14;        // data-level (UNIQUE INDEX)
+  bool immutable = 15;     // write-once; read by the DQL typecheck + whole-message expansion (no DDL carries it)
+  // Sugar for a single-col entry in Table.indexes. Does NOT imply unique.
+  bool storage_index = 16;
+
+  // Size-driving fields. Retained on Column (not folded into LengthCheck)
+  // because emitters pick the column DDL type from these before any CHECK.
+  int32 max_len = 20;
+  int32 precision = 21;
+  optional int32 scale = 22;
+
+  // Default value at INSERT. Unset = no default.
+  Default default = 30;
+  // Postgres dialect passthrough (custom_type + required_extensions).
+  PgOptions pg = 31;
+  // Storage type override from (w17.db.column).db_type. Unset =
+  // field.Type preset picks storage; set = enumerated storage wins
+  // over preset. See D14.
+  DbType db_type = 32;
+
+  // --- Collection carriers (CARRIER_MAP / CARRIER_LIST) ---
+  // For Carrier=CARRIER_LIST: element's underlying Carrier (the scalar
+  // kind of a `repeated X` field). For Carrier=CARRIER_MAP: V's Carrier
+  // (K is always string in iter-1.6).
+  // CARRIER_UNSPECIFIED when the element / value is a proto Message
+  // (element_is_message=true) — forces JSON storage.
+  Carrier element_carrier = 33;
+  // True when the element / map-value is a proto Message type
+  // (repeated Foo, map<string, Foo>). Forces JSON storage regardless
+  // of dialect.
+  bool element_is_message = 34;
+
+  // --- SEM_ENUM side-data (D17) ---
+  // FQN of the proto enum providing the values, populated whenever
+  // Type == SEM_ENUM. enum_names / enum_numbers hold the non-sentinel
+  // values in proto declaration order (the *_UNSPECIFIED=0 entry
+  // stripped per proto3 convention).
+  //   string+SEM_ENUM path (PG ENUM storage): emitter uses enum_names
+  //     to emit CREATE TYPE <table>_<col> AS ENUM (names…).
+  //   int+SEM_ENUM path:                      attachChecks synths a
+  //     ChoicesCheck with numbers populated; enum_names stays for
+  //     --verbose / admin-gen use.
+  string enum_fqn = 35;
+  repeated string enum_names = 36;
+  repeated int64 enum_numbers = 37;
+
+  // Name of the stripped `*_UNSPECIFIED = 0` sentinel, when the enum
+  // declares one. Deliberately NOT in enum_names: that list is "the
+  // values this column admits" — it becomes the PG ENUM type's label
+  // set and the int CHECK's IN list, both of which must keep excluding
+  // the sentinel.
+  //
+  // It is carried separately because a DQL author can still WRITE the
+  // sentinel (`status <> 'STATUS_UNSPECIFIED'`), and the enum-name
+  // literal rewrite resolves names through this column. With nothing
+  // to resolve against, the name stayed a string and reached an
+  // INTEGER column — the same failure as an unlowered value name, on
+  // the one member of the enum most likely to appear in a "must be
+  // set" predicate.
+  string enum_sentinel_name = 53;
+
+  // Opaque SQL expression from (w17.db.column).generated_expr (D18).
+  // When non-empty the column emits as
+  // `GENERATED ALWAYS AS (<expr>) STORED` — wc treats the body as
+  // opaque (same contract as RawCheck.expr / RawIndex.body). IR-time
+  // validation in ir.Build enforces the incompatible-field set
+  // (default / pk / fk) before the expression is carried forward.
+  string generated_expr = 38;
+
+  // Resolved SQL-visible comment (D22). Emitter renders as
+  // `COMMENT ON COLUMN <qualified>.<col> IS '<text>';` when
+  // non-empty. Same precedence resolution as Table.comment —
+  // (w17.db.column).comment override wins; otherwise proto field's
+  // leading comment; otherwise empty.
+  string comment = 39;
+
+  repeated Check checks = 40;
+
+  // Allowed file extensions on FILE_PATH / IMAGE_PATH (D22d).
+  // IMAGE_PATH fills a default image list when left empty by the
+  // author. The regex CHECK on col.Checks is the authoritative
+  // apply-time enforcement; this field preserves the structured
+  // list for admin-gen, alter-diff extension rename detection, and
+  // --verbose output. Empty on non-path sem types. `["*"]` is kept
+  // verbatim to document "any extension allowed" intent.
+  repeated string allowed_extensions = 41;
+
+  // FQN of the proto Message type on CARRIER_MESSAGE columns. Empty
+  // for every other carrier. Downstream consumers (admin-gen, alter-
+  // diff forward-compat visualisation, JSON Schema derivation) read
+  // this to reconstruct the nested shape without reloading the proto
+  // source.
+  string message_fqn = 42;
+
+  // Author-supplied size hint from `(w17.field).estimated_avg_bytes`.
+  // Threaded verbatim onto the Column so the optimizer (iter-2 §B1
+  // join-vs-prefetch) reads it without re-walking the proto source.
+  // 0 = unset; consumers (only the optimizer today) apply their own
+  // default for variable-size carriers (text / json / bytes) at
+  // consumption time. Fixed-size carriers compute size from carrier
+  // + sem type at consumption — the hint is a no-op there even
+  // when set.
+  uint32 estimated_avg_bytes = 43;
+
+  // MySQL dialect passthrough — opaque per-column custom_type from
+  // (w17.mysql.field).custom_type. Non-MySQL emitters refuse columns
+  // whose Mysql.custom_type is non-empty.
+  MysqlOptions mysql = 44;
+
+  // SQLite dialect passthrough — opaque per-column custom_type from
+  // (w17.sqlite.field).custom_type. Non-SQLite emitters refuse columns
+  // whose Sqlite.custom_type is non-empty.
+  SqliteOptions sqlite = 45;
+
+  // REV-137 — JSON-typed column marker. Mirrors
+  // (w17.field).json. DQL's chain navigation treats segments after
+  // this column as JSON path keys; per-dialect emit walker renders
+  // them via the dialect's native extraction primitive.
+  bool json = 46;
+
+  // FQN of the proto Message serving as the ELEMENT (repeated) / VALUE (map)
+  // of a collection carrier whose element is a Message — i.e. set only when
+  // ElementIsMessage is true (CARRIER_LIST of Message, or CARRIER_MAP with a
+  // Message value). Empty for scalar-element collections and non-collection
+  // carriers. Without this the differ cannot tell `repeated app.Profile` from
+  // `repeated app.Settings` (both lower to ElementCarrier=UNSPECIFIED +
+  // ElementIsMessage=true with the same field number → byte-identical Column),
+  // so an element-message swap was diff-silent while the regenerated storage
+  // layer reinterprets every stored JSONB element under the new message.
+  string element_message_fqn = 47;
+
+  // FQN of the proto enum serving as the ELEMENT (repeated) / VALUE (map) of a
+  // collection carrier whose element is an enum. Enum elements travel on the
+  // int32 carrier (ElementCarrier=CARRIER_INT32), so without this a
+  // `repeated StatusA` vs `repeated StatusB` swap (same field number) is
+  // byte-identical IR and diff-silent, while the stored integers are
+  // reinterpreted under the new enum's labels. Empty for non-enum elements.
+  string element_enum_fqn = 48;
+
+  // Deterministic hash of the CANONICALISED descriptor closure reachable from a
+  // CARRIER_MESSAGE column's message (each field's number/name/kind/cardinality
+  // plus, recursively, nested message shape / enum values). Lets the differ
+  // detect an IN-PLACE shape edit inside the SAME message FQN (e.g.
+  // `app.Profile.bio` string→int64) that leaves every other Column fact
+  // identical — the stored JSONB/BYTEA is then silently reinterpreted under the
+  // new field layout. Empty for non-message carriers. Canonical field ordering
+  // (sorted by number) makes it stable across builds so the migration/lock
+  // stays deterministic.
+  string message_shape_hash = 49;
+
+  // Deterministic hash of the CANONICALISED descriptor closure of a COLLECTION
+  // element MESSAGE (repeated <Msg> / map<string,<Msg>>) — computed by the SAME
+  // helper that populates message_shape_hash for scalar CARRIER_MESSAGE columns.
+  // Sibling of message_shape_hash for the collection carrier: without it an
+  // IN-PLACE shape edit inside the element message under an UNCHANGED element
+  // FQN (e.g. `repeated app.Profile` where `Profile.bio` is retyped
+  // string→int64) leaves every Column fact — element_message_fqn included —
+  // identical, so it was diff-silent while the stored JSONB array/object
+  // elements are silently reinterpreted under the new field layout. Empty for
+  // scalar-element collections and non-collection carriers, and for the legacy
+  // pre-field lock IR (the differ gates on both-sides-non-empty so an empty
+  // legacy hash never reads as a change).
+  string element_message_shape_hash = 50;
+
+  // Non-sentinel value numbers of a COLLECTION element ENUM (repeated <Enum> /
+  // map<string,<Enum>>), captured so a value REMOVAL on the element enum under
+  // an UNCHANGED element FQN is diff-visible. Enum elements travel on the int32
+  // element carrier and carry no CHECK constraint (collection carriers are out
+  // of scope for ENUM CHECK dispatch), so without this a deleted member (e.g.
+  // `STATUS_ARCHIVED=3` dropped from a `repeated app.Status`) moves ZERO facts —
+  // the stored integer arrays keep the removed number while gateway / TS-client
+  // validation and admin later reject or mislabel it. Mirrors the scalar
+  // int-carrier SEM_ENUM ChoicesCheck.Numbers membership: a value ADD stays SAFE
+  // (no finding), only a REMOVAL surfaces a decision. Empty for non-enum
+  // elements and non-collection carriers.
+  repeated int64 element_enum_numbers = 51;
+
+  // Non-sentinel value NAMES of a COLLECTION element ENUM, parallel to
+  // element_enum_numbers (index-aligned). Carried for human-readable finding
+  // diagnostics (which labels were removed) and admin / client reconstruction.
+  // Empty for non-enum elements and non-collection carriers.
+  repeated string element_enum_names = 52;
+}
+
+// PgOptions mirrors (w17.pg.field). Curated jsonb / inet / tsvector / hstore
+// flags that used to live here were lifted to core Types in D13 (or to the
+// map-carrier AUTO dispatch for hstore). custom_type + required_extensions
+// remain as the escape hatch + extension manifest. Field numbers reserved
+// for historical continuity.
+message PgOptions {
+  reserved 1, 2, 3, 4;
+  reserved "jsonb", "inet", "tsvector", "hstore";
+
+  // Resolved SQL type from the registry's CustomType.sql_type. Set by
+  // ir.Build after looking up `(w17.pg.field).custom_type` (which
+  // carries the alias) against the merged project + domain registry.
+  // Emitters consume this verbatim as the column type.
+  string custom_type = 10;
+
+  // Resolved required_extensions from CustomType.required_extensions.
+  // Emitter / engine.buildManifest aggregates these into
+  // Manifest.RequiredExtensions for platform pre-apply visibility.
+  repeated string required_extensions = 11;
+
+  // D36 — alias the field declared via (w17.pg.field).custom_type.
+  // Stored verbatim for diff identity: alias change between prev and
+  // curr triggers a custom_type_change finding even if sql_type
+  // coincidentally matches (e.g. project redefined alias). Empty
+  // when the column doesn't use a custom_type.
+  string custom_type_alias = 12;
+}
+
+// MysqlOptions mirrors (w17.mysql.field). Field-level only — MySQL has
+// no extension / registry concept, so no required_extensions and no
+// alias indirection (the proto-side string IS the SQL type).
+//
+// Field numbers reserved 1-4 match PgOptions for symmetry; field 10
+// matches PgOptions.custom_type / SqliteOptions.custom_type so a
+// reader can read all three in parallel without remembering which
+// number maps where.
+message MysqlOptions {
+  reserved 1, 2, 3, 4;
+
+  // Raw SQL column type taken verbatim from (w17.mysql.field).custom_type.
+  // The MySQL emitter consumes this and short-circuits the carrier × sem
+  // dispatch when non-empty. Other dialects' emitters refuse columns
+  // whose MysqlOptions.custom_type is set.
+  string custom_type = 10;
+}
+
+// SqliteOptions mirrors (w17.sqlite.field). Same shape rationale as
+// MysqlOptions — opaque per-column SQL string, no registry,
+// no extensions.
+message SqliteOptions {
+  reserved 1, 2, 3, 4;
+
+  // Raw SQL column type taken verbatim from (w17.sqlite.field).custom_type.
+  // The SQLite emitter consumes this and short-circuits the carrier × sem
+  // dispatch when non-empty. Other dialects' emitters refuse columns
+  // whose SqliteOptions.custom_type is set.
+  string custom_type = 10;
+}
+
+message Index {
+  string name = 1;              // auto-derived by the naming package when empty
+  repeated IndexField fields = 2;
+  bool unique = 3;
+  repeated string include = 4;  // Postgres INCLUDE — covering-index columns
+
+  // Access method (D23). UNSPECIFIED → BTREE (emitter omits USING
+  // clause). Non-BTREE methods emit `USING <method>` and may carry
+  // method-specific restrictions enforced at IR build time.
+  IndexMethod method = 5;
+
+  // Free-form WITH options. Keys / values are dialect-specific and
+  // opaque to the compiler; emitter renders them verbatim as
+  // `WITH (k1=v1, k2=v2)`. Key iteration order at emit time is
+  // deterministic (alphabetical) so goldens stay stable across runs.
+  map<string, string> storage = 6;
+
+  // D-record A3b — build/drop the index outside the migration
+  // transaction. Set from the proto-side `(w17.db.table).indexes[*]
+  // .concurrent` flag at IR time, after capability validation
+  // (CAP_INDEX_CONCURRENTLY). Drives Op.non_transactional on the
+  // matching AddIndex / DropIndex op + the CONCURRENTLY keyword in
+  // the rendered SQL.
+  bool concurrent = 7;
+
+  // Partial-index predicate body (REV-134). DQL expression carried
+  // verbatim from `(w17.db.table).indexes[*].where`. IR build
+  // validates syntax + dialect-portability via lib/dql.Parse +
+  // lib/dql/typecheck; emit renders `WHERE <body>` on PG + SQLite,
+  // refuses on MySQL (no native partial indexes). Differ treats
+  // a change to `where` as drop+recreate. Empty → non-partial.
+  string where = 8;
+
+}
+
+message IndexField {
+  string name = 1;          // proto field name; mutually exclusive with `expr`
+  bool desc = 2;            // default ASC
+  NullsOrder nulls = 3;     // dialect default when unspecified
+  string opclass = 4;       // opaque per-field operator class
+  string expr = 5;          // DQL expression body for an expression-indexed entry (REV-135)
+}
+
+enum IndexMethod {
+  INDEX_METHOD_UNSPECIFIED = 0;
+  IDX_BTREE    = 1;
+  IDX_GIN      = 2;
+  IDX_GIST     = 3;
+  IDX_BRIN     = 4;
+  IDX_HASH     = 5;
+  IDX_SPGIST   = 6;
+  // REV-065 — MySQL-specific. PG / SQLite refuse at emit; see
+  // authoring vocabulary at proto/w17/db.proto for the
+  // rationale + steering hints.
+  IDX_FULLTEXT = 7;
+  IDX_SPATIAL  = 8;
+}
+
+enum NullsOrder {
+  NULLS_ORDER_UNSPECIFIED = 0;
+  NULLS_FIRST = 1;
+  NULLS_LAST  = 2;
+}
+
+// ForeignKey references its owning column by proto_name (not by pointer, so
+// the IR is wire-safe). Emitters resolve the column within the table.
+message ForeignKey {
+  string column = 1;
+  string target_table = 2;
+  string target_column = 3;
+  FKAction on_delete = 4;
+
+  // (REV-016) Explicit reverse-accessor name from the source's
+  // `(w17.field).related_name`. Empty = the target's
+  // ReverseAccessor falls back to the default
+  // `<lowercase_source_model>_set`. Carried on the FK so the
+  // source-of-truth (the FK field's annotation) survives onto
+  // the wire alongside the rest of the FK shape; resolveFKs
+  // consumes it to populate Table.reverse_accessors.
+  string related_name = 5;
+
+  // P40.5 — the TARGET table's namespace + namespace mode, stamped by
+  // resolveFKs from the resolved target. The REFERENCES clause must be
+  // qualified with the TARGET's schema, not the referencing table's:
+  // two SCHEMA-mode modules (e.g. `app` FK-ing into `auth.users`) would
+  // otherwise render `REFERENCES app.users` and fail at apply. Emitters
+  // fall back to the owning table's namespace when these are unset so a
+  // same-namespace FK stays byte-identical to the pre-P40.5 output.
+  string target_namespace = 6;
+  NamespaceMode target_namespace_mode = 7;
+
+  // P41.1 — explicit presence bit for the target namespace fields above.
+  // NamespaceMode_NONE is the enum ZERO value, so a genuinely-resolved
+  // NONE-mode (public / bare) target is indistinguishable from "never
+  // stamped" on the (mode, namespace) value-pair alone. resolveFKs sets
+  // this true whenever it stamps target_namespace / target_namespace_mode
+  // (which is always, for a resolved FK). Emitters key their owner-namespace
+  // fallback on `!target_namespace_set` (truly unset → legacy lock predating
+  // the field → fall back to the owner's namespace) rather than on the
+  // ambiguous `mode==NONE && namespace==""` value-pair — so a resolved
+  // NONE target (set=true, mode=NONE) qualifies BARE instead of wrongly
+  // inheriting a SCHEMA-mode owner's schema (which emitted REFERENCES
+  // app.users for a public target → 42P01 at apply).
+  bool target_namespace_set = 8;
+
+  // A-F5 — the SCOPE-PRESERVING pair. Set when this FK's owning table and
+  // its target are both scoped by the SAME axis, which makes the reference
+  // one that must not cross the scope: `FOREIGN KEY (scope_column, column)
+  // REFERENCES <target> (target_scope_column, target_column)`.
+  //
+  // Deliberately a scope-specific PAIR rather than general composite-FK
+  // support. w17 has no annotation for arbitrary multi-column references
+  // and this is not the back door for one: the fields exist to say "this
+  // reference stays inside its tenant", and an emitter reading them knows
+  // exactly which column carries the tenancy. A general `repeated columns`
+  // would have to be interpreted, and the first thing to interpret it
+  // wrongly would silently drop the tenancy half.
+  //
+  // Both empty = an ordinary single-column FK, which is the overwhelming
+  // majority. The two are always set together; one without the other is a
+  // builder bug, not a shape any consumer must handle.
+  string scope_column = 9;
+  string target_scope_column = 10;
+
+  // A-F5 escape hatch — the author declared `(w17.db.column).fk_cross_scope`
+  // on this reference, so it is deliberately allowed to leave its scope and
+  // the composite pair above stays empty. Carried into the IR because the
+  // pair is stamped in resolveFKs, which sees tables rather than
+  // descriptors.
+  bool cross_scope = 11;
+
+  // The target's MESSAGE FQN, stamped by ir.Build's resolveFKs once it has
+  // decided which table this reference means (T1-4 pass #13, C-F1).
+  //
+  // `target_table` is a SQL name, and SQL names are unique per
+  // (connection, namespace) — not across the unified schema one `wc generate`
+  // builds. One plugin activated by two domains stages its tables twice, so
+  // seven resolvers downstream, each scanning for a bare name, could each bind
+  // a different `users`; the reference itself said nothing about which.
+  //
+  // The FQN is the identity that survives that: it is unique across the whole
+  // schema by construction (the duplicate-FQN gate enforces it), so a consumer
+  // that reads this binds the table resolveFKs bound, rather than re-deciding
+  // the question with less information than resolveFKs had.
+  //
+  // Empty on an FK whose target never resolved — a consumer must fall back to
+  // the SQL name rather than treat empty as "no table".
+  string target_message_fqn = 12;
+}
+
+// Default is the tagged union over the (w17.field).default oneof.
+message Default {
+  oneof variant {
+    AutoKind auto           = 1;
+    string   literal_string = 2;
+    int64    literal_int    = 3;
+    double   literal_double = 4;
+  }
+}
+
+// Check is a column-level CHECK constraint. Variants cover the validation
+// surface from (w17.field) minus the facts that resolve into column
+// type/modifiers (pk, null, unique, max_len on CHAR/SLUG, precision/scale
+// on DECIMAL).
+message Check {
+  oneof variant {
+    LengthCheck  length  = 1;
+    BlankCheck   blank   = 2;
+    RangeCheck   range   = 3;
+    RegexCheck   regex   = 4;
+    ChoicesCheck choices = 5;
+    JsonCheck    json    = 6;
+  }
+}
+
+// LengthCheck — char_length bounds on string carriers whose column type
+// doesn't already enforce them. For CHAR/SLUG, VARCHAR(N) sizing covers the
+// upper bound and no LengthCheck is added for the max. min always renders
+// as a CHECK when set.
+message LengthCheck {
+  optional int32 min = 1;
+  optional int32 max = 2;
+}
+
+// BlankCheck — the implicit `col <> ''` on string carriers. Absent when the
+// author opted into (w17.field).blank = true, or when the column is nullable.
+message BlankCheck {}
+
+// JsonCheck — the implicit "this text parses as a JSON document" constraint on
+// a `(w17.field).json = true` column (T2-6 pass #8, B-F6).
+//
+// The annotation's whole meaning is that DQL READS navigate into the value:
+// the storage emitters render `col::jsonb->>'key'`, and a LIST arm puts that
+// cast in the WHERE, where it is evaluated for EVERY row. Nothing constrained
+// the WRITE side, so a single non-JSON row made every JSON-path read of the
+// table fail — for every caller, forever, until manual DB surgery — and PG's
+// 22P02 maps to InvalidArgument, which blames the reader for a value someone
+// else stored. The read grammar is only sound if the column really holds JSON,
+// so the generator now says so in the schema.
+//
+// Rendered per dialect (each engine has a native predicate; there is no
+// portable expression): PG `col IS JSON`, MySQL `JSON_VALID(col)`, SQLite
+// `json_valid(col)`. The column stays TEXT — `json: true` deliberately does
+// NOT change the storage type.
+message JsonCheck {}
+
+// RangeCheck — numeric bounds. Optional to distinguish 0 from unset.
+message RangeCheck {
+  optional double gt  = 1;
+  optional double gte = 2;
+  optional double lt  = 3;
+  optional double lte = 4;
+}
+
+// RegexCheck — author-supplied pattern OR the default pattern implied by
+// type (SLUG, UUID, EMAIL, URL).
+message RegexCheck {
+  string pattern = 1;
+  RegexSource source = 2;
+
+  // allow_blank — the empty string satisfies this check regardless of
+  // the pattern. Set when the field declared `blank: true`.
+  //
+  // Without it the two options contradict each other and the column
+  // becomes unsatisfiable by its own default: `blank: true` drops the
+  // `<> ''` check and (on a NOT NULL column) supplies `DEFAULT ''`,
+  // while the format CHECK rejects exactly that value — so every INSERT
+  // that omits the column fails. It reads as a constraint violation on
+  // data the author never wrote.
+  //
+  // Emitters render `(col = '' OR <pattern test>)` rather than folding
+  // the alternation into the pattern, so the pattern stays the one the
+  // author (or the semantic type) declared — that string is what error
+  // messages, client validators and the constraint registry all show.
+  bool allow_blank = 3;
+}
+
+// ChoicesCheck — resolved proto enum values for (w17.field).choices on
+// string carriers (CHECK IN ('A','B',…)), OR the numeric CHECK IN (1,2,…)
+// path for int + SEM_ENUM columns. Exactly one of `values` / `numbers`
+// is populated per instance; the emitter dispatches on whichever is set.
+message ChoicesCheck {
+  string enum_fqn = 1;
+  // String-name CHECK IN — used for string-carrier `choices:` option.
+  repeated string values = 2;
+  // Int-number CHECK IN — used for int-carrier SEM_ENUM (D17).
+  repeated int64 numbers = 3;
+}
+
+// Carrier is the proto wire-type underneath a field.
+enum Carrier {
+  CARRIER_UNSPECIFIED = 0;
+  CARRIER_BOOL = 1;
+  CARRIER_STRING = 2;
+  CARRIER_INT32 = 3;
+  CARRIER_INT64 = 4;
+  CARRIER_DOUBLE = 5;
+  CARRIER_TIMESTAMP = 6;
+  CARRIER_DURATION = 7;
+  // Raw binary blob. Proto `bytes` carrier → PG BYTEA / MySQL BLOB /
+  // SQLite BLOB. Like bool, carries no semantic subtype.
+  CARRIER_BYTES = 8;
+  // Proto map<K, V>. Dispatch: PG → HSTORE for map<string, string>,
+  // else JSONB; MySQL → JSON; SQLite → TEXT. V may be a scalar or a
+  // proto message. Iter-1.6 restricts K to string.
+  CARRIER_MAP = 9;
+  // Proto `repeated X`. Dispatch: PG → native array of element's PG
+  // type when the element is a scalar; JSONB when the element is a
+  // proto message. MySQL → JSON; SQLite → TEXT.
+  // For repeated scalars, (w17.field).type on the field refines the
+  // ELEMENT's sem type (e.g. `repeated string [type: URL]`).
+  CARRIER_LIST = 10;
+  // Single proto Message field (non-Timestamp/Duration). The message
+  // is serialised whole — either as JSON(B) text (queryable, default)
+  // or as protobuf bytes via `db_type: BYTEA` override. message_fqn
+  // on Column carries the proto FQN for downstream tooling
+  // (admin-gen, JSON Schema derivation, alter-diff forward-compat
+  // visualisation). Storage: PG → JSONB by default / BYTEA when
+  // db_type overrides; MySQL → JSON / BLOB; SQLite → TEXT / BLOB.
+  CARRIER_MESSAGE = 11;
+}
+
+// SemType is the semantic refinement of a Carrier.
+enum SemType {
+  SEM_UNSPECIFIED = 0;
+
+  // String carriers.
+  SEM_CHAR = 1;
+  SEM_TEXT = 2;
+  SEM_UUID = 3;
+  SEM_EMAIL = 4;
+  SEM_URL = 5;
+  SEM_SLUG = 6;
+  // String or bytes carrier (proto both encode JSON as opaque payload).
+  // Storage: PG JSONB, MySQL JSON, SQLite TEXT.
+  SEM_JSON = 7;
+  // String carrier. Storage: PG INET, MySQL VARCHAR(45), SQLite TEXT.
+  SEM_IP = 8;
+  // String carrier. Storage: PG TSVECTOR, others deferred (iter-2+).
+  SEM_TSEARCH = 9;
+
+  // String carrier. Storage: PG MACADDR (native enforces format),
+  // MySQL/SQLite VARCHAR(17) + regex CHECK. Native PG type rejects
+  // malformed values on INSERT/UPDATE, so no IR-time regex CHECK
+  // emits on the default path; `db_type: VARCHAR` override activates
+  // the regex synthesis (paralleling the UUID preset). (D22b)
+  SEM_MAC = 60;
+
+  // Path-family presets — string carrier, TEXT storage, blank CHECK
+  // by default. D22d.
+  SEM_POSIX_PATH = 61; // No extension constraint.
+  SEM_FILE_PATH  = 62; // Regex CHECK on allowed extensions (col.Extensions).
+  SEM_IMAGE_PATH = 63; // FILE_PATH preset with default image extensions
+                       // filled in by ir.Build when col.Extensions is empty.
+
+  // Service-managed upload presets (Slice A — file upload feature).
+  // Same string carrier + TEXT storage + extension regex CHECK as
+  // FILE_PATH / IMAGE_PATH; the difference is upstream of ir.Build —
+  // the gateway populates the field with a storage handle on POST,
+  // and the parser requires `(w17.field).upload` config to resolve
+  // the destination KV connection. From the migrator's perspective
+  // they're path-family columns; from the gateway's perspective
+  // they're upload destinations.
+  SEM_UPLOADED_FILE  = 64;
+  SEM_UPLOADED_IMAGE = 65;
+
+  // Credential column (REV-151). String carrier; storage = TEXT
+  // (PG/SQLite) or VARCHAR(256) (MySQL) — the column is DECLARED to
+  // carry a PHC-encoded hash string ($argon2id$..., $2b$..., etc.),
+  // and max_len is refused because it would size VARCHAR(N) to the
+  // plain text instead. Field-level safety enforced at IR build:
+  // PK refused, unique refused (salted hashes don't equality-
+  // compare).
+  //
+  // Storage codegen does NOT hash — the auto-hash + generated
+  // `Verify<X>` helper were removed 2026-05-25 when hashing became
+  // plugin-owned; handlers bind the caller's bytes verbatim. See
+  // (w17.field).Type.PASSWORD. Spec:
+  // docs/specs/storage/password-field.md.
+  SEM_PASSWORD = 66;
+
+  // Numeric carriers.
+  SEM_NUMBER = 10;
+  SEM_ID = 11;
+  SEM_COUNTER = 12;
+  SEM_MONEY = 13;
+  SEM_PERCENTAGE = 14;
+  SEM_RATIO = 15;
+  // int32 carrier only. Storage: PG SMALLINT. Use when typical
+  // range is known-small (status codes, ordinals, priority 0-10). (D22c)
+  SEM_SMALL_INTEGER = 70;
+
+  // Arbitrary-precision decimal (carrier: string).
+  SEM_DECIMAL = 16;
+
+  // Temporal.
+  SEM_DATE = 20;
+  SEM_TIME = 21;
+  SEM_DATETIME = 22;
+  SEM_INTERVAL = 30;
+
+  // Explicit "compiler picks storage per dialect" on map/repeated
+  // carriers. Same as leaving type unset on those carriers but
+  // written deliberately. Not valid on scalar carriers.
+  SEM_AUTO = 40;
+
+  // Enumerated value. Valid on string (PG → CREATE TYPE AS ENUM),
+  // int32 / int64 (INTEGER/BIGINT + CHECK IN numbers), and auto-
+  // inferred on bare proto-enum fields (int32 + CHECK IN numbers).
+  // Choices FQN resolves to value names (string path) or paired
+  // (name, number) pairs (int / auto-inferred paths).
+  SEM_ENUM = 50;
+}
+
+// FKAction — resolved ON DELETE behaviour. Populated from
+// (w17.db.column).deletion_rule with inference from (w17.field).null
+// when the rule is unspecified. Emitters map to the dialect-native
+// clause (PG: CASCADE / SET NULL / RESTRICT / SET DEFAULT).
+enum FKAction {
+  FK_ACTION_UNSPECIFIED = 0;
+  FK_ACTION_CASCADE = 1;
+  FK_ACTION_SET_NULL = 2;
+  FK_ACTION_RESTRICT = 3;      // DeletionRule.BLOCK — parent delete refused
+  FK_ACTION_SET_DEFAULT = 4;   // DeletionRule.RESET  — child FK reverts to default_*
+}
+
+// AutoKind — the non-literal branches of (w17.field).default.
+enum AutoKind {
+  AUTO_UNSPECIFIED = 0;
+  AUTO_NOW = 1;
+  AUTO_UUID_V4 = 10;
+  AUTO_UUID_V7 = 11;
+  AUTO_EMPTY_JSON_ARRAY  = 20;
+  AUTO_EMPTY_JSON_OBJECT = 21;
+  AUTO_TRUE = 30;
+  AUTO_FALSE = 31;
+  AUTO_IDENTITY = 40;
+  // Cryptographically-safe random string. App-side fill at
+  // INSERT time via srcgo/lib/randstr/Token(max_len). See
+  // proto/w17/field.proto::AutoDefault::CRYPTO_RANDOM.
+  AUTO_CRYPTO_RANDOM = 50;
+}
+
+// RegexSource — whether a RegexCheck came from the author's `pattern` or was
+// derived from the semantic type (SLUG/UUID/EMAIL/URL). Emitters treat both
+// identically; kept for --verbose labeling.
+enum RegexSource {
+  REGEX_SOURCE_UNSPECIFIED = 0;
+  REGEX_FROM_TYPE = 1;
+  REGEX_FROM_PATTERN = 2;
+}
+
+// DbType mirrors (w17.db.column).db_type 1:1 — see proto/w17/db.proto for
+// the authoring-surface documentation per value. Kept as a separate IR
+// enum so the IR stays self-contained and doesn't import the authoring
+// vocabulary.
+enum DbType {
+  DB_TYPE_UNSPECIFIED = 0;
+  DBT_TEXT = 1;
+  DBT_VARCHAR = 2;
+  DBT_CITEXT = 3;
+  DBT_JSON = 10;
+  DBT_JSONB = 11;
+  DBT_HSTORE = 20;
+  DBT_INET = 30;
+  DBT_CIDR = 31;
+  DBT_MACADDR = 32;
+  DBT_TSVECTOR = 40;
+  DBT_UUID = 50;
+  DBT_SMALLINT = 60;
+  DBT_INTEGER = 61;
+  DBT_BIGINT = 62;
+  DBT_REAL = 63;
+  DBT_DOUBLE_PRECISION = 64;
+  DBT_NUMERIC = 65;
+  DBT_DATE = 70;
+  DBT_TIME = 71;
+  DBT_TIMESTAMP = 72;
+  DBT_TIMESTAMPTZ = 73;
+  DBT_INTERVAL = 74;
+  DBT_BYTEA = 80;
+  DBT_BLOB = 81;
+  DBT_BOOLEAN = 90;
+}

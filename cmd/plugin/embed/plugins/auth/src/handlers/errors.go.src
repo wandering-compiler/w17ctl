@@ -1,0 +1,71 @@
+package handlers
+
+import (
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// authnError is the opaque error every auth-handler failure
+// path returns. It carries an optional cause for handler-side
+// logging via errors.Unwrap; the cause never reaches the wire.
+//
+// GRPCStatus is the integration point the gRPC server uses to
+// map an error onto a wire status. The value is fixed —
+// codes.Unauthenticated + "invalid credentials" — regardless
+// of cause, which is what enforces anti-enumeration: an
+// attacker probing the auth handler observes the same wire
+// response for "no such email", "wrong password", "DB
+// transient failure", and so on.
+type authnError struct {
+	cause error
+}
+
+const authnErrorMessage = "invalid credentials"
+
+// Error returns the opaque message — never the cause. Handlers
+// that want the cause exposed for logging should call
+// errors.Unwrap or use slog's structured fields with both the
+// returned error AND the unwrapped cause.
+func (e *authnError) Error() string {
+	return authnErrorMessage
+}
+
+// GRPCStatus is the hook google.golang.org/grpc/status.FromError
+// looks for to construct the wire status. The value is fixed.
+func (e *authnError) GRPCStatus() *status.Status {
+	return status.New(codes.Unauthenticated, authnErrorMessage)
+}
+
+// Unwrap exposes the cause to errors.Unwrap / errors.Is /
+// errors.As. The cause is intentionally opaque to the wire —
+// only handler-side observers (logs, traces, audits) see it.
+func (e *authnError) Unwrap() error {
+	return e.cause
+}
+
+// Unauthenticated returns an opaque codes.Unauthenticated /
+// "invalid credentials" status error suitable for any
+// authentication-flow failure. The cause is preserved via
+// errors.Unwrap for handler-side logging only — it never
+// reaches the wire.
+//
+// Anti-enumeration: every failure path of an auth handler MUST
+// return this; the same opaque wire shape regardless of
+// failure cause (header missing, password mismatch, upstream
+// lookup error, …) is what prevents a probing attacker from
+// distinguishing "no such email" from "wrong password" from
+// "DB transient failure".
+//
+// Pass nil when the failure has no underlying error (e.g.
+// header validation gate that just trips on shape).
+//
+// Originally lived in sdk/go/plugin; moved into the plugin
+// itself in the v4 cleanup since this auth plugin is the only
+// caller. Other plugins that want the same anti-enumeration
+// contract copy the helper into their own handlers/ tree —
+// short enough to inline, and lets each plugin tune behaviour
+// (e.g. swap codes.PermissionDenied for some flows) without
+// pulling the shared dep.
+func Unauthenticated(cause error) error {
+	return &authnError{cause: cause}
+}

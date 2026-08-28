@@ -1,0 +1,258 @@
+package handlers
+
+import (
+	"context"
+	"errors"
+
+	"strings"
+
+	"google.golang.org/grpc/metadata"
+
+	pb "github.com/MrS1lentcz/wandering-compiler/plugins/auth/gen/pb"
+	"github.com/wandering-compiler/sdk/go/lib/acllock"
+)
+
+// This file implements the `org_membership` feature — GitHub-style
+// multi-org membership (one identity belongs to MANY Organizations via
+// OrgMembership), the generalization of single-tenant tenant_scope.
+// Staged into a bundle only when the activation enables `org_membership`
+// (plugin.yaml maps the feature to this file via go_files). With the
+// feature off it is not staged, so the decorator below never registers and
+// Authenticate stamps no org scope. Standalone (`go test`) always compiles
+// it. See docs/specs/plugins/auth-cli-login-and-orgs.md.
+
+// orgScopeMetadataKey is the gRPC metadata key the gateway threads the
+// request's ACTIVE-org selector under (the W17-Org header → w17-org). It is
+// deliberately NOT in the reserved x-w17-* namespace: that namespace carries
+// only VERIFIED auth/scope metadata the gateway sets from its auth response,
+// and forwarding a client-controlled header into it would let a caller forge
+// their org scope. The CLIENT chooses which org context to act in (a slug),
+// but the plugin VALIDATES membership before stamping the trusted
+// scopes[org_id] — see resolveOrgScope.
+const orgScopeMetadataKey = "w17-org"
+
+// errOrgNotMember fails Authenticate closed when the request asks to act in
+// an org the principal is not a member of (so a client can never scope into
+// another org's data by setting the header).
+var errOrgNotMember = errors.New("active org: caller is not a member of the requested organization")
+
+// init wires the org-scope decorator on package load. The bundle imports
+// this package (alias-imported under the activation name), so the init runs
+// once during server bring-up.
+func init() {
+	scopeDecorators = append(scopeDecorators, resolveOrgScope)
+	grantNarrowers = append(grantNarrowers, narrowGrantsToActiveOrg)
+}
+
+// narrowGrantsToActiveOrg replaces the principal's permission set with
+// the one that applies IN THE ACTIVE ORGANIZATION.
+//
+// Without it the two halves of this plugin disagree: scopes[org_id]
+// isolates the caller's ROWS to one company while permission_ids stays
+// the union of every role they hold in every company they belong to. An
+// accountant in company A who owns company B would carry the owner's
+// permissions into A — the data would be A's, the rights B's.
+//
+// Two cases, and both are narrowings:
+//
+//   - an active org — realm-wide grants (UserRole.org_id IS NULL) plus
+//     the grants assigned inside that org.
+//   - no active org (member of none, or of several with no `W17-Org`
+//     header) — realm-wide grants alone. Falling back to the unfiltered
+//     set here would reopen the leak on precisely the request that
+//     failed to name a company.
+//
+// The result is INTERSECTED with what came in rather than replacing it.
+// Replacing would be the natural reading — the org query recomputes the
+// same union minus the roles that do not apply, so its answer is simply
+// the narrower one. It is only the narrower one along the ORG axis
+// though, and `api_token` narrows the same set along the REALM axis
+// before this runs. Replacing would hand an API token the permissions of
+// the user's SESSION-realm roles, which is not a narrowing at all.
+//
+// That combination is refused at codegen (plugin.yaml declares
+// org_membership `conflicts_with: [api_token]`) precisely because
+// intersecting is not sufficient either: a permission reachable through
+// BOTH a session-realm role scoped to org X and an api-realm realm-wide
+// role passes both filters for a session token acting in org Y, where
+// neither role applies. Fixing that needs per-role grant resolution so
+// the axes intersect on ROLES instead of on permission ids. The
+// intersection here is the belt to that refusal's braces: if the
+// refusal is ever lifted without the per-role work, the failure mode
+// stays a narrow over-grant rather than a full realm bypass.
+func narrowGrantsToActiveOrg(ctx context.Context, h *AuthServiceHandler, userID string, scopes map[string]string, permIDs []int32) ([]int32, error) {
+	var (
+		wildcard bool
+		ids      []int32
+	)
+	if orgID := scopes["org_id"]; orgID != "" {
+		resp, err := h.Query.GetUserOrgPermissions(ctx, &pb.GetUserOrgPermissionsReq{
+			UserId: userID,
+			OrgId:  orgID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		wildcard, ids = resp.GetAllPermissions(), resp.GetPermissionIds()
+	} else {
+		resp, err := h.Query.GetUserRealmWidePermissions(ctx, &pb.GetUserRealmWidePermissionsReq{UserId: userID})
+		if err != nil {
+			return nil, err
+		}
+		wildcard, ids = resp.GetAllPermissions(), resp.GetPermissionIds()
+	}
+	if wildcard {
+		// A wildcard role that survived the org filter grants everything
+		// the build declares — but still only within what the incoming
+		// set already allowed, so an API token's subset keeps holding.
+		// The probe applied the org predicate itself, so a superadmin of
+		// one company does not pass checks in another.
+		ids = acllock.GrantAll(h.Lock)
+	}
+	return intersectInt32(permIDs, ids), nil
+}
+
+// resolveOrgScope stamps scopes[org_id] for the request's ACTIVE org. The
+// active org is a client-selected slug (w17-org metadata), but it is
+// validated against the principal's membership here, so a caller can only
+// ever scope into an org they belong to:
+//
+//   - a slug the caller IS a member of → scopes[org_id] = that org's id.
+//   - a slug the caller is NOT a member of → fail closed (Authenticate
+//     returns the same opaque Unauthenticated as every other failure).
+//   - no header, and the caller belongs to exactly ONE org → that org.
+//     Unambiguous: there is no second org the request could have meant, and
+//     the value is still read from OrgMembership, never from the request.
+//   - no header, and the caller belongs to none or to several → no org
+//     scope. Zero orgs has nothing to stamp; several is genuinely ambiguous
+//     and guessing would pick which org a write lands in. Both leave the
+//     scope unset, so a scoped model answers PermissionDenied ("missing
+//     required scope: org_id") rather than quietly serving the wrong rows —
+//     the caller resends with the header (`w17ctl` sends it from the org
+//     chosen at `init`).
+//
+// The single-org inference exists because the alternative is worse than
+// verbose: without it every request that omits the header fails on a scoped
+// model, which on a one-org install is every request but `init`. It cannot
+// widen access — one membership row means one reachable org either way.
+//
+// org_id is the data-scope key: a project scoping its rows by
+// name: "org_id" then gets per-org isolation (auto-WHERE / owner-stamp)
+// with no hand-written facade, exactly like tenant_scope's tenant_id.
+func resolveOrgScope(ctx context.Context, h *AuthServiceHandler, userID string, headers, scopes, labels map[string]string) error {
+	slug := orgSlugFromHeaders(headers)
+	if slug == "" {
+		slug = orgSlugFromContext(ctx)
+	}
+	if slug == "" {
+		return inferSoleOrgScope(ctx, h, userID, scopes, labels)
+	}
+	resp, err := h.Query.GetUserOrgBySlug(ctx, &pb.GetUserOrgBySlugReq{UserId: userID, Slug: slug})
+	if err != nil {
+		return err
+	}
+	orgID := resp.GetOrgId()
+	if orgID == "" {
+		return errOrgNotMember
+	}
+	stampOrg(scopes, labels, orgID)
+	return nil
+}
+
+// stampOrg writes the resolved org to BOTH keys it owns.
+//
+// scopes[org_id] filters the caller's ROWS. labels[org_id] decides which
+// connected clients an event reaches — and until it was written here, the
+// console's data was per-org while its event stream was not: unlabelled
+// events go to every authenticated client, so one org's activity was
+// announced to all of them. The isolation was real in the database and
+// absent one surface over.
+//
+// org_id is a legitimate audience key in a way most scopes are not: it
+// partitions WHO may see a thing, not merely which rows belong to whom.
+// scopes[user_id] deliberately gets no label — an event stream keyed by the
+// acting user would deliver each public event to exactly one person.
+func stampOrg(scopes, labels map[string]string, orgID string) {
+	scopes["org_id"] = orgID
+	labels["org_id"] = orgID
+}
+
+// inferSoleOrgScope stamps the caller's org when they have exactly one, and
+// stamps nothing otherwise. A lookup failure is NOT fatal: the caller simply
+// gets no org scope, which a scoped model then refuses — the same outcome as
+// having several orgs, and it keeps an unrelated query error from turning
+// every unscoped request (login, `org list`) into an auth failure.
+func inferSoleOrgScope(ctx context.Context, h *AuthServiceHandler, userID string, scopes, labels map[string]string) error {
+	resp, err := h.Query.ListUserOrgs(ctx, &pb.ListUserOrgsReq{UserId: userID})
+	if err != nil {
+		return nil
+	}
+	orgs := resp.GetOrgs()
+	if len(orgs) != 1 {
+		return nil
+	}
+	if id := orgs[0].GetOrgId(); id != "" {
+		stampOrg(scopes, labels, id)
+	}
+	return nil
+}
+
+// orgSlugFromHeaders reads the active-org selector out of the AuthReq
+// header map — the SAME channel the bearer token arrives on, and the one
+// every transport fills.
+//
+// This is the primary source, and the context read below is the fallback,
+// because the context does NOT carry it on a public gRPC surface: the rpc
+// gateway sanitizes the incoming metadata, passes it as AuthReq.Headers,
+// and then calls Authenticate with the raw incoming context — which has no
+// OUTGOING metadata, and the internal dialer installs no forwarding
+// interceptor. REST worked only because its MetadataPropagation middleware
+// stamps outgoing metadata before the handler runs.
+//
+// Nobody noticed because the one deployment with organizations has users
+// who belong to exactly ONE of them, so inferSoleOrgScope quietly supplied
+// the right answer and the selector never had to work.
+//
+// Both gateways lowercase what they collect (REST from HTTP headers, rpc
+// from metadata keys, which are lowercase by protocol), so one lookup
+// covers both; the defensive scan handles a hand-built caller.
+func orgSlugFromHeaders(headers map[string]string) string {
+	if v := headers[orgScopeMetadataKey]; v != "" {
+		return v
+	}
+	for k, v := range headers {
+		if strings.EqualFold(k, orgScopeMetadataKey) {
+			return v
+		}
+	}
+	return ""
+}
+
+// orgSlugFromContext reads the gateway-forwarded active-org slug from the
+// incoming gRPC metadata. Empty when absent.
+func orgSlugFromContext(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	if v := md.Get(orgScopeMetadataKey); len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}
+
+// ListMyOrgs returns the organizations the bearer-authenticated caller is a
+// member of — for the CLI's `org list`, the login-time membership cache,
+// and the init org picker. The caller is the gateway-resolved principal
+// (callerUserID — same source as WhoAmI), never a client-sent user_id.
+func (h *AuthServiceHandler) ListMyOrgs(ctx context.Context, _ *pb.ListMyOrgsReq) (*pb.ListMyOrgsResp, error) {
+	userID, err := callerUserID(ctx)
+	if err != nil {
+		return nil, Unauthenticated(err)
+	}
+	resp, err := h.Query.ListUserOrgs(ctx, &pb.ListUserOrgsReq{UserId: userID})
+	if err != nil {
+		return nil, err
+	}
+	return &pb.ListMyOrgsResp{Orgs: resp.GetOrgs()}, nil
+}

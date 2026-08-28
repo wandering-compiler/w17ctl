@@ -1,0 +1,6 @@
+# Built binaries — releases are the distribution channel, not the repo.
+/w17ctl
+/dist/
+
+# Local state a run can leave behind.
+*.test
