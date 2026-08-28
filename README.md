@@ -11,14 +11,17 @@ w17ctl <command> --help     # context-sensitive help for any command
 ## Install
 
 ```sh
-curl -fsSL https://get.w17.dev | sh
+curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre
 ```
 
-Installs the latest release into `/usr/local/bin`, verifying it against the
-release's `SHA256SUMS` first. Pick a version or a directory:
+Installs into `/usr/local/bin`, verifying the download against the release's
+`SHA256SUMS` first — always, with no flag to skip it.
+
+`--pre` is needed **while w17ctl is in release candidates**: `latest` means the
+newest STABLE release, and there is not one yet. Drop it once v0.1.0 ships.
 
 ```sh
-curl -fsSL https://get.w17.dev | sh -s -- --version v0.1.0 --dir ~/bin
+curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version v0.1.0-rc.1 --dir ~/bin
 ```
 
 Or take a `.tar.gz` straight from [Releases](https://github.com/wandering-compiler/w17ctl/releases)
