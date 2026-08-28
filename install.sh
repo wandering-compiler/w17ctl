@@ -2,7 +2,8 @@
 # Install w17ctl.
 #
 #   curl -fsSL https://get.w17.dev | sh
-#   curl -fsSL https://get.w17.dev | sh -s -- --version v0.1.0 --dir ~/bin
+#   curl -fsSL https://get.w17.dev | sh -s -- --version v0.1.0-rc.1 --dir ~/bin
+#   curl -fsSL https://get.w17.dev | sh -s -- --pre        # newest, prereleases included
 #
 # POSIX sh, not bash: this runs on whatever the user has, including a minimal
 # container where bash is not installed.
@@ -15,11 +16,13 @@ set -eu
 
 REPO="wandering-compiler/w17ctl"
 VERSION="latest"
+PRE=0
 DIR="${W17CTL_INSTALL_DIR:-/usr/local/bin}"
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--version) VERSION="$2"; shift 2 ;;
+		--pre)     PRE=1; shift ;;
 		--dir)     DIR="$2"; shift 2 ;;
 		-h|--help) sed -n '2,14p' "$0"; exit 0 ;;
 		*) echo "unknown option: $1" >&2; exit 2 ;;
@@ -42,12 +45,31 @@ case "$os" in
 	*) echo "install.sh: unsupported OS $os — build from source: go install github.com/$REPO@latest" >&2; exit 1 ;;
 esac
 
-if [ "$VERSION" = "latest" ]; then
+if [ "$VERSION" = "latest" ] && [ "$PRE" = 0 ]; then
 	# Resolved from the redirect rather than the API, so this needs no token
 	# and does not count against an unauthenticated rate limit.
+	#
+	# GitHub's /releases/latest deliberately skips prereleases, so during an
+	# rc phase this resolves to nothing — correctly, because "latest" means
+	# the newest STABLE release and there is not one yet. Failing here beats
+	# quietly handing someone an rc they did not ask for.
 	VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" \
 		| sed 's#.*/tag/##')
-	[ -n "$VERSION" ] || { echo "install.sh: could not resolve the latest release" >&2; exit 1; }
+	case "$VERSION" in
+		*/releases|"")
+			echo "install.sh: no stable release yet." >&2
+			echo "  Use --pre for the newest prerelease, or --version vX.Y.Z-rc.N for a specific one." >&2
+			exit 1 ;;
+	esac
+elif [ "$VERSION" = "latest" ]; then
+	# --pre: newest release of any kind. Needs the API (the redirect only ever
+	# points at a stable one), which is unauthenticated and rate-limited — fine
+	# for an installer, and the failure is legible when it is not.
+	need sed
+	VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=1" \
+		| sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+	[ -n "$VERSION" ] || { echo "install.sh: no releases found at all" >&2; exit 1; }
+	echo "install.sh: --pre selected $VERSION" >&2
 fi
 
 asset="w17ctl_${VERSION}_${os}_${arch}.tar.gz"

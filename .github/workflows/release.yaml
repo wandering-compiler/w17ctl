@@ -79,8 +79,20 @@ jobs:
           name: w17ctl-${{ steps.v.outputs.version }}
           path: dist/
 
+      # A hyphen in a semver tag IS a prerelease — v0.1.0-rc.1 sorts before
+      # v0.1.0, by definition rather than by convention. Deriving the flag from
+      # the tag means an rc can never be published as stable by forgetting a
+      # checkbox, and it is the same rule Go applies when it excludes
+      # prereleases from @latest.
       - name: Publish release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes --verify-tag
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            *-*) PRE=--prerelease ;;
+            *)   PRE= ;;
+          esac
+          echo "publishing $GITHUB_REF_NAME ${PRE:+as a prerelease}"
+          gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag $PRE
