@@ -46,6 +46,7 @@ type Cmd struct {
 	List         ProjectListCmd   `cmd:"" help:"List registered projects with their assigned host ports + active preset."`
 	ImportFrom   ImportFromCmd    `cmd:"" name:"import-from" help:"Fold a whole SOURCE project into this one: its migration history comes across verbatim (re-signed for this project) and its tables join this project's schema. The source is not modified. Refuses if the source's history is not consistent or if any connection / table / message name is claimed by both. NB: distinct from 'project import', which only registers a project locally and allocates host ports."`
 	Import       ProjectImportCmd `cmd:"" help:"Register an existing w17 project (default: current dir) and allocate it unique host ports."`
+	Register     RegisterCmd      `cmd:"" help:"CONSOLE: register a project that ALREADY has a lock, and repoint that lock at the new project_id. Use when a project moves to another console — init refuses an existing lock, because rerunning it would rewrite connections, pins and plugin activations. NB: distinct from project import, which is the LOCAL port registry."`
 	Remove       ProjectRemoveCmd `cmd:"" help:"Unregister a project from the local registry (frees its assigned host ports for reuse)."`
 	Ports        ProjectPortsCmd  `cmd:"" help:"Re-sync + show a project's assigned host ports (run after adding a connection / bundle)."`
 	Ps           ProjectPsCmd     `cmd:"" help:"Show running containers across ALL registered projects (docker compose ps per project)."`

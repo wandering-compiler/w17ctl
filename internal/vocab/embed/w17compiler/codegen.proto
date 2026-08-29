@@ -393,12 +393,53 @@ message LockEditIntent {
     PinTargetsIntent pin_targets = 15;
     InstallPluginIntent install_plugin = 16;
     SetPluginVersionsIntent set_plugin_versions = 17;
+    AdoptProjectIntent adopt_project = 18;
   }
 }
 
 // InstallPluginIntent appends an installed plugin to the lock (the `w17ctl
 // plugin install` write). The server rejects a duplicate name. source is the
 // install origin ("internal" for the embedded catalog).
+// AdoptProjectIntent points an EXISTING lock at a project registered on THIS
+// console — the one edit `bootstrap_lock` cannot make, because bootstrap
+// builds a lock from nothing and `w17ctl init` refuses to overwrite one that
+// exists.
+//
+// It exists because closing a hole opened a gap. The commit proof now refuses
+// a write to a project the registry does not have, which is right; but a
+// project that had been generating against ANOTHER console arrives with a
+// project_id that console minted, and nothing could put a new one in its
+// place. `init` refuses (correctly — it would rewrite connections, pins and
+// plugin activations), `project import` is the local port registry, and
+// `project import-from` needs a target that already exists. So a real project
+// could neither push nor register: a security fix with no migration path.
+//
+// Deliberately narrow. It rewrites the project's IDENTITY and nothing else —
+// connections, pinned targets, generated_code and plugin activations are the
+// state the lock exists to carry, and an "adopt" that reconstructed them from
+// defaults would silently lose exactly what makes reconstruction impossible by
+// hand.
+//
+// NOT related to `wc acl generate --adopt-lineage`, which waives a SIGNATURE
+// check on a permission allocation. This one changes a field and re-signs
+// normally; nothing is waived.
+message AdoptProjectIntent {
+  // The project id this console minted for the caller's RegisterProject call.
+  // Required: the whole point of the intent.
+  string project_id = 1;
+
+  // The project NAME as registered. Empty leaves the lock's name alone —
+  // a rename is a separate decision and this intent does not smuggle one.
+  string project = 2;
+
+  // The console this project now lives on. Empty leaves the lock's w17_url
+  // alone. It is stored rather than dialled (the client resolves its console
+  // from the flag, the logged-in console, then its compiled default), so a
+  // stale value misleads a reader rather than misrouting a call — worth
+  // fixing on adoption, not worth forcing.
+  string w17_url = 3;
+}
+
 message InstallPluginIntent {
   string name = 1;
   string version = 2;
