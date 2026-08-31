@@ -53,10 +53,22 @@ func (c *RegisterCmd) Run() error {
 		return fmt.Errorf("project register: %w", err)
 	}
 
-	// Read the lock FIRST, so a missing one fails before anything is
-	// registered. Registering and then failing to write would leave a project
+	// Read the lock FIRST, so a MISSING one fails before anything is
+	// registered. Registering and then failing to read would leave a project
 	// on the console that no lock points at — the litter this command is
 	// meant to stop producing.
+	//
+	// It covers the missing-lock case and only that. A registration that
+	// succeeds and a subsequent lock WRITE that fails still leaves the same
+	// litter, and this ordering cannot prevent it: the id being written is
+	// the one the console just minted, so the write cannot come first
+	// (hosted review 2026-08-30, HOST-D-2).
+	//
+	// What keeps that window small rather than harmful: RegisterProject is
+	// idempotent on (org, name), so re-running the command after a failed
+	// write returns the SAME id and lands it — the leftover is a project
+	// record the next attempt adopts, not a duplicate. Worth knowing rather
+	// than worth a distributed transaction.
 	lk, err := lockfile.Load(c.LockPath)
 	if err != nil {
 		return fmt.Errorf("project register: %w\n"+

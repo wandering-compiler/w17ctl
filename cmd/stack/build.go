@@ -168,13 +168,20 @@ func (c *BuildCmd) resolveProtos(root string) (protos, imports []string, cleanup
 		protoDir = view.GetProtoDir()
 	}
 	base := filepath.Join(root, protoDir)
-	models, err := discoverModelProtos(base)
+	models, modules, err := discoverModelProtos(base)
 	if err != nil {
 		return nil, nil, cleanup, fmt.Errorf("stack build: discover model protos: %w", err)
 	}
 	if len(models) == 0 {
 		return nil, nil, cleanup, nil
 	}
+	// Connection-declaring modules ride along: the IR build resolves every
+	// `(w17.field).upload.connection` against the registry it assembles from
+	// the files it is handed, and a KV/LOCAL_FS module declares no table, so
+	// the model walk alone leaves its connection looking undeclared. Appended
+	// AFTER the emptiness check so they can never make a table-less project
+	// diff-apply an empty schema.
+	models = append(models, modules...)
 	vocabDir, vcleanup, err := vocab.ExtractW17Vocab()
 	if err != nil {
 		return nil, nil, cleanup, fmt.Errorf("stack build: stage w17 vocab: %w", err)

@@ -1,9 +1,17 @@
 #!/usr/bin/env sh
 # Install w17ctl.
 #
-#   curl -fsSL https://get.w17.dev | sh
-#   curl -fsSL https://get.w17.dev | sh -s -- --version v0.1.0-rc.1 --dir ~/bin
-#   curl -fsSL https://get.w17.dev | sh -s -- --pre        # newest, prereleases included
+#   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre
+#   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version v0.1.0-rc.1 --dir ~/bin
+#
+# The URL carries a path: get.w17.dev is GitHub Pages, which serves files
+# rather than a root handler, so the bare domain 404s. `61569aa3a` fixed that
+# in the README and not here — and this file is what a reader sees when the
+# README's command has already failed them.
+#
+# `--pre` during the rc phase: `latest` means the newest STABLE release and
+# excludes prereleases by design, so without it the resolve correctly finds
+# nothing.
 #
 # POSIX sh, not bash: this runs on whatever the user has, including a minimal
 # container where bash is not installed.
@@ -24,12 +32,38 @@ while [ $# -gt 0 ]; do
 		--version) VERSION="$2"; shift 2 ;;
 		--pre)     PRE=1; shift ;;
 		--dir)     DIR="$2"; shift 2 ;;
-		-h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+		# Printed from a here-doc, not read back from "$0". The documented
+		# invocation is `curl … | sh`, where "$0" is `sh` and the file is
+		# stdin — so the version that re-read its own source printed either
+		# nothing or a fragment of whatever `sh` happened to be, exactly
+		# under the usage that is documented (hosted review 2026-08-30,
+		# HOST-C-7).
+		-h|--help)
+			cat <<'USAGE'
+Install w17ctl.
+
+  curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre
+  curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version v0.1.0-rc.1 --dir ~/bin
+
+  --version <tag>  install this release (default: newest stable)
+  --pre            allow prereleases (needed while the project is in rc)
+  --dir <path>     install into this directory (default: /usr/local/bin,
+                   or $W17CTL_INSTALL_DIR)
+
+The download is always verified against the release's SHA256SUMS.
+USAGE
+			exit 0 ;;
 		*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
 done
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "install.sh: needs $1" >&2; exit 1; }; }
+# --proto '=https' on every fetch below: without it a redirect can walk the
+# transfer down to plain HTTP, and this script's whole trust story is that
+# what it downloads came from the release it verified against
+# (hosted review 2026-08-30, HOST-C-6).
+CURL="curl -fsSL --proto =https --tlsv1.2"
+
 need curl
 need tar
 
@@ -53,7 +87,7 @@ if [ "$VERSION" = "latest" ] && [ "$PRE" = 0 ]; then
 	# rc phase this resolves to nothing — correctly, because "latest" means
 	# the newest STABLE release and there is not one yet. Failing here beats
 	# quietly handing someone an rc they did not ask for.
-	VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" \
+	VERSION=$($CURL -I -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" \
 		| sed 's#.*/tag/##')
 	case "$VERSION" in
 		*/releases|"")
@@ -66,7 +100,7 @@ elif [ "$VERSION" = "latest" ]; then
 	# points at a stable one), which is unauthenticated and rate-limited — fine
 	# for an installer, and the failure is legible when it is not.
 	need sed
-	VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=1" \
+	VERSION=$($CURL "https://api.github.com/repos/$REPO/releases?per_page=1" \
 		| sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 	[ -n "$VERSION" ] || { echo "install.sh: no releases found at all" >&2; exit 1; }
 	echo "install.sh: --pre selected $VERSION" >&2
@@ -79,8 +113,8 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 echo "install.sh: fetching $asset ($VERSION)" >&2
-curl -fsSL "$base/$asset"     -o "$tmp/$asset"
-curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
+$CURL "$base/$asset"     -o "$tmp/$asset"
+$CURL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
 
 # Verify. Not optional and not skippable by a flag: an installer with a
 # --no-verify switch is an installer that gets run with it.

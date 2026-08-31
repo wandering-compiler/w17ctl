@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,6 +209,25 @@ func (c *Config) Run() (err error) {
 	// it happens before the suite is driven, and it can name the discovery
 	// that came up empty, which the suite cannot.
 	if err = c.requireRequestedTransport(mcp, admin); err != nil {
+		return err
+	}
+
+	// An endpoint that never starts accepting is a STACK failure, and it
+	// has to be reported as one. `up --wait` returning Healthy and a
+	// published port answering are two different readinesses, and nothing
+	// orders them: discovery can hand back a port whose listener is not
+	// accepting yet. Driving the suite anyway produced the most misleading
+	// output this tool emits — every check failing at step 1 with
+	// `connection refused`, under a `FAIL`, an exit 1 and a list of `✗`,
+	// while the same log said `Healthy` a few lines above. It reads as
+	// "I broke the suite", and it costs whoever sees it a search through
+	// their own diff (deinvo, 2026-08-30 — and once already in July).
+	//
+	// So: wait here, and if it never comes up, fail with a sentence that
+	// says the stack is the problem. Same slot and same reasoning as
+	// requireRequestedTransport above — before the suite is driven, and
+	// naming what the suite itself cannot see.
+	if err = c.awaitReachable(map[string]string{"gateway": target, "mcp": mcp, "admin": admin}); err != nil {
 		return err
 	}
 
@@ -703,6 +724,78 @@ func (c *Config) servicePortOnce(files []string, project, root, svc string, cont
 		return 0, false, fmt.Errorf("could not parse host port from %q", s)
 	}
 	return port, false, nil
+}
+
+// endpointReachWait bounds how long [Config.awaitReachable] waits for a
+// discovered endpoint to start ACCEPTING, and endpointReachDelay is the gap
+// between attempts. Sized like the publish wait above and for the same kind
+// of race — a readiness the compose `up --wait` does not order against.
+// Vars, not consts, so the tests can shorten the unreachable case.
+var (
+	endpointReachWait  = 15 * time.Second
+	endpointReachDelay = 250 * time.Millisecond
+)
+
+// awaitReachable waits until every named endpoint accepts a TCP connection,
+// and reports which one did not. Endpoints with an empty URL are surfaces
+// this project does not have — skipped, not failed.
+//
+// The check is a bare TCP dial on purpose: it asks the one question whose
+// answer separates "the stack is not up" from "the tests fail", and no
+// more. An HTTP probe would need a path, a status policy and an opinion
+// about what a healthy body looks like — all of which can fail for reasons
+// that ARE the suite's business and would land back under the wrong
+// heading.
+func (c *Config) awaitReachable(endpoints map[string]string) error {
+	names := make([]string, 0, len(endpoints))
+	for name, raw := range endpoints {
+		if raw != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names) // deterministic order, so the failure names the same endpoint every run
+	for _, name := range names {
+		if err := c.awaitOne(name, endpoints[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Config) awaitOne(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		// Not a URL we can dial — leave it to the suite rather than
+		// inventing a stack failure out of a parse error.
+		return nil //nolint:nilerr // see comment
+	}
+	host := u.Host
+	if host == "" {
+		return nil
+	}
+	deadline := time.Now().Add(endpointReachWait)
+	announced := false
+	var last error
+	for {
+		conn, derr := net.DialTimeout("tcp", host, endpointReachDelay)
+		if derr == nil {
+			_ = conn.Close()
+			return nil
+		}
+		last = derr
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf(
+				"the %s endpoint at %s never accepted a connection within %s — the stack did not come up, so NO test ran: %w",
+				name, raw, endpointReachWait, last)
+		}
+		if !announced {
+			// A silent pause here is indistinguishable from a hang.
+			announced = true
+			c.status("waiting", fmt.Sprintf("%s at %s is not accepting yet — waiting up to %s", name, raw, endpointReachWait),
+				map[string]any{"endpoint": name, "target": raw})
+		}
+		time.Sleep(endpointReachDelay)
+	}
 }
 
 // portsUnpublished reports whether a failed `docker compose port` said the
