@@ -190,7 +190,7 @@ func (c *Config) Run() (err error) {
 	mcp := c.Mcp
 	if mcp == "" {
 		if mp, perr := c.servicePort(files, project, root, gatewaySvc, mcpContainerPort); perr == nil {
-			mcp = fmt.Sprintf("http://localhost:%d", mp)
+			mcp = fmt.Sprintf("http://localhost:%d%s", mp, mcpEndpointPath)
 		}
 	}
 
@@ -620,6 +620,24 @@ func (c *Config) compose(files []string, project, root string, args ...string) e
 func (c *Config) teardown(files []string, project, root string) {
 	_ = c.compose(files, project, root, "down", "-v", "--remove-orphans", "--rmi", "local")
 }
+
+// mcpEndpointPath is the HTTP path the streamable MCP transport serves on
+// — `mcp.EndpointPath` in the SDK, repeated here as a literal rather than
+// imported so the CLI does not pull the MCP runtime (and mcp-go with it)
+// into a binary that only ever speaks to one.
+//
+// Discovery used to hand back a bare `http://localhost:<port>`, and every
+// `initialize` against it answered 404: the server mounts its handler on
+// this path, and the runner's own usage line has always said so
+// (`-mcp http://localhost:8080/mcp`). Nothing caught it because no
+// example published the gateway's MCP port, so auto-discovery never
+// resolved an endpoint and every MCP scenario skipped — the code path was
+// unreachable, and unreachable code keeps its bugs.
+//
+// Only the DISCOVERED url gets the path appended. An explicit `--mcp`
+// stays verbatim: the flag is documented as taking the full URL, and
+// appending to it would produce `/mcp/mcp`.
+const mcpEndpointPath = "/mcp"
 
 // mcpContainerPort is the gateway bundle's MCP listener container port —
 // the gateway serves REST (GatewayPort, 8080) + MCP concurrently as one
