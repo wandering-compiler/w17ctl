@@ -30,6 +30,25 @@ extend google.protobuf.MethodOptions {
   // unsuitable (different prose for human readers vs. an
   // LLM). Empty = leading comment via SourceCodeInfo.
   string mcp_description = 50108;
+
+  // (w17.mcp_name) — override for the MCP tool name. Empty =
+  // snake_case of the method name. Set it when the derived
+  // name collides or when the MCP client expects a canonical
+  // name distinct from the RPC's.
+  //
+  // Authors write this through `McpTool.name_override` on a
+  // `(w17.mcp_api)` registry entry, which the compiler stamps
+  // onto the method before the gateway renders it — the two
+  // ways of publishing a method must not disagree about what
+  // it is CALLED, and the registry path used to lose the
+  // override because the gateway only ever read the method.
+  string mcp_name = 50109;
+
+  // (w17.mcp_scope) — session-scope hint, appended to the
+  // description as "Available in: <scope>". Empty = no scope
+  // line. Same provenance as `mcp_name`: written as
+  // `McpTool.scope`, stamped onto the method by the compiler.
+  string mcp_scope = 50110;
 }
 
 extend google.protobuf.FileOptions {

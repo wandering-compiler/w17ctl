@@ -62,19 +62,28 @@ var connectFixtureStore = realConnectFixtureStore
 // (never a flag) so credentials don't leak into shell history / process
 // listings / CI logs.
 type ApplyCmd struct {
-	Domain     string `name:"domain" placeholder:"DOMAIN" help:"Domain that owns the fixture. Required with --name (single fixture); optional in group mode (empty = every domain)."`
-	Name       string `name:"name" placeholder:"NAME" help:"Single fixture name to render + apply. Omit to apply a whole group (see --group)."`
-	Group      string `name:"group" placeholder:"GROUP" help:"Fixture group (subdirectory under the domain: fixtures/<domain>/<group>/<name>.json). Empty = the default group (files directly under fixtures/<domain>/). With --name omitted, applies every fixture in this group."`
-	Connection string `name:"connection" placeholder:"CONN" required:"" help:"Target connection name. For a LOCAL dev store the DSN is auto-resolved from the published port + dev credentials (zero-config, same as 'stack build'); set W17_TARGET_<CONN_UPPER> (hyphens → underscores) only to override with a REMOTE/prod DSN, which stays env-only so the secret never leaks into a flag."`
-	LockPath   string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console FixtureFetch service. Optional — falls back to the console you are logged into (w17ctl login), then the binary's compile-time default."`
-	Out        string `name:"out" placeholder:"PATH" help:"Write the seed as plain SQL to PATH ('-' for stdout) INSTEAD of applying it. No target store is dialled and --connection needs no reachable DSN, so this works for a database that does not exist yet — a db/init/*.sql for an ephemeral e2e Postgres, which is seeded only from that directory and has no stable DSN to apply against."`
+	Domain      string `name:"domain" placeholder:"DOMAIN" help:"Domain that owns the fixture. Required with --name (single fixture); optional in group mode (empty = every domain)."`
+	Name        string `name:"name" placeholder:"NAME" help:"Single fixture name to render + apply. Omit to apply a whole group (see --group)."`
+	Group       string `name:"group" placeholder:"GROUP" help:"Fixture group (subdirectory under the domain: fixtures/<domain>/<group>/<name>.json). Empty = the default group (files directly under fixtures/<domain>/). With --name omitted, applies every fixture in this group."`
+	Connection  string `name:"connection" placeholder:"CONN" required:"" help:"Target connection name. For a LOCAL dev store the DSN is auto-resolved from the published port + dev credentials (zero-config, same as 'stack build'); set W17_TARGET_<CONN_UPPER> (hyphens → underscores) only to override with a REMOTE/prod DSN, which stays env-only so the secret never leaks into a flag."`
+	LockPath    string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
+	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console FixtureFetch service. Optional — falls back to the console you are logged into (w17ctl login), then the binary's compile-time default."`
+	FixturesDir string `name:"fixtures-dir" default:"fixtures" placeholder:"DIR" help:"Working-tree fixtures directory, compared against the registry copy before rendering. A fixture present here and different there is refused (see --allow-stale) — the registry is what gets rendered, so a stale one produces confident, wrong output."`
+	AllowStale  bool   `name:"allow-stale" help:"Render the registry's copy even when the working tree disagrees with it."`
+	Out         string `name:"out" placeholder:"PATH" help:"Write the seed as plain SQL to PATH ('-' for stdout) INSTEAD of applying it. No target store is dialled and --connection needs no reachable DSN, so this works for a database that does not exist yet — a db/init/*.sql for an ephemeral e2e Postgres, which is seeded only from that directory and has no stable DSN to apply against."`
 }
 
 func (c *ApplyCmd) Run() error {
 	if c.Name != "" && c.Domain == "" {
 		return fmt.Errorf("fixtures apply: --name requires --domain (a single fixture is addressed by domain + name)")
 	}
+	// Normalise ONCE, here, rather than at each reader. `--group .` has to
+	// mean the default group in the group LISTING too, and that path
+	// compares c.Group against a derived name — so a fix confined to
+	// registryFixtureName would have left `--group .` matching nothing
+	// and reporting "no fixtures in group .", which is the same silence
+	// one layer over.
+	c.Group = normalizeGroup(c.Group)
 
 	projectID := core.LockProjectIDBestEffort()
 	if projectID == "" {
@@ -122,6 +131,11 @@ func (c *ApplyCmd) applyOne(ctx context.Context, cl applyfetchpb.FixtureFetchCli
 	// the name as <group>/<name> — the same flat encoding push/fetch use, so
 	// there's no wire-level group field.
 	name := registryFixtureName(c.Group, c.Name)
+	if !c.AllowStale {
+		if err := checkFixtureFresh(ctx, cl, projectID, c.FixturesDir, c.Domain, c.Group, c.Name); err != nil {
+			return err
+		}
+	}
 	resp, err := cl.FetchFixtureSeed(ctx, &applyfetchpb.FetchFixtureSeedRequest{
 		ProjectId: projectID,
 		Domain:    c.Domain,
@@ -185,6 +199,14 @@ func (c *ApplyCmd) applyGroup(ctx context.Context, cl applyfetchpb.FixtureFetchC
 
 	var all []*applyfetchpb.SeedStmt
 	for _, r := range refs {
+		if !c.AllowStale {
+			// r.name is the FLAT registry key; the on-disk path needs it
+			// split back into (group, leaf) — the same encoding, inverted.
+			if err := checkFixtureFresh(ctx, cl, projectID, c.FixturesDir,
+				r.domain, fixtureGroup(r.name), fixtureLeaf(r.name)); err != nil {
+				return err
+			}
+		}
 		resp, err := cl.FetchFixtureSeed(ctx, &applyfetchpb.FetchFixtureSeedRequest{
 			ProjectId: projectID,
 			Domain:    r.domain,
@@ -218,6 +240,20 @@ func registryFixtureName(group, name string) string {
 	return group + "/" + name
 }
 
+// normalizeGroup maps the shapes that MEAN the default group onto "".
+//
+// "." and "./" are the natural way to write "no group" and read as such,
+// and our own published recipe used `--group .`. It produced the registry
+// key `./acl-roles`, which matches nothing, and surfaced as a bare
+// NotFound naming a key the author never wrote (deinvo, 2026-09-04).
+func normalizeGroup(group string) string {
+	group = strings.TrimSuffix(strings.TrimSpace(group), "/")
+	if group == "." {
+		return ""
+	}
+	return group
+}
+
 // fixtureGroup is the inverse of registryFixtureName: the group a flat registry
 // name belongs to (the path up to the last "/"; "" for a default-group name).
 func fixtureGroup(name string) string {
@@ -225,6 +261,15 @@ func fixtureGroup(name string) string {
 		return name[:i]
 	}
 	return ""
+}
+
+// fixtureLeaf is the name part of a flat registry key — everything after
+// the last "/", i.e. the file's stem on disk. Pairs with fixtureGroup.
+func fixtureLeaf(name string) string {
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		return name[i+1:]
+	}
+	return name
 }
 
 // groupLabel renders a group name for human output: the default group ("")

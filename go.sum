@@ -140,8 +140,8 @@ github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UV
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/wandering-compiler/sdk/go v0.0.0-20260901084051-499e7c128984 h1:fnU36boJaLnrUjuQejDY3Wyw2yrxoEXhFB3fzaxMQCc=
-github.com/wandering-compiler/sdk/go v0.0.0-20260901084051-499e7c128984/go.mod h1:5yJ5OXR3HSEe3vp0TO2ibb6A6UrpWqxC/sr+2Ect/JY=
+github.com/wandering-compiler/sdk/go v0.0.0-20260904101719-b9813f6f4c4e h1:U26wkuAq52QrxdbsJ/zHxgPSN1GwgDcbk4Gkmb/7n7w=
+github.com/wandering-compiler/sdk/go v0.0.0-20260904101719-b9813f6f4c4e/go.mod h1:5yJ5OXR3HSEe3vp0TO2ibb6A6UrpWqxC/sr+2Ect/JY=
 github.com/yuin/gopher-lua v1.1.1 h1:kYKnWBjvbNP4XLT3+bPEwAXJx262OhaHDWDVOPjL46M=
 github.com/yuin/gopher-lua v1.1.1/go.mod h1:GBR0iDaNXjAgGg9zfCvksxSRnQx76gclCIb7kdAd1Pw=
 github.com/zeebo/xxh3 v1.1.0 h1:s7DLGDK45Dyfg7++yxI0khrfwq9661w9EN78eP/UZVs=
