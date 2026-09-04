@@ -787,15 +787,44 @@ service AuthQuery {
   }
 
   // ListRoles — the role catalogue for the admin role-management page.
+  // ⚠️ Both role reads project every UNGATED column the model declares.
+  //
+  // Until 2026-09-04 they projected 7 of 11. `preset_key` and
+  // `display_name` were added to the model after these queries were
+  // written and nothing widened them, so both were declared, stored,
+  // seeded — and unreadable through any path in either realm.
+  // `preset_key`'s own comment calls it PROVENANCE, i.e. a thing a reader
+  // consults; no reader could.
+  //
+  // deinvo hit it on the one operation the field exists for: granting a
+  // founder `org-admin` in CreateOrg by matching the role the SEED owns
+  // rather than by name, which is a label a customer may rename. Their
+  // guard fired `role preset "org-admin" is not seeded` against a
+  // database where it demonstrably was.
+  //
+  // Add an ungated column to Role and add it here too. A projection is
+  // not a convenience list — it is the only way the field leaves the
+  // database.
+  //
+  // ⚠️ The two GATED columns stay out, and this is a known limit rather
+  // than an oversight: `token_type` is gated on `api_token` and
+  // `org_scoped` on `org_membership`, so naming either here makes the
+  // typecheck fail for every project without that feature ("column
+  // r.org_scoped not found on Role" — measured, not predicted). Reading
+  // them needs feature-variant DQL, which this vocabulary does not have.
+  // The consequence worth knowing: a caller cannot tell an org-scoped
+  // role from a global one through the API, only through the seed.
   rpc ListRoles(ListRolesReq) returns (ListRolesResp) {
     option (w17.db.method) = {
       ops: {
         name: "main"
         dql:
           "SELECT r.id AS id, r.name AS name, r.description AS description, "
+          "       r.display_name AS display_name, "
           "       r.all_permissions AS all_permissions, "
           "       r.assign_first_user AS assign_first_user, "
           "       r.assign_default AS assign_default, "
+          "       r.preset_key AS preset_key, "
           "       r.created_at AS created_at "
           "FROM @module.Role r ORDER BY r.name ASC, r.id ASC"
       }
@@ -815,9 +844,11 @@ service AuthQuery {
         dql:
           "SELECT r.id AS id, r.name AS name, "
           "       r.description AS description, "
+          "       r.display_name AS display_name, "
           "       r.all_permissions AS all_permissions, "
           "       r.assign_first_user AS assign_first_user, "
           "       r.assign_default AS assign_default, "
+          "       r.preset_key AS preset_key, "
           "       r.created_at AS created_at "
           "FROM @module.Role r WHERE r.id = :id"
       }
