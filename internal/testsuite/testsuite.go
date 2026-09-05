@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -754,16 +754,32 @@ var (
 	endpointReachDelay = 250 * time.Millisecond
 )
 
-// awaitReachable waits until every named endpoint accepts a TCP connection,
-// and reports which one did not. Endpoints with an empty URL are surfaces
-// this project does not have — skipped, not failed.
+// awaitReachable waits until every named endpoint ANSWERS, and reports
+// which one did not. Endpoints with an empty URL are surfaces this project
+// does not have — skipped, not failed.
 //
-// The check is a bare TCP dial on purpose: it asks the one question whose
-// answer separates "the stack is not up" from "the tests fail", and no
-// more. An HTTP probe would need a path, a status policy and an opinion
-// about what a healthy body looks like — all of which can fail for reasons
-// that ARE the suite's business and would land back under the wrong
-// heading.
+// It used to be a bare TCP dial, defended right here as "the one question
+// whose answer separates the stack is not up from the tests fail". It was
+// not that question. Docker publishes a container's port as soon as the
+// container RUNS, and until the process inside binds, the proxy accepts the
+// connection and resets it — so `connect()` succeeds against a port nobody
+// is serving. The gate was answering "did docker publish a port", which is
+// true several seconds before the answer anyone wanted.
+//
+// deinvo measured the window with a socket on 2026-09-05: five resets at
+// 400ms intervals, then HTTP at t+2.0s. It became deterministic the day
+// before, and by our own hand: dbwait stopped the server exiting on a
+// database that had not finished starting, so instead of dying and taking
+// its port with it, the container now sits there for the ~3s the database
+// needs — publishing a port that resets every read. The fix moved the
+// defect from "the port changes" to "the port answers before the app does",
+// and traded 2-in-19 for every run.
+//
+// So the probe speaks HTTP, and ANY reply counts — 200, 404, 401, a bare
+// 400, anything. That answers the objection the old comment raised without
+// conceding it: naming a healthy status or a path would import opinions
+// that belong to the suite, but "something spoke HTTP back" is strictly the
+// TCP question plus the one bit it was missing.
 func (c *Config) awaitReachable(endpoints map[string]string) error {
 	names := make([]string, 0, len(endpoints))
 	for name, raw := range endpoints {
@@ -794,22 +810,33 @@ func (c *Config) awaitOne(name, raw string) error {
 	deadline := time.Now().Add(endpointReachWait)
 	announced := false
 	var last error
+	// One transport per endpoint, keep-alives OFF: a reset arriving during
+	// the window would otherwise poison a pooled connection and make the
+	// NEXT attempt fail for a reason that has nothing to do with the
+	// server's readiness.
+	client := &http.Client{
+		Timeout:   endpointReachDelay * 4,
+		Transport: &http.Transport{DisableKeepAlives: true},
+		// A redirect is an answer. Stop at the first one rather than
+		// chasing it somewhere that might not be up yet.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	for {
-		conn, derr := net.DialTimeout("tcp", host, endpointReachDelay)
-		if derr == nil {
-			_ = conn.Close()
-			return nil
+		resp, rerr := client.Get(raw)
+		if rerr == nil {
+			_ = resp.Body.Close()
+			return nil // ANY status: something is serving this port
 		}
-		last = derr
+		last = rerr
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf(
-				"the %s endpoint at %s never accepted a connection within %s — the stack did not come up, so NO test ran: %w",
+				"the %s endpoint at %s never answered within %s — the stack did not come up, so NO test ran: %w",
 				name, raw, endpointReachWait, last)
 		}
 		if !announced {
 			// A silent pause here is indistinguishable from a hang.
 			announced = true
-			c.status("waiting", fmt.Sprintf("%s at %s is not accepting yet — waiting up to %s", name, raw, endpointReachWait),
+			c.status("waiting", fmt.Sprintf("%s at %s is not answering yet — waiting up to %s", name, raw, endpointReachWait),
 				map[string]any{"endpoint": name, "target": raw})
 		}
 		time.Sleep(endpointReachDelay)
