@@ -273,6 +273,27 @@ service CodegenService {
   // refusal.
   rpc InspectPluginManifest(InspectPluginManifestRequest) returns (InspectPluginManifestResponse);
 
+  // ListPluginCatalog / FetchPlugin serve the plugin CATALOGUE from the
+  // console.
+  //
+  // The catalogue used to live only inside the w17ctl binary, which made a
+  // client release the only path from a plugin change to a consumer:
+  // deploying the console delivered nothing. That is not a packaging
+  // detail — `org_invite` shipped in rc.9 with a defect and could not be
+  // corrected without cutting rc.10 and telling every consumer to
+  // reinstall.
+  //
+  // It also finishes a move already half-made. The manifest is parsed and
+  // validated server-side (InspectPluginManifest above) because "the
+  // plugin-system semantics are compiler-domain — the client holds no
+  // console/plugins". The semantics moved; the bytes stayed behind.
+  //
+  // FetchPlugin streams GeneratedFile, the same shape GeneratePluginPb
+  // already streams, so "a file tree over gRPC" is an established
+  // mechanism here rather than a new one.
+  rpc ListPluginCatalog(ListPluginCatalogRequest) returns (PluginCatalog);
+  rpc FetchPlugin(FetchPluginRequest) returns (stream GeneratedFile);
+
   // Guide renders the w17 PLATFORM self-description — the w17/specs/ reference
   // (annotation catalog + architecture primer + escape hatches) a coding agent
   // reads to understand the technology before designing a project. It is
@@ -346,10 +367,10 @@ message AdmissionStatusResponse {
 }
 
 message InspectPluginManifestRequest {
-  // manifest_yaml is the raw plugin.yaml body (the client reads it from its
-  // embedded catalog and ships the bytes verbatim — it never parses it).
+  // manifest_yaml is the raw plugin.yaml body (the client ships back the
+  // bytes FetchPlugin streamed to it, verbatim — it never parses them).
   bytes manifest_yaml = 1;
-  // source labels the manifest for error messages (e.g. "embed:auth/plugin.yaml").
+  // source labels the manifest for error messages (e.g. "console:auth/plugin.yaml").
   string source = 2;
   // installed enumerates the project's currently-installed plugins, for the
   // requirement check (CheckRequires). Empty for a pure parse (e.g. list).
@@ -400,7 +421,7 @@ message LockEditIntent {
 
 // InstallPluginIntent appends an installed plugin to the lock (the `w17ctl
 // plugin install` write). The server rejects a duplicate name. source is the
-// install origin ("internal" for the embedded catalog).
+// install origin ("internal" for the console's own catalogue).
 // AdoptProjectIntent points an EXISTING lock at a project registered on THIS
 // console — the one edit `bootstrap_lock` cannot make, because bootstrap
 // builds a lock from nothing and `w17ctl init` refuses to overwrite one that
@@ -1873,6 +1894,31 @@ message GenerateResponse {
 // relative_path is the conventional layout
 // (`gen/grpcapi/storage/<service_snake>.go`); the CLI client
 // splices it under its `--out` root.
+message ListPluginCatalogRequest {}
+
+// PluginCatalog is what the console can serve. `version` comes from each
+// plugin's own manifest, parsed server-side — the client is told the
+// version rather than reading a manifest to find it.
+message PluginCatalog {
+  repeated CataloguePlugin plugins = 1;
+}
+
+message CataloguePlugin {
+  string name = 1;
+  string version = 2;
+  string description = 3;
+}
+
+// FetchPluginRequest names ONE plugin. No version field yet, and the
+// omission is deliberate rather than forgotten: the console serves exactly
+// one catalogue — the one it was built with — so there is nothing to
+// select between. When versions arrive this gains a `version` and the
+// server gains a history to pick from; a field that today could only ever
+// hold one legal value would be a promise the console cannot keep.
+message FetchPluginRequest {
+  string name = 1;
+}
+
 message GeneratedFile {
   string relative_path = 1;
   bytes contents = 2;
