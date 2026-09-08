@@ -100,8 +100,42 @@ elif [ "$VERSION" = "latest" ]; then
 	# points at a stable one), which is unauthenticated and rate-limited — fine
 	# for an installer, and the failure is legible when it is not.
 	need sed
-	VERSION=$($CURL "https://api.github.com/repos/$REPO/releases?per_page=1" \
-		| sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+	need awk
+	# ⚠️ Do NOT take the API's first row. It is not ordered the way a reader
+	# assumes: on 2026-09-08 `?per_page=1` returned v0.1.0-rc.9 while
+	# v0.1.0-rc.10 existed and was newer, so `--pre` installed the OLDER
+	# release — and that one shipped a security defect the newer one fixed.
+	# An installer that quietly hands out a stale build is worse than one
+	# that fails.
+	#
+	# So: pull a page and pick the highest by SEMVER ourselves. `sort -V`
+	# would do it on GNU, but macOS sort has no -V and this installer is
+	# published for darwin too — hence awk building a zero-padded key that
+	# plain lexical sort orders correctly.
+	#
+	# The key is major.minor.patch, then 1 for a stable release and 0 for a
+	# prerelease (so v0.1.0 outranks v0.1.0-rc.9), then the prerelease's
+	# digits as a number — which is what puts rc.10 above rc.9 where a
+	# string comparison puts it below. A prerelease carrying several numbers
+	# (rc.1.2) collapses to 12; our tags do not, and the alternative is a
+	# full semver parser in POSIX sh.
+	VERSION=$($CURL "https://api.github.com/repos/$REPO/releases?per_page=100" \
+		| sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+		| awk '
+			{
+				tag = $0
+				v = tag; sub(/^v/, "", v)
+				pre = ""
+				if (index(v, "-") > 0) {
+					pre = substr(v, index(v, "-") + 1)
+					v = substr(v, 1, index(v, "-") - 1)
+				}
+				split(v, p, ".")
+				rank = (pre == "") ? 1 : 0
+				num = pre; gsub(/[^0-9]/, "", num)
+				printf "%010d.%010d.%010d.%d.%010d\t%s\n", p[1]+0, p[2]+0, p[3]+0, rank, num+0, tag
+			}' \
+		| sort -r | head -1 | cut -f2)
 	[ -n "$VERSION" ] || { echo "install.sh: no releases found at all" >&2; exit 1; }
 	echo "install.sh: --pre selected $VERSION" >&2
 fi
