@@ -56,6 +56,34 @@ var errInviteInvalid = status.Error(codes.NotFound,
 var errUnknownRole = status.Error(codes.InvalidArgument,
 	"no role by that name exists in this project's role catalogue")
 
+// init installs the sign-up gate. `signupInviteGate` is declared permissive
+// in signup.go (feature `sign_up_turnkey`) and replaced here, so an
+// activation WITHOUT invites cannot acquire a gate that would refuse every
+// registration.
+//
+// ⚠️ Nothing references this function, which is exactly how it was lost
+// once: a refactor that moved other symbols out of this file took the
+// init() with them, the package still compiled — removing an init() is
+// always valid Go — every test stayed green, and the deployed console
+// accepted an UNINVITED registration on the public internet (2026-09-08).
+// The compiler cannot miss what nobody calls. If you move things out of
+// this file, check that this survived.
+func init() {
+	signupInviteGate = func(ctx context.Context, h *AuthServiceHandler, email string) error {
+		if !h.InviteOnly {
+			return nil
+		}
+		resp, err := h.Query.ListPendingInvitesForEmail(ctx, &pb.ListPendingInvitesForEmailReq{Email: email})
+		if err != nil {
+			return err
+		}
+		if len(resp.GetInvites()) == 0 {
+			return errSignUpNotInvited
+		}
+		return nil
+	}
+}
+
 func (h *AuthServiceHandler) orgInviteTTL() time.Duration {
 	if h.OrgInviteTTLHours > 0 {
 		return time.Duration(h.OrgInviteTTLHours) * time.Hour
