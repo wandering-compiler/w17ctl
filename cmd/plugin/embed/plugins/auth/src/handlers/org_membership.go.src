@@ -6,10 +6,13 @@ import (
 
 	"strings"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	pb "github.com/MrS1lentcz/wandering-compiler/plugins/auth/gen/pb"
 	"github.com/wandering-compiler/sdk/go/lib/acllock"
+	"github.com/wandering-compiler/sdk/go/lib/principal"
 )
 
 // This file implements the `org_membership` feature — GitHub-style
@@ -255,4 +258,61 @@ func (h *AuthServiceHandler) ListMyOrgs(ctx context.Context, _ *pb.ListMyOrgsReq
 		return nil, err
 	}
 	return &pb.ListMyOrgsResp{Orgs: resp.GetOrgs()}, nil
+}
+
+// errNoActiveOrg fires when an org-scoped RPC is called without a resolved
+// active org. Authenticate stamps scopes[org_id] only after VALIDATING
+// membership, so its absence means the caller named no org (no W17-Org
+// header, and no sole org to infer) or is not a member of the one they
+// named.
+var errNoActiveOrg = status.Error(codes.FailedPrecondition,
+	"no active organization for this request (send the W17-Org header naming an org you belong to)")
+
+// activeOrgID returns the organization this request acts in — the one
+// Authenticate resolved from the W17-Org header (or inferred, when the
+// caller belongs to exactly one) and VALIDATED against membership.
+//
+// Read from the trusted scope, never from the request body. Every
+// org-scoped RPC could have taken an org_id parameter and every one of them
+// would then have had to remember to distrust it; the value that is already
+// proven is right here, and a handler cannot forget to use the only org it
+// is given.
+func activeOrgID(ctx context.Context) (string, error) {
+	orgID, ok := principal.Scope(ctx, "org_id")
+	if !ok || orgID == "" {
+		return "", errNoActiveOrg
+	}
+	return orgID, nil
+}
+
+// ListOrgMembers returns everyone in the caller's active organization.
+//
+// It lives HERE and not with the invitations, even though the two screens
+// that use it are the same screen: the rpc is gated `org_membership`, and a
+// handler staged under a different feature would leave an activation that
+// enables membership WITHOUT invites holding an interface method nothing
+// implements. That is not hypothetical — e2e-project's admin_auth
+// activation is exactly that combination, and it is what caught this.
+func (h *AuthServiceHandler) ListOrgMembers(ctx context.Context, _ *pb.ListOrgMembersReq) (*pb.ListOrgMembersResp, error) {
+	if _, err := callerUserID(ctx); err != nil {
+		return nil, Unauthenticated(err)
+	}
+	orgID, err := activeOrgID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := h.Query.ListOrgMembersByOrg(ctx, &pb.ListOrgMembersByOrgReq{OrgId: orgID})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*pb.OrgMember, 0, len(resp.GetMembers()))
+	for _, m := range resp.GetMembers() {
+		out = append(out, &pb.OrgMember{
+			UserId:   m.GetUserId(),
+			Email:    m.GetEmail(),
+			Role:     m.GetRole(),
+			JoinedAt: m.GetJoinedAt(),
+		})
+	}
+	return &pb.ListOrgMembersResp{Members: out}, nil
 }

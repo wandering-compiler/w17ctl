@@ -260,12 +260,15 @@ message GetOAuthIdentityResp {
 // GetMfaChallenge loads the pending challenge VerifyMfa consumes. Both
 // gated `two_factor`.
 
+// UNGATED, like its sibling GetUserByEmail. It was tagged `two_factor`
+// because that was the first feature to want "resolve a user by id" — but
+// the query says nothing about second factors, and the tag made every
+// later feature that needs the same row either drag `two_factor` in or
+// duplicate the read.
 message GetUserByIdReq {
-  option (w17.contrib.plugin_feature) = "two_factor";
   string user_id = 1;
 }
 message GetUserByIdResp {
-  option (w17.contrib.plugin_feature) = "two_factor";
   User user = 1;
 }
 
@@ -590,6 +593,58 @@ message GetUserTokenReq {
 // catalog). Returns the deduped union of permission IDs across
 // every role the user holds; empty list means the user has no
 // role assignments (no permissions).
+// ── org member + invite reads ───────────────────────────────
+
+// OrgMemberRow — one row of an organization's member list: the
+// membership joined to the identity behind it. The email is what an
+// admin recognises a person by; a list of user ids is not a member list.
+message OrgMemberRow {
+  option (w17.contrib.plugin_feature) = "org_membership";
+  string user_id = 1;
+  string email   = 2;
+  string role    = 3;
+  google.protobuf.Timestamp joined_at = 4;
+}
+
+message ListOrgMembersByOrgReq {
+  option (w17.contrib.plugin_feature) = "org_membership";
+  string org_id = 1 [(w17.field) = { type: UUID }];
+}
+message ListOrgMembersByOrgResp {
+  option (w17.contrib.plugin_feature) = "org_membership";
+  repeated OrgMemberRow members = 1;
+}
+
+message ListOrgInvitesByOrgReq {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string org_id = 1 [(w17.field) = { type: UUID }];
+}
+message ListOrgInvitesByOrgResp {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  repeated OrgInvite invites = 1;
+}
+
+message ListPendingInvitesForEmailReq {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string email = 1 [(w17.field) = { type: EMAIL, max_len: 320 }];
+}
+// Carries the ORG NAME, not just its id. This backs the "you have been
+// invited to X" list a person sees in their own account, and an
+// invitation that can only name a uuid is not one anybody can act on.
+message PendingInviteRow {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string invite_id = 1;
+  string org_id    = 2;
+  string org_slug  = 3;
+  string org_name  = 4;
+  string role      = 5;
+  google.protobuf.Timestamp expires_at = 6;
+}
+message ListPendingInvitesForEmailResp {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  repeated PendingInviteRow invites = 1;
+}
+
 service AuthQuery {
   rpc GetUserByEmail(GetUserByEmailReq) returns (GetUserByEmailResp) {
     option (w17.db.method) = {
@@ -1048,8 +1103,11 @@ service AuthQuery {
     option (w17.contrib.plugin_feature_rpc) = "oauth";
   }
 
-  // GetUserById — resolve a user by id (for the EnrollTotp otpauth label,
-  // which wants the email). Gated two_factor.
+  // GetUserById — resolve a user by id, password_hash included. Two
+  // callers today: the EnrollTotp otpauth label (which wants the email)
+  // and ChangePassword (which must verify the CURRENT password of the
+  // authenticated principal, and must not look that principal up by an
+  // address the request supplied). Ungated — see the messages above.
   rpc GetUserById(GetUserByIdReq) returns (GetUserByIdResp) {
     option (w17.db.method) = {
       ops: {
@@ -1062,7 +1120,6 @@ service AuthQuery {
           "FROM @module.User u WHERE u.id = :user_id"
       }
     };
-    option (w17.contrib.plugin_feature_rpc) = "two_factor";
   }
 
   // GetTotpSecret — the user's TOTP row (encrypted secret + confirmed_at).
@@ -1406,6 +1463,94 @@ service AuthQuery {
           "SELECT t.id AS id, t.user_id AS user_id, "
           "       t.created_at AS created_at, t.expires_at AS expires_at "
           "FROM @module.UserToken t WHERE t.id = :id"
+      }
+    };
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // org member + invite reads
+  // ────────────────────────────────────────────────────────────
+
+  // ListOrgMembersByOrg — everyone in ONE organization. The ByOrg
+  // suffix is not decoration: every proto in this plugin generates into
+  // ONE Go package, so a query message may not share a name with the
+  // business message that wraps it — and the business RPC is the one
+  // callers see, so it keeps the plain name., with the address that
+  // identifies them. Distinct from ListOrgMemberships, which is the
+  // admin preset's paged list across EVERY org and carries no org filter:
+  // a member list scoped to the caller's active org is a different
+  // question, and answering it by filtering the admin list in a handler
+  // would mean reading every organization's rows to return one's.
+  rpc ListOrgMembersByOrg(ListOrgMembersByOrgReq) returns (ListOrgMembersByOrgResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_membership";
+    option (w17.db.method) = {
+      ops: {
+        name: "main"
+        dql:
+          "SELECT m.user_id AS user_id, "
+          "       u.email AS email, "
+          "       m.role AS role, "
+          "       m.created_at AS joined_at "
+          "FROM @module.OrgMembership m "
+          "JOIN @module.User u ON u.id = m.user_id "
+          "WHERE m.org_id = :org_id "
+          "ORDER BY u.email ASC"
+      }
+    };
+  }
+
+  // ListOrgInvitesByOrg — the PENDING invitations of one organization.
+  // Suffixed for the same reason as ListOrgMembersByOrg above.
+  // Accepted rows are excluded rather than deleted on acceptance, so the
+  // table keeps the record of how each membership came to exist while
+  // this list stays the set of things still outstanding.
+  rpc ListOrgInvitesByOrg(ListOrgInvitesByOrgReq) returns (ListOrgInvitesByOrgResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_invite";
+    option (w17.db.method) = {
+      ops: {
+        name: "main"
+        dql:
+          "SELECT i.id AS id, "
+          "       i.org_id AS org_id, "
+          "       i.email AS email, "
+          "       i.role AS role, "
+          "       i.invited_by AS invited_by, "
+          "       i.expires_at AS expires_at, "
+          "       i.accepted_at AS accepted_at, "
+          "       i.created_at AS created_at "
+          "FROM @module.OrgInvite i "
+          "WHERE i.org_id = :org_id AND i.accepted_at IS NULL "
+          "ORDER BY i.created_at DESC"
+      }
+    };
+  }
+
+  // ListPendingInvitesForEmail — invitations waiting for ONE address,
+  // across every organization. Two callers, and they are why the org name
+  // is joined in: the signed-in person listing what they have been
+  // invited to, and SignUp under `invite_only` asking whether this
+  // address may create an account at all.
+  //
+  // The expiry test is in the query, not in a caller: an expired
+  // invitation must not appear in a list, and must not open sign-up
+  // either, and putting the predicate in one place is what keeps those
+  // two answers from drifting apart.
+  rpc ListPendingInvitesForEmail(ListPendingInvitesForEmailReq) returns (ListPendingInvitesForEmailResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_invite";
+    option (w17.db.method) = {
+      ops: {
+        name: "main"
+        dql:
+          "SELECT i.id AS invite_id, "
+          "       i.org_id AS org_id, "
+          "       o.slug AS org_slug, "
+          "       o.name AS org_name, "
+          "       i.role AS role, "
+          "       i.expires_at AS expires_at "
+          "FROM @module.OrgInvite i "
+          "JOIN @module.Organization o ON o.id = i.org_id "
+          "WHERE i.email = :email AND i.accepted_at IS NULL AND i.expires_at > NOW() "
+          "ORDER BY i.created_at DESC"
       }
     };
   }

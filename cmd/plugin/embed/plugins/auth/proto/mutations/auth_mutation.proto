@@ -282,13 +282,17 @@ message ConsumePasswordResetTokenResp {
 
 // UpdateUserPassword — set a user's password_hash (the reset apply). Gated
 // `password_reset` (the only writer of an existing user's password).
+// UNGATED, deliberately. It was tagged `password_reset`, which made the
+// only way to write a password_hash a member of the FORGOTTEN-password
+// flow — so `password_change`, whose whole point is to need no mail
+// channel, could not reach it without dragging one in. The primitive
+// itself is feature-neutral: every activation has User.password_hash,
+// because SignIn reads it.
 message UpdateUserPasswordReq {
-  option (w17.contrib.plugin_feature) = "password_reset";
   string user_id       = 1 [(w17.field) = { type: UUID }];
   string password_hash = 2 [(w17.field) = { type: PASSWORD }];
 }
 message UpdateUserPasswordResp {
-  option (w17.contrib.plugin_feature) = "password_reset";
   string user_id = 1;
 }
 
@@ -740,6 +744,50 @@ message RevokeUserTokenResp {
 // AuthMutation — write primitives. Each method emits exactly
 // one event (event_emit annotations land in a follow-up commit
 // alongside the events/ catalogue).
+// ── org_invite messages ─────────────────────────────────────
+
+message CreateOrgInviteReq {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string org_id     = 1 [(w17.field) = { type: UUID }];
+  string email      = 2 [(w17.field) = { type: EMAIL, max_len: 320 }];
+  string role       = 3 [(w17.field) = { type: SLUG, max_len: 100 }];
+  string invited_by = 4 [(w17.field) = { type: UUID }];
+  google.protobuf.Timestamp expires_at = 5 [(w17.field) = { type: DATETIME }];
+}
+message CreateOrgInviteResp {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  OrgInvite invite = 1;
+}
+
+message MarkOrgInviteAcceptedReq {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string invite_id = 1 [(w17.field) = { type: UUID }];
+  // The accepting account's address. In the WHERE beside the id, so the
+  // statement itself refuses an invitation addressed to somebody else —
+  // the check cannot be forgotten by a caller, because there is no path
+  // that reaches the write without supplying it.
+  string email     = 2 [(w17.field) = { type: EMAIL, max_len: 320 }];
+}
+message MarkOrgInviteAcceptedResp {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  // Empty org_id = nothing matched: expired, already accepted, or
+  // addressed to a different account. One outcome, three causes, and the
+  // handler deliberately does not distinguish them to a caller — telling
+  // an unauthenticated guess which of the three it hit is an oracle.
+  string org_id = 1;
+  string role   = 2;
+}
+
+message DeleteOrgInviteReq {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string invite_id = 1 [(w17.field) = { type: UUID }];
+  string org_id    = 2 [(w17.field) = { type: UUID }];
+}
+message DeleteOrgInviteResp {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string invite_id = 1;
+}
+
 service AuthMutation {
   // CreateUser — INSERT User. The `password_hash` request
   // field carries the already-encoded hash — the plugin's
@@ -1625,7 +1673,6 @@ service AuthMutation {
 
   // UpdateUserPassword — apply a reset: set the user's password_hash.
   rpc UpdateUserPassword(UpdateUserPasswordReq) returns (UpdateUserPasswordResp) {
-    option (w17.contrib.plugin_feature_rpc) = "password_reset";
     option (w17.db.method) = {
       ops: {
         name: "main"
@@ -1956,6 +2003,102 @@ service AuthMutation {
       payload: {
         fields: [
           { key: "token_id", value: "$response.token_id" }
+        ]
+      }
+    };
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // org_invite — the three writes an invitation needs. Reads live
+  // in AuthQuery; the business handler composes them in one distx
+  // transaction so an accepted invite can never leave a membership
+  // without its role grant, or the reverse.
+  // ────────────────────────────────────────────────────────────
+
+  // CreateOrgInvite — record a pending invitation. The partial unique
+  // index on (org_id, email) WHERE accepted_at IS NULL is what makes a
+  // second pending invite for the same address a database refusal rather
+  // than a duplicate row two admins race to create; a CONSUMED invite does
+  // not block a later one, because being removed from an org and invited
+  // back is a normal thing to happen.
+  rpc CreateOrgInvite(CreateOrgInviteReq) returns (CreateOrgInviteResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_invite";
+    option (w17.db.method) = {
+      ops: {
+        name: "main"
+        dql:
+          "INSERT INTO @module.OrgInvite SET "
+          "org_id = :org_id, "
+          "email = :email, "
+          "role = :role, "
+          "invited_by = :invited_by, "
+          "expires_at = :expires_at "
+          "RETURNING id AS invite.id, "
+          "          org_id AS invite.org_id, "
+          "          email AS invite.email, "
+          "          role AS invite.role, "
+          "          invited_by AS invite.invited_by, "
+          "          expires_at AS invite.expires_at, "
+          "          accepted_at AS invite.accepted_at, "
+          "          created_at AS invite.created_at"
+      }
+    };
+    option (w17.event_emit) = {
+      event: "OrgInviteCreated"
+      payload: {
+        fields: [
+          { key: "invite_id",  value: "$response.invite.id" },
+          { key: "org_id",     value: "$response.invite.org_id" },
+          { key: "email",      value: "$response.invite.email" },
+          { key: "role",       value: "$response.invite.role" },
+          { key: "invited_by", value: "$response.invite.invited_by" },
+          { key: "expires_at", value: "$response.invite.expires_at" }
+        ]
+      }
+    };
+  }
+
+  // MarkOrgInviteAccepted — claim a live invitation, single-use, in ONE
+  // statement. The not-yet-accepted and not-expired tests sit in the
+  // WHERE beside the write, exactly as ConsumePasswordResetToken does, so
+  // there is no window between checking an invitation and consuming it.
+  // A replayed, expired or already-accepted invite matches zero rows and
+  // comes back with an empty org_id.
+  rpc MarkOrgInviteAccepted(MarkOrgInviteAcceptedReq) returns (MarkOrgInviteAcceptedResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_invite";
+    option (w17.db.method) = {
+      ops: {
+        name: "main"
+        dql:
+          "UPDATE @module.OrgInvite SET "
+          "accepted_at = NOW() "
+          "WHERE id = :invite_id AND email = :email AND accepted_at IS NULL AND expires_at > NOW() "
+          "RETURNING org_id, role"
+      }
+    };
+  }
+
+  // DeleteOrgInvite — withdraw a PENDING invitation. Scoped by org_id in
+  // the WHERE and not only by id: the handler already knows the caller's
+  // active org, and an id-only delete would let a member of one
+  // organization revoke another's invitation by guessing a uuid.
+  rpc DeleteOrgInvite(DeleteOrgInviteReq) returns (DeleteOrgInviteResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_invite";
+    option (w17.db.method) = {
+      ops: {
+        name: "main"
+        dql:
+          "DELETE FROM @module.OrgInvite "
+          "WHERE id = :invite_id AND org_id = :org_id AND accepted_at IS NULL "
+          "RETURNING id AS invite_id"
+      }
+    };
+    option (w17.event_emit) = {
+      event: "OrgInviteRevoked"
+      payload: {
+        fields: [
+          { key: "invite_id", value: "$response.invite_id" },
+          { key: "org_id",    value: "$request.org_id" }
         ]
       }
     };

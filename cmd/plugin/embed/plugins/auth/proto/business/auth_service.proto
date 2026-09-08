@@ -423,6 +423,105 @@ message RevokeAllDevicesResp {
 // joins the RBAC tables). A future declared-dependency
 // mechanism will make this explicit; today the failure mode is
 // a Go compile error pointing at the missing delegate.
+// ── org members + invitations (business surface) ────────────
+//
+// Every one of these acts in the caller's ACTIVE organization — the one
+// Authenticate resolved from the W17-Org header and VALIDATED against
+// membership. None of them takes an org id from the client, and that is
+// deliberate: an id in the request is a value a handler has to remember
+// to distrust, and the one that is already proven is right there.
+
+message ListOrgMembersReq  { option (w17.contrib.plugin_feature) = "org_membership"; }
+message ListOrgMembersResp {
+  option (w17.contrib.plugin_feature) = "org_membership";
+  repeated OrgMember members = 1;
+}
+message OrgMember {
+  option (w17.contrib.plugin_feature) = "org_membership";
+  string user_id = 1;
+  string email   = 2;
+  string role    = 3;
+  google.protobuf.Timestamp joined_at = 4;
+}
+
+message InviteToOrgReq {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string email = 1 [(w17.field) = { type: EMAIL, max_len: 320 }];
+  // A Role.name from the RBAC catalogue, not free text. Validated to
+  // exist when the invitation is made, so a typo is the inviter's error
+  // at the moment they make it rather than a failure the invitee runs
+  // into days later — and so that accepting can turn it into a real
+  // grant instead of a label with nothing behind it.
+  string role  = 2 [(w17.field) = { type: SLUG, max_len: 100 }];
+}
+message InviteToOrgResp {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  OrgInviteSummary invite = 1;
+}
+
+// OrgInviteSummary — what a list of an org's outstanding invitations
+// shows. Not the storage row: `invited_by` is a uuid nobody recognises,
+// and this surface has no join that would turn it into a name.
+message OrgInviteSummary {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string invite_id = 1;
+  string email     = 2;
+  string role      = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message ListOrgInvitesReq  { option (w17.contrib.plugin_feature) = "org_invite"; }
+message ListOrgInvitesResp {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  repeated OrgInviteSummary invites = 1;
+}
+
+message RevokeOrgInviteReq {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string invite_id = 1 [(w17.field) = { type: UUID }];
+}
+message RevokeOrgInviteResp { option (w17.contrib.plugin_feature) = "org_invite"; }
+
+// MyInvite — an invitation addressed to the CALLER, named by the
+// organization rather than by its id, because this is the list a person
+// decides from.
+message MyInvite {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string invite_id = 1;
+  string org_slug  = 2;
+  string org_name  = 3;
+  string role      = 4;
+  google.protobuf.Timestamp expires_at = 5;
+}
+message ListMyInvitesReq  { option (w17.contrib.plugin_feature) = "org_invite"; }
+message ListMyInvitesResp {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  repeated MyInvite invites = 1;
+}
+
+message AcceptOrgInviteReq {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string invite_id = 1 [(w17.field) = { type: UUID }];
+}
+message AcceptOrgInviteResp {
+  option (w17.contrib.plugin_feature) = "org_invite";
+  string org_id = 1;
+  string role   = 2;
+}
+
+// ── password_change ─────────────────────────────────────────
+
+message ChangePasswordReq {
+  option (w17.contrib.plugin_feature) = "password_change";
+  // The current password IS the proof, which is what makes this feature
+  // independent of any delivery channel. Verified against the stored
+  // hash before anything is written.
+  string current_password = 1 [(w17.field) = { type: PASSWORD }];
+  string new_password     = 2 [(w17.field) = { type: PASSWORD }];
+}
+message ChangePasswordResp { option (w17.contrib.plugin_feature) = "password_change"; }
+
 service AuthService {
   // Service-level tag would cascade to SignIn / SignUp too, but
   // each turnkey has its own opt-in feature tag — the service is
@@ -567,6 +666,49 @@ service AuthService {
   rpc ListMyOrgs(ListMyOrgsReq) returns (ListMyOrgsResp) {
     option (w17.contrib.plugin_feature_rpc) = "org_membership";
   }
+
+  // ────────────────────────────────────────────────────────────
+  // org members + invitations
+  // ────────────────────────────────────────────────────────────
+
+  // ListOrgMembers — who is in the caller's active organization.
+  rpc ListOrgMembers(ListOrgMembersReq) returns (ListOrgMembersResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_membership";
+  }
+
+  // InviteToOrg — invite an address into the active org with a role.
+  rpc InviteToOrg(InviteToOrgReq) returns (InviteToOrgResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_invite";
+  }
+
+  // ListOrgInvites — the active org's outstanding invitations.
+  rpc ListOrgInvites(ListOrgInvitesReq) returns (ListOrgInvitesResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_invite";
+  }
+
+  // RevokeOrgInvite — withdraw one of them.
+  rpc RevokeOrgInvite(RevokeOrgInviteReq) returns (RevokeOrgInviteResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_invite";
+  }
+
+  // ListMyInvites — invitations addressed to the CALLER, in every org.
+  // Not scoped to an active org, and could not be: the point is that the
+  // caller is not a member of those organizations yet.
+  rpc ListMyInvites(ListMyInvitesReq) returns (ListMyInvitesResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_invite";
+  }
+
+  // AcceptOrgInvite — join. One transaction: consume the invitation,
+  // write the membership, and grant the role IN that organization.
+  rpc AcceptOrgInvite(AcceptOrgInviteReq) returns (AcceptOrgInviteResp) {
+    option (w17.contrib.plugin_feature_rpc) = "org_invite";
+  }
+
+  // ChangePassword — rotate the caller's own password. Needs no mail
+  // channel; the current password is the proof.
+  rpc ChangePassword(ChangePasswordReq) returns (ChangePasswordResp) {
+    option (w17.contrib.plugin_feature_rpc) = "password_change";
+  }
 }
 
 // ── password_reset / email_verification business messages (E1) ──
@@ -653,4 +795,5 @@ message ListMyOrgsResp {
   option (w17.contrib.plugin_feature) = "org_membership";
   // Reuses the query-tier view (this proto imports queries/auth_query.proto).
   repeated UserOrg orgs = 1;
+
 }

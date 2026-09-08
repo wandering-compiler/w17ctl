@@ -166,6 +166,9 @@ type AuthServiceHandler struct {
 	// handlers/reset.go / emailverify.go). <= 0 → the file's default.
 	PasswordResetTTLSeconds     int // password_reset_ttl_seconds
 	EmailVerificationTTLSeconds int // email_verification_ttl_seconds
+
+	InviteOnly        bool // require a pending org invitation to sign up (invite_only)
+	OrgInviteTTLHours int  // how long an invitation stays acceptable (org_invite_ttl_hours)
 }
 
 // scopeDecorator augments the AuthResp scope + label maps for an

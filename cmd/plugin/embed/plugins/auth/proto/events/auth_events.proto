@@ -409,3 +409,54 @@ message OrgMembershipRemoved {
 
   string membership_id = 1;
 }
+
+// ── org_invite lifecycle ────────────────────────────────────
+//
+// The plugin DELIVERS nothing, exactly as with PasswordResetRequested and
+// EmailVerificationRequested: it records the invitation and says so on the
+// bus, and a project that wants the invitee to hear about it writes a
+// subscriber. That is what keeps this feature usable on a deployment with
+// no mail channel at all — the invitation still works, it is just told to
+// the person some other way.
+
+message OrgInviteCreated {
+  option (w17.event) = {
+    channel: "events"
+    topic:   "auth.org_invite.created"
+  };
+  option (w17.contrib.plugin_feature) = "org_invite";
+
+  string invite_id  = 1;
+  string org_id     = 2;
+  string email      = 3; // delivery hint — the address invited
+  string role       = 4;
+  string invited_by = 5;
+  google.protobuf.Timestamp expires_at = 6;
+}
+
+message OrgInviteAccepted {
+  option (w17.event) = {
+    channel: "events"
+    topic:   "auth.org_invite.accepted"
+  };
+  option (w17.contrib.plugin_feature) = "org_invite";
+
+  string invite_id = 1;
+  string org_id    = 2;
+  // The account that accepted. Present here and absent from the invitation
+  // itself, which is the whole shape of this feature: an invitation names
+  // an address, an acceptance names a user.
+  string user_id   = 3;
+  string role      = 4;
+}
+
+message OrgInviteRevoked {
+  option (w17.event) = {
+    channel: "events"
+    topic:   "auth.org_invite.revoked"
+  };
+  option (w17.contrib.plugin_feature) = "org_invite";
+
+  string invite_id = 1;
+  string org_id    = 2;
+}

@@ -96,6 +96,11 @@ type ClientAddCmd struct {
 	Language   string `name:"language"   placeholder:"NAME" help:"Skip prompt for language. One of: typescript, javascript."`
 	OutputRoot string `name:"output-root" placeholder:"PATH" help:"Skip prompt for output root."`
 	Wire       string `name:"wire"        placeholder:"NAME" help:"Skip prompt for wire format. One of: json, protobuf, unspecified."`
+	// RestSurface scopes the client to one `(w17.rest_api)` surface by
+	// name. Empty keeps the whole-project shape, where every method must
+	// be REST-addressable — right for a project whose entire API is its
+	// REST API, and impossible for one that keeps most of itself on gRPC.
+	RestSurface string `name:"rest-surface" placeholder:"NAME" help:"Scope the client to one (w17.rest_api) surface by its name (e.g. \"public\"). Empty = the whole project, which requires every method to have a REST route."`
 }
 
 // clientFrameworks / clientLanguages / clientWires drive the
@@ -174,10 +179,11 @@ func (c *ClientAddCmd) Run() error {
 	newBytes, err := core.EditLock(c.Console, lockBytes, &codegenpb.LockEditIntent{
 		Intent: &codegenpb.LockEditIntent_AddClientStub{
 			AddClientStub: &codegenpb.AddClientStubIntent{
-				Framework:  framework,
-				Language:   language,
-				OutputRoot: outputRoot,
-				Wire:       wire,
+				RestSurface: strings.TrimSpace(c.RestSurface),
+				Framework:   framework,
+				Language:    language,
+				OutputRoot:  outputRoot,
+				Wire:        wire,
 			},
 		},
 	})

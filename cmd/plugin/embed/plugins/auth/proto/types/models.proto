@@ -744,3 +744,62 @@ message OrgMembership {
   string role    = 4 [(w17.field) = { type: CHAR, max_len: 32 }];
   google.protobuf.Timestamp created_at = 5 [(w17.field) = { type: DATETIME, default_auto: NOW, immutable: true }];
 }
+
+// OrgInvite — a pending invitation for an EMAIL to join an Organization
+// with a named role.
+//
+// Keyed on (org, email), NOT on a user id, and that is the whole point.
+// PasswordResetToken and EmailVerificationToken both hang off `user_id`
+// because the person is already known; an invitation is the one flow where
+// they may not exist yet. Anchoring on the address collapses "invite an
+// existing user" and "invite someone who has to register" into ONE object
+// with two endings, decided at acceptance rather than at creation — which is
+// also the only correct time to decide it, since the invitee can register
+// on their own between the two.
+//
+// No token column, deliberately. The sibling token tables carry a hashed
+// secret because possession of the secret IS the proof; here the proof is
+// possession of the ADDRESS, checked at acceptance against the authenticated
+// account's email. That leaves a window — someone who guesses an invited
+// address can register it first — which closes when `email_verification` is
+// enabled, and is accepted until then rather than papered over with a secret
+// that would have to be delivered out of band anyway.
+//
+// `role` is a Role.name, not free text: accepting writes BOTH the
+// OrgMembership row (carrying this name as its label) and the UserRole grant
+// scoped to this org, so an invited member arrives with permissions rather
+// than with a label and nothing behind it.
+message OrgInvite {
+  option (w17.db.table) = {
+    indexes: [
+      // One PENDING invite per (org, email). Partial, because a consumed
+      // invite must not block a later re-invite — the same person can be
+      // removed from an org and invited back. PG + SQLite only, which is
+      // the support surface this plugin's other `where:` indexes already
+      // assume.
+      { unique: true, fields: [{ name: "org_id" }, { name: "email" }],
+        where: "accepted_at IS NULL" }
+    ]
+  };
+  option (w17.contrib.plugin_feature) = "org_invite";
+
+  string id      = 1 [(w17.field) = { type: UUID, pk: true, default_auto: UUID_V7 }];
+  string org_id  = 2 [(w17.field) = { type: UUID }, (w17.db.column) = { index: true }];
+  // The invited address. Stored normalized (lower-cased) by the handler, the
+  // same normalization SignIn applies, or "Someone@x" and "someone@x" would
+  // be two different invitations and only one of them would ever match.
+  string email   = 3 [(w17.field) = { type: EMAIL, max_len: 320 }, (w17.db.column) = { index: true }];
+  // The role the invitee gets in this org — a Role.name, validated to exist
+  // when the invite is created rather than when it is accepted, so a typo is
+  // the inviter's error at the moment they make it and not a failure the
+  // invitee sees days later.
+  string role    = 4 [(w17.field) = { type: SLUG, max_len: 100 }];
+  // Who sent it. Kept for the invite list, and because an org that cannot
+  // see who admitted a member cannot audit its own membership.
+  string invited_by = 5 [(w17.field) = { type: UUID }];
+  google.protobuf.Timestamp expires_at = 6 [(w17.field) = { type: DATETIME }];
+  // NULL while pending. Set (not deleted) on acceptance so the row stays as
+  // the record of how that membership came to exist.
+  google.protobuf.Timestamp accepted_at = 7 [(w17.field) = { type: DATETIME, null: true }];
+  google.protobuf.Timestamp created_at  = 8 [(w17.field) = { type: DATETIME, default_auto: NOW, immutable: true }];
+}

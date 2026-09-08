@@ -394,6 +394,7 @@ message LockEditIntent {
     InstallPluginIntent install_plugin = 16;
     SetPluginVersionsIntent set_plugin_versions = 17;
     AdoptProjectIntent adopt_project = 18;
+    SetSdkVersionIntent set_sdk_version = 19;
   }
 }
 
@@ -450,6 +451,22 @@ message InstallPluginIntent {
 // already-installed plugins in place (the `w17ctl plugin update` write —
 // batched so a `--all` run re-signs once). The server rejects a name that
 // isn't installed.
+// SetSdkVersionIntent sets (or clears) `lock.sdk_version` — the ONE version
+// of the public Go runtime every generated module of the project requires.
+//
+// An intent rather than a client-side edit because the lock is SIGNED by the
+// console: the client uploads bytes, the console validates, writes and
+// re-signs. That is also where the version's SHAPE is checked, for the same
+// reason every other rule lives server-side — a dumb client that validated
+// this would be holding a rule about the Go module ecosystem.
+//
+// Empty version CLEARS the pin, restoring the zero-pseudo-version behaviour.
+// Clearing has to be expressible: a field you can only ever set is a field
+// you cannot back out of after a bad pin.
+message SetSdkVersionIntent {
+  string version = 1;
+}
+
 message SetPluginVersionsIntent {
   repeated PluginVersion plugins = 1;
 }
@@ -583,6 +600,11 @@ message AddClientStubIntent {
   string language = 2;
   string output_root = 3;
   string wire = 4;
+  // rest_surface scopes the client to one `(w17.rest_api)` surface by its
+  // `name`. Empty keeps the whole-project shape, where every method must
+  // be REST-addressable. See ClientStub.rest_surface in the lock proto for
+  // why a project can need the narrowing.
+  string rest_surface = 5;
 }
 
 // BootstrapLockIntent builds a brand-new project lock from the `w17ctl init`
@@ -856,6 +878,18 @@ message GenerateBusinessRequest {
   // The daemon's own env is empty, so without this a fresh co-dev business
   // bundle won't build. Empty == published-module mode.
   string wc_path = 8;
+
+  // sdk_go_version is the project's declared runtime pin
+  // (`lock.sdk_version`), so the business bundle's go.mod requires the
+  // SAME sdk/go as every other module of the project.
+  //
+  // It has to be threaded rather than derived: this generator runs staged
+  // and reads its other pins off the project's go.mod ON DISK, which
+  // answers what the project currently requires — not what it should. The
+  // difference is the whole point of the field.
+  //
+  // Empty ⇒ the zero pseudo-version, unchanged from before.
+  string sdk_go_version = 9;
 }
 
 // BusinessBundle mirrors the lock's business_bundles[] entry (the domains
@@ -1474,6 +1508,27 @@ message DepVersions {
   // code pairs mcp-go with sdk/go/lib/mcp, so the version that
   // must agree is the SDK's.
   string mcp_go = 12;         // github.com/mark3labs/mcp-go
+
+  // sdk_go — the version of the PUBLIC runtime every module of one
+  // project requires: `github.com/wandering-compiler/sdk/go`.
+  //
+  // Unlike every pin above, this one does NOT come from a manifest the
+  // compiler embeds. It comes from the project's lock (`sdk_version`),
+  // and the console cannot supply it: the consumer-visible version is a
+  // pseudo-version minted by the SDK's publish workflow into a separate
+  // public mirror repo, timestamped at the moment of publish rather than
+  // at the source commit, so a console built from a given commit has no
+  // way to know it. See scripts/publish-sdk.sh.
+  //
+  // It rides HERE rather than being threaded separately because this
+  // message is already the one carrier every go.mod emitter receives —
+  // and the whole point is that the four emit sites cannot disagree. A
+  // second channel would be a second chance to drift.
+  //
+  // Empty ⇒ the previous behaviour verbatim: the zero pseudo-version
+  // `v0.0.0-00010101000000-000000000000`, which a consumer's resolver
+  // then moves independently per module.
+  string sdk_go = 13;         // github.com/wandering-compiler/sdk/go
 }
 
 // GatewayTarget drives the per-binary REST gateway emit// (the compiler's gateway generator — translates incoming
