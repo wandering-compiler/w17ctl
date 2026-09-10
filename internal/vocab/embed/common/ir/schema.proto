@@ -998,6 +998,12 @@ enum SemType {
   // docs/specs/storage/password-field.md.
   SEM_PASSWORD = 66;
 
+  // SEM_SECRET — an opaque secret stored exactly as issued (OAuth client
+  // secret, API token, signing key). Same storage as SEM_PASSWORD and the
+  // same admin masking; NOT a hash, so fixtures seed it verbatim and
+  // `unique` / `max_len` are allowed. See (w17.field).type = SECRET.
+  SEM_SECRET = 67;
+
   // Numeric carriers.
   SEM_NUMBER = 10;
   SEM_ID = 11;

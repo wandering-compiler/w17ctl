@@ -17,6 +17,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/devconfig"
 	"github.com/wandering-compiler/w17ctl/internal/docker"
+	"github.com/wandering-compiler/w17ctl/internal/protoscan"
 	"github.com/wandering-compiler/w17ctl/internal/reconcile"
 	"github.com/wandering-compiler/w17ctl/internal/remotecompose"
 	"github.com/wandering-compiler/w17ctl/internal/vocab"
@@ -168,7 +169,7 @@ func (c *BuildCmd) resolveProtos(root string) (protos, imports []string, cleanup
 		protoDir = view.GetProtoDir()
 	}
 	base := filepath.Join(root, protoDir)
-	models, modules, err := discoverModelProtos(base)
+	models, modules, err := protoscan.DiscoverModelProtos(base)
 	if err != nil {
 		return nil, nil, cleanup, fmt.Errorf("stack build: discover model protos: %w", err)
 	}

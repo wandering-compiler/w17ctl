@@ -15,6 +15,7 @@ package fixtures
 // registry client), so there is no console/client (registrypb)
 // dependency on this path.
 type Cmd struct {
-	Apply ApplyCmd `cmd:"" help:"Apply a console-rendered fixture seed (parameterized upserts) to a connection's target store (DSN via W17_TARGET_<CONN> env). Fetches the seed from the console, executes all statements in one transaction."`
-	Fetch FetchCmd `cmd:"" help:"Download stored fixtures as editable JSON (one <out>/<domain>/<name>.json per fixture). Optional --domain scope. The authoring-side sync."`
+	Apply  ApplyCmd  `cmd:"" help:"Apply a console-rendered fixture seed (parameterized upserts) to a connection's target store (DSN via W17_TARGET_<CONN> env). Fetches the seed from the console, executes all statements in one transaction."`
+	Render RenderCmd `cmd:"" help:"Render the working tree's fixtures into the artefact a generated binary applies (<out>/<domain>/<name>.seed.json). The authoring-time half of '<binary> fixtures apply' — run it when a fixture changes; the output is generated and belongs in the diff."`
+	Fetch  FetchCmd  `cmd:"" help:"Download stored fixtures as editable JSON (one <out>/<domain>/<name>.json per fixture). Optional --domain scope. The authoring-side sync."`
 }

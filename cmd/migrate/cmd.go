@@ -33,6 +33,10 @@ import (
 //	                     collapsed rows point at (they are KEPT, which
 //	                     is what separates this from reset)
 //
+// FETCH, APPLY AND ROLLBACK ARE NOT HERE. They belong to the generated binary
+// that owns the database — see the note at the top of apply.go. This client
+// generates migrations; it does not write to a database.
+//
 // The console is the single source of truth: it diffs the schema and
 // emits the migrations. The old offline migrator tools (a local SQL
 // `generate`, `verify`, `inspect`) are gone — there is no offline
@@ -42,10 +46,6 @@ type Cmd struct {
 	Generate      GenerateCmd      `cmd:"" help:"Compile the proto schema and push it to the console, which plans + stores the SQL migrations and pins the lock target. Auto-detects initial (create) vs revision (update + diff); --initial forces the initial push."`
 	List          ListCmd          `cmd:"" help:"List migrations stored on the console for a project. Optional connection-name filter + pagination."`
 	PushRaw       PushRawCmd       `cmd:"" name:"push-raw" help:"Push a hand-authored YAML data migration body to console (escape hatch for TRANSFORM_FIELD + complex transitions)."`
-	Fetch         FetchCmd         `cmd:"" help:"Download every migration up to each connection's pinned target from the console, ready for apply. Online step; everything after 'apply' is offline."`
-	Apply         ApplyCmd         `cmd:"" help:"Apply pending migrations to each connection's target store (DSN via W17_TARGET_<CONN> env). Offline; reads on-disk artifacts + the DB-side wc_migrations table."`
-	Adopt         AdoptCmd         `cmd:"" help:"Bring a database that ALREADY has the schema under migration management: record every migration up to the pinned target without running its DDL. Refuses unless the database proves it holds what those migrations introduce, and refuses outright if it is already managed. Offline; DSN via W17_TARGET_<CONN> env."`
-	Rollback      RollbackCmd      `cmd:"" help:"Roll back applied migrations newer than --to, in reverse, against each connection's target store. Offline; DSN via W17_TARGET_<CONN> env."`
 	Status        StatusCmd        `cmd:"" help:"Show each connection's pinned target migration + how many fetched artifacts are on disk. Offline, read-only."`
 	Reset         ResetCmd         `cmd:"" help:"DEV-ONLY destructive recreate (pre-prod): drop the local DB volume, discard the project's migration history on the console, and derive a fresh baseline from the proto. ⚠️ Loses ALL data + every hand-authored data migration; not stage-gated."`
 	VerifyHistory VerifyHistoryCmd `cmd:"" name:"verify-history" help:"Ask the console whether this project's recorded migration history reproduces its stored schema — the clean-gate. Read-only. Answers consistent / drifted / unknown; unknown means no evidence (a project pushed before revisions were recorded), not drift."`

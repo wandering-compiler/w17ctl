@@ -863,6 +863,37 @@ enum Type {
   // the wire. Spec: docs/specs/storage/password-field.md.
   PASSWORD = 66;
 
+  // SECRET — an opaque secret stored EXACTLY as issued: an OAuth client
+  // secret, an API token, a webhook signing key. Not a password.
+  //
+  // The distinction PASSWORD could not express, and the reason this type
+  // exists. PASSWORD means "a hash of a credential we VERIFY against", and
+  // every rule it carries follows from that: fixtures refuse a value that is
+  // not PHC-encoded, `unique` and `max_len` are refused because a salted hash
+  // has neither a stable identity nor a known width. A secret is none of
+  // those things — it is presented, not verified, so the stored bytes ARE the
+  // value.
+  //
+  // What it takes FROM password, because the reason is the same:
+  //   - storage TEXT (PG / SQLite) / VARCHAR(N) (MySQL) — the same column
+  //   - excluded from the admin's default list columns and detail-form
+  //     fields; the detail form masks it
+  //   - `format: password` in OpenAPI, the write-only/masked-input hint
+  //
+  // What it does NOT take:
+  //   - the PHC requirement in fixtures. Seeding a secret verbatim is the
+  //     only correct thing to do with one.
+  //   - the `unique` / `max_len` refusals. A token is 64 characters wide and
+  //     is looked up by value; both are meaningful here and both are used by
+  //     the auth plugin's UserToken.
+  //
+  // Pairs with `default_auto: CRYPTO_RANDOM`, which is how a secret should
+  // come into existence in the first place.
+  //
+  // NOT hidden from REST JSON responses — same as PASSWORD. Keep it off the
+  // response message if you do not want it on the wire.
+  SECRET = 67;
+
   // Numeric carriers (carrier: int32 / int64 / double — see D2 table)
   NUMBER     = 10;
   ID         = 11;

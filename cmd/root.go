@@ -35,6 +35,7 @@ import (
 	projectcmd "github.com/wandering-compiler/w17ctl/cmd/project"
 	pushcmd "github.com/wandering-compiler/w17ctl/cmd/push"
 	reviewcmd "github.com/wandering-compiler/w17ctl/cmd/review"
+	schemacmd "github.com/wandering-compiler/w17ctl/cmd/schema"
 	sdkcmd "github.com/wandering-compiler/w17ctl/cmd/sdk"
 	secrets "github.com/wandering-compiler/w17ctl/cmd/secrets"
 	stackcmd "github.com/wandering-compiler/w17ctl/cmd/stack"
@@ -105,6 +106,13 @@ var root struct {
 	// against a local target store. The thin-client successor to
 	// w17migrate's apply-fixtures.
 	Fixtures fixturescmd.Cmd `cmd:"" help:"Apply console-rendered fixture seeds (parameterized upserts) to a connection's target store (DSN via W17_TARGET_<CONN> env). See 'fixtures --help'."`
+
+	// Schema — render the DEV schema plan into the artefact a generated
+	// binary applies. The authoring half of `<binary> schema apply`, and the
+	// replacement for the db/init bootstrap: that ran only on a FRESH
+	// postgres volume, so a schema change never reached a database that
+	// already existed.
+	Schema schemacmd.Cmd `cmd:"" help:"Render the project's DEV schema plan into the artefact a generated binary applies. See 'schema --help'."`
 
 	// --- Console state (server-side, PG-backed) ---
 	// Initiatives + snapshots (console v2 part B substrate). Git-sync:

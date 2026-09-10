@@ -763,6 +763,7 @@ message RenderProjectScaffoldRequest {
   repeated ProtoFile files = 1;          // protos, for sandbox discovery
   bytes lock = 2;                        // proto-marshalled w17.console.lock.Lock
   repeated string bundle_includes = 3;   // services-dir-relative compose.yaml paths
+
 }
 
 // MergePoRequest carries the freshly-scaffolded .po + the existing
