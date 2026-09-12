@@ -24,11 +24,11 @@ import (
 type ClientCmd struct {
 	Add      ClientAddCmd      `cmd:"" help:"Wizard — append a new generated-client entry to the project's lock. Prompts for framework, language, output_root, and wire format."`
 	List     ClientListCmd     `cmd:"" help:"List the generated-client entries declared in the lock."`
-	Generate ClientGenerateCmd `cmd:"" help:"Generate the FE client tree(s) declared in generated_code.clients[] (formerly the standalone wcclient binary)."`
+	Generate ClientGenerateCmd `cmd:"" help:"Generate the FE client tree(s) declared in generated_code.clients[] (formerly the standalone w17client binary)."`
 }
 
 // ClientGenerateCmd implements `w17ctl target client generate` — the FE
-// client codegen formerly shipped as the standalone `wcclient` binary. As
+// client codegen formerly shipped as the standalone `w17client` binary. As
 // a thin client it uploads the proto set + the signed lock to the
 // console's GenerateClient RPC, which runs the generator server-side, and
 // writes the returned trees under each client's output_root (thin-client
@@ -74,7 +74,7 @@ func (c *ClientGenerateCmd) Run() error {
 //
 //  1. Framework — pick from CORE / REACT / REACT_NATIVE / VUE.
 //  2. Language — pick from TYPESCRIPT / JAVASCRIPT.
-//  3. Output root — project-relative path the wcclient binary
+//  3. Output root — project-relative path the w17client binary
 //     writes generated files under (convention: `ui/w17/web-client`
 //     for web, `ui/w17/mobile-client` for RN).
 //  4. Wire format — pick from JSON / PROTOBUF / UNSPECIFIED

@@ -28,6 +28,31 @@ func LockProjectIDBestEffort() string {
 	return lk.ProjectID
 }
 
+// LockOrgIDBestEffort reads org_id from the project's lock.
+//
+// This is what makes the DIRECTORY decide which organization a command acts
+// in. The alternative — and what happened before — is one default per console
+// in ~/.w17/auth.yaml, shared by every checkout on the machine: two projects
+// in two organizations meant remembering to switch, and forgetting was silent,
+// because the console validates the header against MEMBERSHIP rather than
+// against the project. Someone in both organizations was not refused; the
+// write simply landed in the other one.
+//
+// Best-effort by design: outside a project, or on a lock the console has not
+// stamped yet, the answer is "" and the caller falls back to the machine
+// default. A command run outside any project still has to work.
+func LockOrgIDBestEffort() string {
+	root, err := FindProjectRoot()
+	if err != nil {
+		return ""
+	}
+	lk, err := lockfile.Load(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil {
+		return ""
+	}
+	return lk.OrgID
+}
+
 // FindProjectRootFn defaults to the real walk-up; tests override it.
 var FindProjectRootFn = realFindProjectRoot
 

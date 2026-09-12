@@ -42,7 +42,7 @@ const DefaultGenDir = "srcgo"
 //     filter), so it stays on the private org path forever.
 var (
 	SdkModuleBase   = "github.com/wandering-compiler"
-	SrcgoModuleBase = "github.com/MrS1lentcz/wandering-compiler"
+	SrcgoModuleBase = "github.com/wandering-compiler/platform"
 )
 
 // ClientCtx is the default per-call deadline for console RPCs.

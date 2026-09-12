@@ -55,5 +55,5 @@ func ResolveConsoleAddr(flagValue string) (string, error) {
 	if DefaultConsoleAddr != "" {
 		return DefaultConsoleAddr, nil
 	}
-	return "", fmt.Errorf("no console address configured — log in with `w17ctl login <host>`, pass --console HOST:PORT, set W17_CONSOLE_ADDR, or rebuild with -ldflags \"-X github.com/MrS1lentcz/wandering-compiler/w17ctl/internal/core.DefaultConsoleAddr=...\"")
+	return "", fmt.Errorf("no console address configured — log in with `w17ctl login <host>`, pass --console HOST:PORT, set W17_CONSOLE_ADDR, or rebuild with -ldflags \"-X github.com/wandering-compiler/platform/w17ctl/internal/core.DefaultConsoleAddr=...\"")
 }

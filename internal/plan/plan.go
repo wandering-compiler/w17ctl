@@ -27,7 +27,12 @@ import (
 // base→current (prev/curr IR, as opaque bytes). base may be nil (brand-new
 // initiative → full create). Returns the rendered per-connection migration
 // plan (empty-diff buckets omitted by the engine).
-func PlanMigration(base, current []byte) (*applyplanpb.DevApplyPlan, error) {
+// baselines, when non-empty, pin the applied-ledger row each connection's
+// freshly built database must record. Only `schema render` passes them: it
+// produces the artefact a DEPLOYED database is built from, and that database
+// is the one a deploy gate later inspects. The dev diff-apply below passes
+// none — it reconciles a developer's local store, which nothing gates.
+func PlanMigration(base, current []byte, baselines []*codegenpb.PlanBaseline) (*applyplanpb.DevApplyPlan, error) {
 	addr, err := core.ResolveConsoleAddr("")
 	if err != nil {
 		return nil, err
@@ -40,7 +45,7 @@ func PlanMigration(base, current []byte) (*applyplanpb.DevApplyPlan, error) {
 
 	ctx, cancel := core.ClientCtx()
 	defer cancel()
-	resp, err := cl.Plan(ctx, &codegenpb.PlanIRRequest{Base: base, Head: current})
+	resp, err := cl.Plan(ctx, &codegenpb.PlanIRRequest{Base: base, Head: current, Baselines: baselines})
 	if err != nil {
 		return nil, fmt.Errorf("migration plan: %w", err)
 	}
@@ -76,7 +81,7 @@ func DevPlanAndApply(ctx context.Context, base, current []byte, applierFor migra
 		}
 	}
 
-	plan, err := PlanMigration(base, current)
+	plan, err := PlanMigration(base, current, nil)
 	if err != nil {
 		return nil, fmt.Errorf("devapply: plan: %w", err)
 	}

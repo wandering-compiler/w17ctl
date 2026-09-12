@@ -19,6 +19,6 @@ package plugin
 type Cmd struct {
 	List    ListCmd    `cmd:"" help:"List the console's plugin catalogue + each plugin's install state in this project's lock."`
 	Install InstallCmd `cmd:"" help:"Install one plugin from the console's catalogue into the project. Refuses URLs (v1 supports name-only)."`
-	Update  UpdateCmd  `cmd:"" help:"Refresh one or every installed plugin's on-disk tree from the embedded catalog. Updates the recorded version in the lock."`
+	Update  UpdateCmd  `cmd:"" help:"Refresh one or every installed plugin's on-disk tree from the CONSOLE's catalogue (FetchPlugin), not from this binary's embedded copy. Updates the recorded version in the lock."`
 	GenPb   GenPbCmd   `cmd:"" name:"gen-pb" help:"Regenerate a plugin's standalone src/gen/pb from its proto/ (author-side dev/test loop; not used by project codegen)."`
 }

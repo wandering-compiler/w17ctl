@@ -270,7 +270,7 @@ func Run(console string, force bool) error {
 		return fmt.Errorf("no .proto files found under %s", filepath.Join(root, protoDir))
 	}
 
-	// dep_versions + the gen Go tree + wc_path are the ONLY inputs the server
+	// dep_versions + the gen Go tree + w17_path are the ONLY inputs the server
 	// can't see: the consumer's pinned library versions (read from the local
 	// go.mod), the hand-written Go tree the project-map's cross-domain edges
 	// parse, and the co-dev W17_WANDERING_COMPILER_PATH replace-dir env.
@@ -293,7 +293,7 @@ func Run(console string, force bool) error {
 		GenDir:      genDir,
 		ServicesDir: servicesDir,
 		DepVersions: depVersions,
-		WcPath:      strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/"),
+		W17Path:     strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/"),
 		Force:       force,
 		GenFiles:    readGenGoFiles(root, genDir),
 		LockYaml:    lockYaml,
@@ -1079,11 +1079,11 @@ func realReadDepVersions(root, genDir string) (*codegenpb.DepVersions, error) {
 		return nil, err
 	}
 	var secondary map[string]string
-	if wcPath := strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/"); wcPath != "" {
+	if w17Path := strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/"); w17Path != "" {
 		// Best-effort: a missing/unreadable tool go.mod just leaves
 		// the fallback empty (the validator surfaces any still-unset
 		// required version with a clear message).
-		secondary, _ = parseGoModRequires(filepath.Join(root, wcPath, "srcgo", "go.mod"))
+		secondary, _ = parseGoModRequires(filepath.Join(root, w17Path, "srcgo", "go.mod"))
 	}
 	pick := func(mod string) string {
 		if v := primary[mod]; v != "" {

@@ -442,7 +442,7 @@ message LockEditIntent {
 // defaults would silently lose exactly what makes reconstruction impossible by
 // hand.
 //
-// NOT related to `wc acl generate --adopt-lineage`, which waives a SIGNATURE
+// NOT related to `w17ctl acl generate --adopt-lineage`, which waives a SIGNATURE
 // check on a permission allocation. This one changes a field and re-signs
 // normally; nothing is waived.
 message AdoptProjectIntent {
@@ -867,11 +867,11 @@ message GenerateE2eRequest {
   // a committed stress_gen_test.go lingers → the e2erunner bundle won't compile.
   // Staged (excluded from the output) so the runner regenerates consistently.
   repeated ProtoFile e2e_inputs = 6;
-  // WcPath threads W17_WANDERING_COMPILER_PATH (project-root-relative) so the
+  // W17Path threads W17_WANDERING_COMPILER_PATH (project-root-relative) so the
   // e2erunner go.mod gets its co-dev sdk/go replace. The daemon's own env is
   // empty, so without this a fresh co-dev e2erunner won't build. Empty ==
   // published-module mode.
-  string wc_path = 7;
+  string w17_path = 7;
 }
 
 message GenerateProjectMapRequest {
@@ -895,11 +895,11 @@ message GenerateBusinessRequest {
   // grpc version. Empty is tolerated (the generator falls back).
   string go_mod = 6;
   repeated BusinessBundle bundles = 7;
-  // WcPath threads W17_WANDERING_COMPILER_PATH (project-root-relative) so the
+  // W17Path threads W17_WANDERING_COMPILER_PATH (project-root-relative) so the
   // bundle go.mod gets its co-dev sdk/go replace.
   // The daemon's own env is empty, so without this a fresh co-dev business
   // bundle won't build. Empty == published-module mode.
-  string wc_path = 8;
+  string w17_path = 8;
 
   // sdk_go_version is the project's declared runtime pin
   // (`lock.sdk_version`), so the business bundle's go.mod requires the
@@ -997,11 +997,11 @@ message GenerateEventbusRequest {
   // (lock's services_dir; the client + server must agree so the returned
   // relative paths land in the right place). Empty == "w17/services".
   string services_dir = 6;
-  // WcPath threads W17_WANDERING_COMPILER_PATH (project-root-relative) so the
+  // W17Path threads W17_WANDERING_COMPILER_PATH (project-root-relative) so the
   // bundle go.mod gets its co-dev sdk/go replace.
   // The daemon's own env is empty, so without this a fresh co-dev eventbus
   // bundle won't build. Empty == published-module mode.
-  string wc_path = 7;
+  string w17_path = 7;
 }
 
 // The stage-run-collect generator RPCs used to share a `GeneratedFiles`
@@ -1025,7 +1025,7 @@ message GenerateProjectRequest {
   string gen_dir = 4;             // empty == "srcgo"
   string services_dir = 5;        // IGNORED server-side: GenerateProject derives services_dir from the lock (lock.EffectiveServicesDir). The client sends the same lock-derived value; kept on the wire for symmetry with gen_dir / future use.
   DepVersions dep_versions = 6;   // versions read from the local go.mod
-  string wc_path = 7;             // W17_WANDERING_COMPILER_PATH (co-dev replace dirs); empty == published-module mode
+  string w17_path = 7;             // W17_WANDERING_COMPILER_PATH (co-dev replace dirs); empty == published-module mode
   bool force = 8;                 // RESERVED: the server ignores this today — `--force` is a purely client-side collision concern (the client overwrites existing files in its own apply loop). Kept on the wire for a future server-side skip-if-unchanged gate.
 
   // GenFiles is the project's current generated+hand-written Go tree under
@@ -1213,6 +1213,33 @@ message PlanIRRequest {
   bytes base = 1;
   // head is the IR after the change. Empty = teardown.
   bytes head = 2;
+  // baselines pins, per connection, the migration a database built from this
+  // plan must RECORD in its applied ledger. Read straight off the caller's
+  // lock, which is also what the deploy gate reads — one source, so the row
+  // written and the row checked for cannot name different migrations.
+  //
+  // Optional and per-connection: a connection absent from this list gets an
+  // empty `baseline_sql` and records nothing. The dev diff-apply path
+  // (`stack build`) sends none — it reconciles a developer's local store,
+  // which no deploy gate ever inspects.
+  repeated PlanBaseline baselines = 3;
+}
+
+// PlanBaseline is one connection's ledger pin, mirroring the two lock fields
+// it is copied from.
+message PlanBaseline {
+  // connection is the lock connection NAME. An entry naming a connection the
+  // plan has no migration for is ignored rather than refused: a lock may pin
+  // connections whose schema this plan does not build.
+  string connection = 1;
+  // migration_id is the lock's `target_migration_id` — the id the deploy gate
+  // looks for in w17_migrations.
+  string migration_id = 2;
+  // content_sha256 is the lock's `target_content_sha256`, HEX-encoded exactly
+  // as the lock spells it. Hex rather than bytes so the client copies the
+  // field through verbatim and only the server, which owns the per-dialect
+  // literal syntax, decides how a hash is written down.
+  string content_sha256 = 3;
 }
 
 // PlanIRResponse wraps the rendered migration plan.
@@ -1476,7 +1503,7 @@ message ReplaceDirectives {
   // bundle resolves all parent-project types through its own
   // src/pb subtree.
   //
-  // The caller (e2egen / wc CLI) is responsible for actually
+  // The caller (e2egen / w17gen CLI) is responsible for actually
   // populating each bundle's `src/pb/` subtree via a
   // per-bundle protoc invocation (e2egen's `protocBundle`
   // helper does this). Without that step the bundle's

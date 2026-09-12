@@ -4,7 +4,7 @@ package w17.common.ir;
 
 import "w17/pg/module.proto";  // w17.pg.CustomType — D36 registry
 
-option go_package = "github.com/MrS1lentcz/wandering-compiler/srcgo/pb/common/ir;irpb";
+option go_package = "github.com/wandering-compiler/platform/srcgo/pb/common/ir;irpb";
 
 // Compiler-shared schema IR. Produced by srcgo/domains/migrator/ir.Build,
 // consumed by:
@@ -477,7 +477,7 @@ message Column {
 
   // Opaque SQL expression from (w17.db.column).generated_expr (D18).
   // When non-empty the column emits as
-  // `GENERATED ALWAYS AS (<expr>) STORED` — wc treats the body as
+  // `GENERATED ALWAYS AS (<expr>) STORED` — w17gen treats the body as
   // opaque (same contract as RawCheck.expr / RawIndex.body). IR-time
   // validation in ir.Build enforces the incompatible-field set
   // (default / pk / fk) before the expression is carried forward.
@@ -792,7 +792,7 @@ message ForeignKey {
   // decided which table this reference means (T1-4 pass #13, C-F1).
   //
   // `target_table` is a SQL name, and SQL names are unique per
-  // (connection, namespace) — not across the unified schema one `wc generate`
+  // (connection, namespace) — not across the unified schema one `w17ctl generate`
   // builds. One plugin activated by two domains stages its tables twice, so
   // seven resolvers downstream, each scanning for a bare name, could each bind
   // a different `users`; the reference itself said nothing about which.

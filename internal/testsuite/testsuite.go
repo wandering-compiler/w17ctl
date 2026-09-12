@@ -63,8 +63,34 @@ type Config struct {
 var (
 	lookPath  = exec.LookPath
 	runCmd    = func(cmd *exec.Cmd) error { return cmd.Run() }
-	outputCmd = func(cmd *exec.Cmd) ([]byte, error) { return cmd.Output() }
+	outputCmd = func(cmd *exec.Cmd) ([]byte, error) { return withStderr(cmd.Output()) }
 )
+
+// withStderr folds a failed command's STDERR into its error.
+//
+// `cmd.Output()` already captures stderr — into ExitError.Stderr, which
+// nothing read. So a compose failure reached the operator as
+// `docker compose config: exit status 1` while the sentence explaining it
+// ("services.core-server conflicts with imported resource") sat in the error
+// value, discarded. deinvo spent a CI round re-running `docker compose config`
+// by hand as a separate step to read a message this process had already been
+// handed (2026-09-12).
+//
+// Trimmed and bounded: compose can emit a lot, and an error is read in a
+// terminal. The head is where the cause is — later lines are usually the same
+// failure restated per file.
+func withStderr(out []byte, err error) ([]byte, error) {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || len(ee.Stderr) == 0 {
+		return out, err
+	}
+	msg := strings.TrimSpace(string(ee.Stderr))
+	const max = 2000
+	if len(msg) > max {
+		msg = msg[:max] + "\n  … (stderr truncated)"
+	}
+	return out, fmt.Errorf("%w\n%s", err, msg)
+}
 
 // Run owns the full lifecycle: build → wait → run → cleanup → done.
 func (c *Config) Run() (err error) {
@@ -469,23 +495,23 @@ func servicesPublishing(composeFile, root string, port int) []string {
 // labels the OTHER family of ephemeral containers this repo starts (the Go
 // tests' detached databases). Both families have to answer to one sweep —
 // `make docker-sweep`, which filters
-// `--filter label=wc-test-workspace=$(WC_WORKSPACE)` — so the key and the
+// `--filter label=w17-test-workspace=$(W17_WORKSPACE)` — so the key and the
 // value have to be identical on both sides.
 //
 // Duplicated rather than imported: w17ctl is the PUBLIC thin client and its
 // private-srcgo closure is 0 (D4). srcgo/tests/dockernames gates the two
 // spellings against each other so the duplication cannot drift silently.
-const reclaimLabelKey = "wc-test-workspace"
+const reclaimLabelKey = "w17-test-workspace"
 
-// workspace mirrors the Makefile's WC_WORKSPACE (which it exports) and falls
+// workspace mirrors the Makefile's W17_WORKSPACE (which it exports) and falls
 // back to the Makefile's own default. A bare `w17ctl test` outside make still
 // labels its stack — an UNLABELLED container is the one thing this must never
 // produce, because it is invisible to every sweep by construction.
 func workspace() string {
-	if w := strings.TrimSpace(os.Getenv("WC_WORKSPACE")); w != "" {
+	if w := strings.TrimSpace(os.Getenv("W17_WORKSPACE")); w != "" {
 		return w
 	}
-	return "wc"
+	return "w17gen"
 }
 
 // analyzeCompose reads the merged compose config once and returns (a) a temp

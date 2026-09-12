@@ -95,7 +95,7 @@ func (c *Cmd) Run() error {
 		addr = core.DefaultConsoleAddr
 	}
 	if addr == "" {
-		return fmt.Errorf("init: no console URL — log in with `w17ctl login <host>`, pass --w17-url, set W17_URL env, or rebuild w17ctl with -ldflags \"-X github.com/MrS1lentcz/wandering-compiler/w17ctl/internal/core.DefaultConsoleAddr=...\"")
+		return fmt.Errorf("init: no console URL — log in with `w17ctl login <host>`, pass --w17-url, set W17_URL env, or rebuild w17ctl with -ldflags \"-X github.com/wandering-compiler/platform/w17ctl/internal/core.DefaultConsoleAddr=...\"")
 	}
 
 	// Which org owns the project. The console scopes the registration to the
@@ -341,7 +341,7 @@ func scaffoldGoModule(projectRoot, goModule, stubsRoot string) error {
 	// Co-dev replace/use paths: W17_WANDERING_COMPILER_PATH is
 	// project-root-relative (codegen joins it onto the root). Empty =
 	// published-module mode (no replace; proxy resolves the runtime).
-	wcPath := strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/")
+	w17Path := strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/")
 
 	goModPath := filepath.Join(projectRoot, modDir, "go.mod")
 	if _, err := os.Stat(goModPath); err != nil {
@@ -353,11 +353,11 @@ func scaffoldGoModule(projectRoot, goModule, stubsRoot string) error {
 		srcgoMod := core.SrcgoModuleBase + "/srcgo"
 		sdkMod := core.SdkModuleBase + "/sdk/go"
 		fmt.Fprintf(&b, "module %s\n\ngo 1.26.1\n\n", goModule)
-		if wcPath != "" {
+		if w17Path != "" {
 			// go.mod replace paths are relative to the go.mod's dir
 			// (<root>/<modDir>), so prepend one ".." for modDir.
-			fmt.Fprintf(&b, "replace %s => %s\n", srcgoMod, filepath.ToSlash(filepath.Join("..", wcPath, "srcgo")))
-			fmt.Fprintf(&b, "replace %s => %s\n\n", sdkMod, filepath.ToSlash(filepath.Join("..", wcPath, "sdk/go")))
+			fmt.Fprintf(&b, "replace %s => %s\n", srcgoMod, filepath.ToSlash(filepath.Join("..", w17Path, "srcgo")))
+			fmt.Fprintf(&b, "replace %s => %s\n\n", sdkMod, filepath.ToSlash(filepath.Join("..", w17Path, "sdk/go")))
 		}
 		// The project's hand-written srcgo module imports ONLY the
 		// public sdk/go runtime — NEVER the private compiler `srcgo`
@@ -406,9 +406,9 @@ func scaffoldGoModule(projectRoot, goModule, stubsRoot string) error {
 	if _, err := os.Stat(goWorkPath); err != nil {
 		var b strings.Builder
 		fmt.Fprint(&b, "go 1.26.1\n\nuse (\n")
-		if wcPath != "" {
-			fmt.Fprintf(&b, "\t%s\n", filepath.ToSlash(filepath.Join(wcPath, "sdk/go")))
-			fmt.Fprintf(&b, "\t%s\n", filepath.ToSlash(filepath.Join(wcPath, "srcgo")))
+		if w17Path != "" {
+			fmt.Fprintf(&b, "\t%s\n", filepath.ToSlash(filepath.Join(w17Path, "sdk/go")))
+			fmt.Fprintf(&b, "\t%s\n", filepath.ToSlash(filepath.Join(w17Path, "srcgo")))
 		}
 		fmt.Fprintf(&b, "\t./%s\n)\n", modDir)
 		if err := os.WriteFile(goWorkPath, []byte(b.String()), 0o644); err != nil {

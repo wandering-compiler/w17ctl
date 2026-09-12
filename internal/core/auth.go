@@ -149,7 +149,7 @@ func (b bearerPerRPC) GetRequestMetadata(_ context.Context, _ ...string) (map[st
 	//
 	// It belongs here rather than at each call site for the reason the
 	// bearer does: a per-call decision is one somebody forgets.
-	if slug := OrgSlugFor(b.addr); slug != "" {
+	if slug := orgSlugForRequest(b.addr); slug != "" {
 		md["w17-org"] = slug
 	}
 	return md, nil
@@ -174,6 +174,33 @@ func ActiveOrgSlug() string { return OrgSlugFor("") }
 // per-address rule as AuthTokenFn: the org a user picked on the deployed
 // console must not ride a call to their dev console, where that slug may
 // name a different organization or none.
+// orgSlugForRequest picks the organization THIS command acts in: the project's
+// if the directory has one, the machine default otherwise.
+//
+// The lock wins because it is the specific answer. A default in
+// ~/.w17/auth.yaml is one value for every checkout on the machine, so with two
+// projects in two organizations it is right for at most one of them — and
+// being wrong is silent, since the console checks the header against
+// membership rather than against the project.
+//
+// The lock stores an ID and the wire wants a SLUG, so it is translated through
+// the login-time membership cache. An id that resolves to no membership falls
+// back rather than sending nothing: it means the lock names an organization
+// this login cannot see, and the console's own refusal says that far better
+// than a request with no scope at all, which reads as "you picked nothing".
+func orgSlugForRequest(addr string) string {
+	if orgID := LockOrgIDBestEffort(); orgID != "" {
+		if inst := instanceFor(addr); inst != nil {
+			for _, o := range inst.Orgs {
+				if o != nil && o.ID == orgID {
+					return o.Slug
+				}
+			}
+		}
+	}
+	return OrgSlugFor(addr)
+}
+
 func OrgSlugFor(addr string) string {
 	inst := instanceFor(addr)
 	if inst == nil || inst.DefaultOrg == "" {

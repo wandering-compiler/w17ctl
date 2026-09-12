@@ -9,6 +9,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/protoscan"
 	"github.com/wandering-compiler/w17ctl/internal/schema"
 	"github.com/wandering-compiler/w17ctl/internal/vocab"
+	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate"
 )
 
@@ -52,7 +53,7 @@ func (c *RenderCmd) Run() error {
 		return fmt.Errorf("schema render: load schema: %w", err)
 	}
 	// Empty base = the full create.
-	p, err := plan.PlanMigration(nil, ir)
+	p, err := plan.PlanMigration(nil, ir, c.baselines())
 	if err != nil {
 		return fmt.Errorf("schema render: %w", err)
 	}
@@ -112,4 +113,38 @@ func (c *RenderCmd) protoDir() string {
 		return view.GetProtoDir()
 	}
 	return "proto"
+}
+
+// baselines copies each connection's ledger pin off the lock.
+//
+// Off the LOCK specifically, because that is the same file the deploy gate
+// reads when it decides whether the database is behind the code. One source
+// means the row this artefact writes and the row that gate looks for cannot
+// name different migrations — which they would the moment either side derived
+// the id for itself.
+//
+// A missing or unreadable lock yields NO pins rather than an error. Rendering
+// the schema is useful before a project has ever been pushed (that is how a
+// project gets its first schema), and the connections in such a lock have no
+// `target_migration_id` to record anyway. The artefact then carries an empty
+// baseline_sql, and `schema apply` builds the schema and records nothing —
+// exactly the state that existed before baselines were written at all.
+func (c *RenderCmd) baselines() []*codegenpb.PlanBaseline {
+	root, err := core.FindProjectRoot()
+	if err != nil {
+		return nil
+	}
+	lk, err := migrate.LoadLockView(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil {
+		return nil
+	}
+	out := make([]*codegenpb.PlanBaseline, 0, len(lk.Connections))
+	for _, conn := range lk.Connections {
+		out = append(out, &codegenpb.PlanBaseline{
+			Connection:    conn.Name,
+			MigrationId:   conn.TargetMigrationID,
+			ContentSha256: conn.TargetContentSha256,
+		})
+	}
+	return out
 }

@@ -63,8 +63,12 @@ func WriteAtomic(path string, data []byte, perm fs.FileMode) error {
 type Lock struct {
 	// Project is the human project name (the proto package prefix source);
 	// ProjectID is the registry key. Both are raw stored strings.
-	Project     string       `yaml:"project"`
-	ProjectID   string       `yaml:"project_id"`
+	Project   string `yaml:"project"`
+	ProjectID string `yaml:"project_id"`
+	// OrgID is the organization this project belongs to, stamped by the
+	// console when it signs the lock. Empty on a lock written before the
+	// field existed, or one the console has not re-signed since.
+	OrgID       string       `yaml:"org_id"`
 	Connections []Connection `yaml:"connections"`
 	// Plugins is the installed-plugin set (the offline read the plugin
 	// list/install/update commands use to cross-reference + dedup; the WRITE
