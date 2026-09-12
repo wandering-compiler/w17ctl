@@ -53,6 +53,9 @@ func (c *ListCmd) Run() error {
 		}
 	}
 	printOrgs(inst)
+	if !c.Refresh {
+		fmt.Fprintln(core.Stdout, "  (the stored list — `org list --refresh` asks the console)")
+	}
 	return nil
 }
 

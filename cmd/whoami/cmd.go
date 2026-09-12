@@ -1,12 +1,28 @@
-// Package whoami implements `w17ctl whoami` — show the stored identity (and
+// Package whoami implements `w17ctl whoami` — show the STORED identity (and
 // org memberships) for the active console, or all of them with --all. Reads
-// the machine-local credential store; no server round-trip. See
-// docs/specs/plugins/auth-cli-login-and-orgs.md.
+// the machine-local credential store; no server round-trip unless --verify.
+//
+// The offline read is deliberate and stays. What changed is what it CLAIMS:
+// printing an identity and a list of organizations reads as "you are logged
+// in", and what it actually knows is "this file says so". deinvo took that as
+// confirmation before a regeneration and found out at the first real call that
+// the token was dead (2026-09-12).
+//
+// A recycled port makes it worse than stale. A dev console publishes an
+// ephemeral port, docker hands freed ports on, and this store keys credentials
+// by address — so the identity and organizations printed here can belong to a
+// console that no longer exists, while some OTHER project's console answers at
+// that address now. Same confident output, no relation to what is listening.
+//
+// See docs/specs/plugins/auth-cli-login-and-orgs.md.
 package whoami
 
 import (
+	"context"
 	"fmt"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/wandering-compiler/w17ctl/internal/authstore"
 	"github.com/wandering-compiler/w17ctl/internal/core"
@@ -14,7 +30,8 @@ import (
 
 // Cmd is `w17ctl whoami`.
 type Cmd struct {
-	All bool `name:"all" help:"Show every logged-in console, not just the active one."`
+	All    bool `name:"all" help:"Show every console with a stored credential, not just the active one."`
+	Verify bool `name:"verify" help:"Ask the console whether this credential still works (one round-trip)."`
 }
 
 func (c *Cmd) Run() error {
@@ -23,6 +40,9 @@ func (c *Cmd) Run() error {
 		return err
 	}
 	if len(st.Instances) == 0 {
+		// "Not logged in" is exact here: with nothing stored there is no
+		// credential that could be valid. The claim only outruns the evidence
+		// when a record EXISTS, which is what the note below addresses.
 		fmt.Fprintln(core.Stdout, "Not logged in. Run `w17ctl login <console-url>`.")
 		return nil
 	}
@@ -36,6 +56,9 @@ func (c *Cmd) Run() error {
 		for _, u := range urls {
 			printInstance(u == st.DefaultInstance, st.Instances[u])
 		}
+		if !c.Verify {
+			unverifiedNote()
+		}
 		return nil
 	}
 
@@ -45,6 +68,57 @@ func (c *Cmd) Run() error {
 		return nil
 	}
 	printInstance(true, inst)
+	if c.Verify {
+		return verify(inst)
+	}
+	unverifiedNote()
+	return nil
+}
+
+// unverifiedNote says what this output is, once, rather than letting the shape
+// of it imply something stronger.
+func unverifiedNote() {
+	fmt.Fprintln(core.Stdout, "  (stored locally, NOT checked against the console — `whoami --verify` asks it)")
+}
+
+// verify spends one round-trip to turn "the file says this" into "the console
+// agrees". ListMyOrgs is the probe because it needs a valid bearer AND returns
+// the truth about organizations, so a credential that belongs to a DIFFERENT
+// console shows up as a mismatch rather than as a pass.
+func verify(inst *authstore.Instance) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	orgs, err := core.ListMyOrgs(ctx, inst.URL, inst.Token)
+	if err != nil {
+		// Returned, not printed: the top-level handler decorates an auth
+		// refusal with the causes only this machine can see.
+		return err
+	}
+	fmt.Fprintln(core.Stdout, "  verified: the console accepts this credential")
+
+	stored := map[string]bool{}
+	for _, o := range inst.Orgs {
+		if o != nil {
+			stored[o.Slug] = true
+		}
+	}
+	var missing []string
+	for _, o := range orgs {
+		if !stored[o.Slug] {
+			missing = append(missing, o.Slug)
+		}
+	}
+	if len(missing) > 0 || len(orgs) != len(inst.Orgs) {
+		sort.Strings(missing)
+		fmt.Fprintf(core.Stdout, "  ⚠ the console reports %d organization(s), this file has %d",
+			len(orgs), len(inst.Orgs))
+		if len(missing) > 0 {
+			fmt.Fprintf(core.Stdout, " — not in the file: %s", strings.Join(missing, ", "))
+		}
+		fmt.Fprintln(core.Stdout, "\n    the stored record is out of date, or it belongs to a different console that once answered at this address")
+		fmt.Fprintln(core.Stdout, "    fix: w17ctl login "+inst.URL)
+	}
 	return nil
 }
 

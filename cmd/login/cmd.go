@@ -9,6 +9,7 @@ package login
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"time"
 
@@ -116,6 +117,15 @@ func store(host, token, userID, email string, orgs []core.AuthOrg) error {
 	}
 	st.SetInstance(inst)
 	st.SetDefaultInstance(host) // the just-logged-in instance becomes active
+	// Login is the one moment this store is already being rewritten, so it is
+	// where dead LOCAL credentials go. They are not merely clutter: a dev
+	// console's port is ephemeral, docker reuses freed ports, and a token left
+	// behind for a port another project's console later occupies is presented
+	// to that console as if it were its own. The refusal is `invalid
+	// credentials`, which has two other causes and reads like all three.
+	if n := st.PruneDeadLoopbackInstances(host, tcpListening); n > 0 {
+		fmt.Fprintf(core.Stdout, "login: dropped %d stored credential(s) for local consoles that are gone\n", n)
+	}
 	if err := authstore.SaveDefault(st); err != nil {
 		return err
 	}
@@ -132,6 +142,18 @@ func toStoreOrgs(orgs []core.AuthOrg) []*authstore.Org {
 		out = append(out, &authstore.Org{ID: o.ID, Slug: o.Slug, Name: o.Name, Kind: o.Kind, Role: o.Role})
 	}
 	return out
+}
+
+// tcpListening reports whether anything answers at hostPort right now. A short
+// deadline on purpose: this runs inside `login`, and a slow probe of a dead
+// address would make every login feel broken to save a diagnosis later.
+func tcpListening(hostPort string) bool {
+	conn, err := net.DialTimeout("tcp", hostPort, 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func printResult(host string, inst *authstore.Instance) {

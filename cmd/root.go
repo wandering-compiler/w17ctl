@@ -184,7 +184,13 @@ func Run(args []string) {
 		return
 	}
 	if err := ctx.Run(); err != nil {
-		ctx.FatalIfErrorf(err)
+		// ONE place, because the refusals this explains come from every command
+		// that talks to a console, and a per-command hint is one somebody
+		// forgets. It adds only what the CLIENT can see — which credential it
+		// attached, which organization it named — and stays silent when the
+		// server's own wording is already the whole story.
+		addr, _ := core.ResolveConsoleAddr("")
+		ctx.FatalIfErrorf(core.ExplainAuthFailure(addr, err))
 		return
 	}
 }

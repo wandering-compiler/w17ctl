@@ -26,6 +26,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/wandering-compiler/w17ctl/internal/devconfig"
+	"strings"
 )
 
 // FileName is the credential file's basename under the w17ctl home.
@@ -220,6 +221,60 @@ func (s *Store) SetInstance(inst *Instance) {
 	if s.DefaultInstance == "" {
 		s.DefaultInstance = inst.URL
 	}
+}
+
+// PruneDeadLoopbackInstances drops stored credentials for LOCAL consoles that
+// are no longer listening, and reports how many went.
+//
+// A dev console publishes an EPHEMERAL port, so its address is not an identity
+// — it is whatever docker had free. The store keys credentials by address and
+// never forgets one, so run two projects, let one stack go, and the other
+// project's console can come up on the dead one's port. The next command then
+// presents a real token, for the right address, issued by a console that no
+// longer exists; the answer is `invalid credentials`, a signature with three
+// causes and no way to tell them apart.
+//
+// Only LOOPBACK entries, and only ones nothing answers on. A deployed console
+// keeps its credential through an outage — a remote address is a name that
+// means one thing, so "not reachable right now" says nothing about whose it
+// is. A local port says nothing else.
+//
+// `keep` is exempt: the address being logged into, which is about to be
+// written and may legitimately be mid-start.
+func (s *Store) PruneDeadLoopbackInstances(keep string, listening func(hostPort string) bool) int {
+	if listening == nil {
+		return 0
+	}
+	s.normalize()
+	dropped := 0
+	for url := range s.Instances {
+		if url == keep || !isLoopbackURL(url) {
+			continue
+		}
+		if listening(stripScheme(url)) {
+			continue
+		}
+		s.RemoveInstance(url)
+		dropped++
+	}
+	return dropped
+}
+
+func isLoopbackURL(url string) bool {
+	h := stripScheme(url)
+	for _, p := range []string{"localhost:", "127.0.0.1:", "[::1]:"} {
+		if strings.HasPrefix(h, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripScheme(url string) string {
+	if i := strings.Index(url, "://"); i >= 0 {
+		return url[i+3:]
+	}
+	return url
 }
 
 // RemoveInstance drops an instance (logout). If it was the default, the
