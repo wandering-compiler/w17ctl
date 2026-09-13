@@ -199,3 +199,18 @@ imports **zero** private compiler code — only the public `sdk/go` module + the
 console's gRPC contracts. That's what lets the same minimal client both scaffold
 a project on your laptop and gate a production release in CI: it verifies + applies
 console-signed artifacts, and can't forge one.
+
+### This repository is an export
+
+The sources here are generated from the private monorepo where w17ctl is
+developed, which is why you will find no `_test.go` files and comments that
+speak of test seams ("indirected so tests can…"). The tests exist; they live
+beside the code they cover, in the monorepo, and **they run there before every
+release** — the same pipeline also builds this exported tree and fails the
+release if it does not compile with zero private compiler code in its import
+graph.
+
+So nothing here is untested, but nothing here is testable by you either.
+If you hit a bug, a description that reproduces it is worth as much to us as a
+patch would be: we turn it into a regression test in the tree where the test
+actually runs.

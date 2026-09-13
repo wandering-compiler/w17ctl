@@ -278,6 +278,20 @@ import "google/protobuf/timestamp.proto";
 import "w17/db.proto";
 import "w17/field.proto";
 
+// Author — the target of Note.owner_id below.
+//
+// It exists so the scaffold COMPILES. A foreign key names a
+// model in the compiled proto set, so an example pointing at
+// a model nobody scaffolds fails codegen on the first run —
+// which is how this file used to ship.
+message Author {
+  option (w17.db.table) = { name: "authors" };
+
+  int64 id = 1 [(w17.field) = { pk: true, default_auto: IDENTITY }];
+
+  string email = 2 [(w17.field) = { type: CHAR, max_len: 320, unique: true }];
+}
+
 // Note — one example DB-backed model. Every column the
 // generator creates corresponds to a proto field below;
 // the (w17.field) / (w17.db.column) annotations carry
@@ -294,13 +308,14 @@ message Note {
   // postgres.
   int64 id = 1 [(w17.field) = { pk: true, default_auto: IDENTITY }];
 
-  // Foreign key to a (hypothetical) users table. Replace
-  // "users.User" with the actual fully-qualified proto type
-  // name. deletion_rule:CASCADE removes notes when the
-  // owning user is deleted; switch to RESTRICT to refuse.
+  // Foreign key, written as "<module>.<Model>" — here the
+  // Author above. Repoint it at any model in the compiled
+  // proto set; the target must EXIST, or codegen refuses.
+  // deletion_rule:CASCADE removes notes when the owning
+  // author is deleted; switch to RESTRICT to refuse.
   int64 owner_id = 2 [
     (w17.field)     = { related_name: "notes" },
-    (w17.db.column) = { fk: "users.User", deletion_rule: CASCADE, index: true }
+    (w17.db.column) = { fk: "{{.Module}}.Author", deletion_rule: CASCADE, index: true }
   ];
 
   // String column with a length cap + non-empty validation.

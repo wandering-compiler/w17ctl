@@ -137,7 +137,7 @@ func RunAddWizard(p prompter.Prompter, existing []*codegenpb.LockConnection, def
 		}
 	}
 
-	markDefault, err = resolveDefaultMark(p, existing, name, defaultFlag)
+	markDefault, err = resolveDefaultMark(p, existing, name, defaultFlag, presetName != "")
 	if err != nil {
 		return "", false, err
 	}
@@ -153,7 +153,7 @@ func RunAddWizard(p prompter.Prompter, existing []*codegenpb.LockConnection, def
 //   - flag unset + adding to ≥1-connection set + no existing mark →
 //     interactive prompt (defaults to "no").
 //   - otherwise → no mark.
-func resolveDefaultMark(p prompter.Prompter, existing []*codegenpb.LockConnection, newName string, defaultFlag bool) (bool, error) {
+func resolveDefaultMark(p prompter.Prompter, existing []*codegenpb.LockConnection, newName string, defaultFlag, nonInteractive bool) (bool, error) {
 	var markedName string
 	for _, c := range existing {
 		if c.GetDefault() {
@@ -170,6 +170,14 @@ func resolveDefaultMark(p prompter.Prompter, existing []*codegenpb.LockConnectio
 	case markedName != "":
 		return false, nil
 	case len(existing) == 0:
+		return false, nil
+	}
+	// `--name` is the documented switch for a non-interactive add, and this
+	// is the one prompt that could still fire after it — when a SECOND
+	// connection arrives and nothing is marked yet. Asking there would hang an
+	// agent or a CI step on a question whose default answer is already "no",
+	// so take that answer instead of contradicting the flag's own help.
+	if nonInteractive {
 		return false, nil
 	}
 	choice, err := p.Select("Mark this connection as the project's default?", []string{"no", "yes"}, "no")

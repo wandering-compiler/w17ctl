@@ -50,7 +50,7 @@ type Cmd struct {
 	W17URL   string `name:"w17-url" placeholder:"URL" env:"W17_URL" help:"URL of the console hosting this project. Required at init time so the lock pins it."`
 	GoModule string `name:"go-module" placeholder:"PATH" help:"Go module path for the project's hand-written tier (<stubs-root-first-segment>/go.mod). Empty = example.com/<project>. Drives codegen's go_module + every generated bundle's import paths."`
 
-	Name      string `name:"name" placeholder:"NAME" help:"Project name. Empty = ask. Supplying it (with the other flags) makes init fully non-interactive."`
+	Name      string `name:"name" placeholder:"NAME" help:"Project name. Empty = ask. For a fully non-interactive run supply this plus --w17-url, --go-module, --stubs-root, --language, --proto-dir, --languages-dir, --languages, --e2e, --ci, --org and --skip-connections; any flag left empty is still asked for."`
 	StubsRoot string `name:"stubs-root" placeholder:"DIR" help:"Go stub tree root (pb + grpc clients). Empty = ask (default \"srcgo/gen\")."`
 	Language  string `name:"language" placeholder:"LANG" help:"Pb stubs language. Empty = ask (default \"go\"; only \"go\" supported today)."`
 
@@ -60,6 +60,7 @@ type Cmd struct {
 	E2E             string `name:"e2e" placeholder:"yes|no" help:"Generate e2e tests (REST+MCP). yes|no opts in/out non-interactively; empty = ask (default-yes). The tree path is fixed at \"w17/e2e\"."`
 	CI              string `name:"ci" placeholder:"all|none|csv" help:"Generate e2e CI configs under w17/ci/<provider>/. Comma-separated providers (github|gitlab|circleci|azure|bitbucket|jenkins|generic), 'all', or 'none'. Empty = ask (default \"github\")."`
 	SkipConnections bool   `name:"skip-connections" help:"Skip the connection-add loop. Operator wires connections later via \"w17ctl connection add\"."`
+	Org             string `name:"org" placeholder:"SLUG" help:"Organization that owns this project. Empty = the default set by \"w17ctl org use\", or your only membership; with several and no default, init asks rather than guessing."`
 }
 
 func (c *Cmd) Run() error {
@@ -102,7 +103,7 @@ func (c *Cmd) Run() error {
 	// gateway-verified active org; we select it here (mandatory when the caller
 	// belongs to more than one) and send it as the `w17-org` header, which the
 	// console validates against the caller's membership.
-	orgSlug, err := chooseOrg(prompter)
+	orgSlug, err := chooseOrg(prompter, c.Org)
 	if err != nil {
 		return err
 	}
@@ -266,7 +267,19 @@ func rememberDefaultOrg(slug string) error {
 	return authstore.SaveDefault(st)
 }
 
-func chooseOrg(p prompter.Prompter) (string, error) {
+// orgSlugs lists the caller's org slugs, sorted, for a prompt or an error.
+func orgSlugs(inst *authstore.Instance) []string {
+	slugs := make([]string, 0, len(inst.Orgs))
+	for _, o := range inst.Orgs {
+		if o != nil {
+			slugs = append(slugs, o.Slug)
+		}
+	}
+	sort.Strings(slugs)
+	return slugs
+}
+
+func chooseOrg(p prompter.Prompter, flagOrg string) (string, error) {
 	st, err := authstore.LoadDefault()
 	if err != nil {
 		return "", err
@@ -275,20 +288,40 @@ func chooseOrg(p prompter.Prompter) (string, error) {
 	if inst == nil {
 		return "", fmt.Errorf("init: not logged in — run `w17ctl login <host>` first")
 	}
+
+	// An org the caller NAMED wins. Refusing to guess is the rule below; this
+	// is not a guess.
+	if flagOrg != "" {
+		if o := inst.Org(flagOrg); o != nil {
+			return o.Slug, nil
+		}
+		slugs := orgSlugs(inst)
+		return "", fmt.Errorf("init: --org %q is not one of your organizations on %s (%s)",
+			flagOrg, inst.URL, strings.Join(slugs, ", "))
+	}
+
+	// A default set with `w17ctl org use` is also a statement, not a guess —
+	// and that command's own help promises it "scopes subsequent commands",
+	// which init is. Without this, a caller who had already chosen was asked
+	// again, and there was no way to answer non-interactively at all.
+	if inst.DefaultOrg != "" {
+		for _, o := range inst.Orgs {
+			if o != nil && o.ID == inst.DefaultOrg {
+				return o.Slug, nil
+			}
+		}
+	}
+
 	switch len(inst.Orgs) {
 	case 0:
 		return "", fmt.Errorf("init: you don't belong to any organization on %s — ask an owner to add you, then run `w17ctl login` again", inst.URL)
 	case 1:
 		return inst.Orgs[0].Slug, nil
 	default:
-		slugs := make([]string, 0, len(inst.Orgs))
-		for _, o := range inst.Orgs {
-			slugs = append(slugs, o.Slug)
-		}
-		sort.Strings(slugs)
 		// Empty default → the operator MUST pick one (the stdin prompter
-		// re-prompts on empty input when there's no default).
-		return p.Select("Which organization should own this project?", slugs, "")
+		// re-prompts on empty input when there's no default). Reached only
+		// when nothing above stated a choice, so this asks rather than guesses.
+		return p.Select("Which organization should own this project?", orgSlugs(inst), "")
 	}
 }
 
