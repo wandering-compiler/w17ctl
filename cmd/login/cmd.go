@@ -96,7 +96,20 @@ func (c *Cmd) gather(p prompter.Prompter) (host, email, password string, err err
 func defaultHost() string {
 	if st, err := authstore.LoadDefault(); err == nil {
 		if inst := st.ActiveInstance(); inst != nil && inst.URL != "" {
-			return inst.URL
+			// A dead LOCAL console is not offered. Its port is ephemeral and
+			// docker hands freed ports on, so a stale entry names an address
+			// that is either gone or now somebody else's console — and
+			// offering it as the default is how a login lands on the wrong
+			// one without anybody choosing it.
+			//
+			// The pruning this complements runs AFTER a successful login, so
+			// on its own it never reaches the prompt that caused the problem.
+			// One probe, of the ONE address about to be suggested — not a
+			// sweep of every stored instance, which would put a dial on the
+			// critical path of every login to save a keystroke.
+			if !authstore.IsLoopbackURL(inst.URL) || tcpListening(authstore.StripScheme(inst.URL)) {
+				return inst.URL
+			}
 		}
 	}
 	return core.DefaultConsoleAddr

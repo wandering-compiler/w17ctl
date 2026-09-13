@@ -78,6 +78,47 @@ compiler directly — you drive `w17ctl`.
 | Log in to a console | `w17ctl login` |
 | Remove generated output | `w17ctl clean` |
 
+## Required vs nullable — two axes, not two words
+
+`(w17.field)` answers two different questions, and conflating them is the
+commonest way to get a surprising refusal:
+
+- **`null`** is about **storage** — may the COLUMN hold NULL.
+- **`required`** is about **input** — must the CALLER supply a value.
+
+All four combinations mean something:
+
+| declaration | column | caller |
+|---|---|---|
+| *(nothing)* | `NOT NULL` | must supply it |
+| `null: true` | nullable | may omit it |
+| `null: true, required: true` | nullable | must supply it on THIS call |
+| `required: false` | `NOT NULL` | must NOT be asked — the server fills it |
+
+**`required` is derived unless you state it.** The default is "required when the
+column is NOT NULL **and the server does not supply the value itself**". The
+server supplies it when the field is a primary key, carries a `default_` /
+`default_auto`, or is stamped from a data scope (`org_id`, `user_id`,
+`tenant_id`). Those are `NOT NULL` columns you must never send — and are not
+required inputs.
+
+State `required` explicitly only to override that:
+
+```proto
+// a lookup key with no column of its own — omitting it must be refused
+optional string customer_id = 3 [(w17.field) = { type: UUID, required: true }];
+```
+
+**Why this matters for parameters that name another row.** A field like
+`customer_id`, used to FIND something rather than to write a column, has no
+column for `null` to describe. Without `required` its absence is caught far
+downstream — as a NOT NULL violation on whatever the lookup failed to produce —
+and the message names that other column instead of the parameter you left out.
+
+⚠️ A proto3 scalar WITHOUT `optional` cannot report absence at all: its zero
+value is indistinguishable from an omitted one. Declare `optional` on any field
+whose absence you want refused by name.
+
 ## Where to make changes
 
 - **Proto (`proto/…`)** — the source of truth. Declare here; regenerate.

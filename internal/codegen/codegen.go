@@ -23,6 +23,7 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/adminruntime"
 	"github.com/wandering-compiler/w17ctl/internal/core"
+	"github.com/wandering-compiler/w17ctl/internal/scaffold"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
 )
@@ -437,6 +438,25 @@ func Run(console string, force bool) error {
 		fmt.Fprintf(core.Stdout, "codegen: note: could not refresh w17/specs/ (the platform reference): %v\n", gerr)
 	} else if n > 0 {
 		fmt.Fprintf(core.Stdout, "refreshed w17/specs/ (%d file(s)) — the platform reference for this compiler\n", n)
+	}
+	// Keep `w17/.gitignore` current. This runs from CODEGEN, not just `init`,
+	// because the patterns track the compiler: a project initialised before a
+	// pattern existed would otherwise never receive it, and the loop a
+	// consumer actually runs is codegen. The writer is append-only and
+	// edit-preserving, so a re-run cannot cost anyone their own rules.
+	//
+	// It covers `w17/` only. A generated root placed outside it — notably
+	// `generated_code.stubs`, which DEFAULTS to `srcgo/gen` — sits in the
+	// consumer's own tree, where the layout is their decision and w17ctl does
+	// not write. The guide (architecture.md, "What belongs in git") carries
+	// the rule to add by hand.
+	//
+	// Non-fatal: the generated code is already on disk, and an unwritable
+	// .gitignore must not fail a good codegen.
+	if wrote, gerr := scaffold.RefreshW17Gitignore(root); gerr != nil {
+		fmt.Fprintf(core.Stdout, "codegen: note: could not update w17/.gitignore: %v\n", gerr)
+	} else if wrote {
+		fmt.Fprintf(core.Stdout, "updated w17/.gitignore (compiler output stays out of your diffs)\n")
 	}
 	// Non-fatal advisories last — generation already succeeded.
 	printCodegenWarnings(core.Stdout, warnings)

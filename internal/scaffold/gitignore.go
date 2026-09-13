@@ -37,6 +37,97 @@ var w17IgnoreEntries = []w17IgnoreEntry{
 	{"Local env + secrets. The committed *.defaults / *.example templates are the\n# tracked source; the filled-in local copies below stay out of git.", ".env"},
 	{"", ".env.local"},
 	{"", ".secrets"},
+
+	// ---- Compiler output -------------------------------------------------
+	//
+	// These are not transient or secret; they are kept out of git because a
+	// pull request should show the change you made rather than the thousands
+	// of lines the compiler wrote around it. On a real consuming project 92%
+	// of tracked lines are codegen output (269 439 of 292 547 — deinvo,
+	// 2026-09-13), and GitHub counts those files toward a PR's size and its
+	// "files changed" regardless of `linguist-generated`. A diff nobody can
+	// read is a review that does not happen.
+	//
+	// ⚠️ ANCHORED (leading slash) and ENUMERATED, never `*` with negations.
+	// The two failure directions are not symmetrical: a blanket pattern
+	// swallows the next AUTHORED directory somebody adds — silently,
+	// discovered when a fresh clone comes back missing work — while an
+	// explicit list merely leaves a newly generated directory committed until
+	// this list learns about it. Noise is recoverable; loss is not. The
+	// anchor keeps `/map/` from matching some `map/` nested in a bundle.
+	//
+	// ⛔ Three kinds of thing a generator writes STAY tracked and must never
+	// be added below:
+	//
+	//   - STATE, not output: `proto/domains/*/w17.lock.acl.proto` and
+	//     `w17.lock.events.proto` carry monotonic ids and tombstones and are
+	//     derivable only from the protos AND their own previous version. Lose
+	//     them and the ids renumber, so every seeded RolePermission then
+	//     grants a DIFFERENT permission — silently. `w17/lock.yaml` is the
+	//     same class: project id, plugin pins, signature.
+	//   - What a FRESH CLONE needs before codegen can run: `w17/schema/` is
+	//     applied by pipelines that never reach a console, and `w17/ci/` is
+	//     the bootstrap that would otherwise have to exist to regenerate
+	//     itself.
+	//   - What is AUTHORED after being scaffolded once: `w17/e2e/` skeletons,
+	//     `w17/languages/` catalogues, `w17/admin-custom/`, and the
+	//     hand-written fixtures under `w17/fixtures/`.
+}
+
+// w17OutputIgnoreEntries is the compiler-output half of the set, kept
+// separate because it is the half a project can decline — see
+// [TrackGeneratedEnv].
+var w17OutputIgnoreEntries = []w17IgnoreEntry{
+	{"Generated service bundles — rebuilt by `w17ctl codegen`.", "/services/"},
+	{"The w17-owned Go stub module (pb + grpc clients).", "/stubs/"},
+	{"Vendored @w17/admin-runtime — a verbatim copy, never edited here.", "/admin-runtime/"},
+	{"Generated front-end clients.", "/web-client/"},
+	{"", "/js-client/"},
+	{"The platform reference + project map — refreshed from the console every codegen.", "/specs/"},
+	{"", "/map/"},
+	{"", "/AGENTS.md"},
+	{"Base rsync ignore for `w17ctl stack` remote mode — regenerated every codegen.", "/rsync.ignore"},
+}
+
+// TrackGeneratedEnv opts a project OUT of ignoring compiler output. Set it to
+// "1" when the generated tree is itself the artefact under review — this
+// repository's `examples/*` are golden fixtures whose regenerated diff is how
+// a compiler change proves it reached anything, so ignoring them would hide
+// exactly what the regen exists to show.
+//
+// It is a per-project decision that does not belong in the lock: the lock is
+// signed and shared, while "do I review generated diffs" is a property of the
+// checkout, not of the project's contract.
+const TrackGeneratedEnv = "W17_TRACK_GENERATED"
+
+// ignoreEntries returns the patterns to enforce: the machine-local + secret
+// set always, plus the compiler-output set unless the project opted out.
+func ignoreEntries() []w17IgnoreEntry {
+	if os.Getenv(TrackGeneratedEnv) == "1" {
+		return w17IgnoreEntries
+	}
+	return append(append([]w17IgnoreEntry(nil), w17IgnoreEntries...), w17OutputIgnoreEntries...)
+}
+
+// RefreshW17Gitignore updates an EXISTING w17/.gitignore and, unlike
+// [EnsureW17Gitignore], never creates one. It is what `codegen` calls.
+//
+// The distinction is not cosmetic. Creating the file is `init`'s job, and
+// `init` has run for every real project — so refresh-only still delivers new
+// patterns everywhere they are wanted. Creating it from codegen instead
+// reached trees that had deliberately gone without one: this repository's
+// `examples/*`, where the root .gitignore carries `!examples/**/.env` to keep
+// per-bundle `.env` files TRACKED. A nested ignore file outranks that
+// negation, so a freshly generated bundle's `.env` would have stopped being
+// added — silently, because git only ignores what is not already tracked.
+func RefreshW17Gitignore(projectRoot string) (changed bool, err error) {
+	if _, serr := os.Stat(filepath.Join(projectRoot, "w17", ".gitignore")); serr != nil {
+		if os.IsNotExist(serr) {
+			return false, nil // `init` owns creation
+		}
+		return false, fmt.Errorf("w17 gitignore: stat: %w", serr)
+	}
+	return EnsureW17Gitignore(projectRoot)
 }
 
 // EnsureW17Gitignore writes/updates <projectRoot>/w17/.gitignore so it
@@ -66,7 +157,7 @@ func EnsureW17Gitignore(projectRoot string) (changed bool, err error) {
 	}
 
 	var missing []w17IgnoreEntry
-	for _, e := range w17IgnoreEntries {
+	for _, e := range ignoreEntries() {
 		if !present[e.pattern] {
 			missing = append(missing, e)
 		}

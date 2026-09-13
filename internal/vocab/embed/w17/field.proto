@@ -202,7 +202,60 @@ message Field {
 
   // Opt-out of NOT NULL. When true the column is nullable AND the generated
   // internal proto emits the field as proto3 `optional`.
+  //
+  // `required` below is the positive spelling of `null: false`, and the one
+  // to prefer: it says the same thing about a COLUMN and additionally covers
+  // a case this flag cannot reach at all.
   bool null = 5;
+
+  // required — this value must be PROVIDED.
+  //
+  // The positive spelling of `null: false` on a column, and the only spelling
+  // that works on a request parameter with no column behind it.
+  //
+  // Why the second half is not reachable through `null`: that flag governs a
+  // COLUMN, and a lookup parameter has none. A mutation that takes
+  // `customer_id` to find a customer's name through a subquery writes no
+  // `customer_id` column, so there is nothing for `null: false` to describe —
+  // and yet omitting it must be refused. Today it is refused far downstream,
+  // by a NOT NULL violation on whatever the subquery failed to produce, and
+  // the message names that other column instead of the parameter the caller
+  // left out.
+  //
+  // Enforcement follows what the field can carry, and the difference is in
+  // the ERROR, never in the guarantee:
+  //
+  //   - a column field   → exactly `null: false`. The wire shape does not
+  //                        change. Validation refuses an absent value by
+  //                        name, before the write, instead of letting the
+  //                        database refuse it by constraint.
+  //   - a presence-bearing parameter → an omitted value is refused, naming
+  //                        the parameter. This is the case `null` cannot
+  //                        express.
+  //
+  // A field with no presence and no column cannot report absence at all: a
+  // proto3 scalar's zero value is indistinguishable from an omitted one. The
+  // annotation is accepted there and means what `null: false` means; it does
+  // not invent a distinction the wire does not carry.
+  //
+  // `null` and `required` are two AXES, not two spellings. `null` is about
+  // STORAGE (may the column hold NULL); `required` is about INPUT (must the
+  // caller supply a value). Django draws the same line between a model's
+  // `null` and a form's `blank`, and for the same reason — all four
+  // combinations mean something:
+  //
+  //   null:false             → NOT NULL column, input required (derived)
+  //   null:true              → nullable column, input optional (derived)
+  //   null:true  required:t  → nullable column, but THIS call must supply it
+  //   null:false required:f  → NOT NULL column the SERVER fills (a default,
+  //                            an auto value, a stamped scope) — the caller
+  //                            must not be asked for it
+  //
+  // `optional` so the derived default can be told from an explicit override:
+  // unset means "derive from null and from whether the server supplies the
+  // value", exactly as `min_len` and `gt` above are optional to tell 0 from
+  // unset.
+  optional bool required = 33;
 
   // String-only. When true allows empty string (default CHECK col <> '').
   // Orthogonal to null.

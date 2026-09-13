@@ -248,10 +248,10 @@ func (s *Store) PruneDeadLoopbackInstances(keep string, listening func(hostPort 
 	s.normalize()
 	dropped := 0
 	for url := range s.Instances {
-		if url == keep || !isLoopbackURL(url) {
+		if url == keep || !IsLoopbackURL(url) {
 			continue
 		}
-		if listening(stripScheme(url)) {
+		if listening(StripScheme(url)) {
 			continue
 		}
 		s.RemoveInstance(url)
@@ -260,8 +260,11 @@ func (s *Store) PruneDeadLoopbackInstances(keep string, listening func(hostPort 
 	return dropped
 }
 
-func isLoopbackURL(url string) bool {
-	h := stripScheme(url)
+// IsLoopbackURL reports whether the address names this machine. Exported so
+// the login prompt can ask the same question the pruning does — one rule, two
+// readers, rather than two spellings that drift.
+func IsLoopbackURL(url string) bool {
+	h := StripScheme(url)
 	for _, p := range []string{"localhost:", "127.0.0.1:", "[::1]:"} {
 		if strings.HasPrefix(h, p) {
 			return true
@@ -270,7 +273,8 @@ func isLoopbackURL(url string) bool {
 	return false
 }
 
-func stripScheme(url string) string {
+// StripScheme drops a scheme prefix, leaving host:port for a dial.
+func StripScheme(url string) string {
 	if i := strings.Index(url, "://"); i >= 0 {
 		return url[i+3:]
 	}
