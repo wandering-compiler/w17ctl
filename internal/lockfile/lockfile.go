@@ -74,6 +74,17 @@ type Lock struct {
 	// list/install/update commands use to cross-reference + dedup; the WRITE
 	// rides the EditLock plugin intents).
 	Plugins []Plugin `yaml:"plugins"`
+	// GeneratedCode carries the paths the project chose at init. Read
+	// offline so a command can derive what the operator would otherwise
+	// have to retype — `migrate generate` used to demand every --proto by
+	// hand while the answer sat here.
+	GeneratedCode GeneratedCode `yaml:"generated_code"`
+}
+
+// GeneratedCode mirrors the lock's generated_code block (the fields read
+// offline; the console owns the rest).
+type GeneratedCode struct {
+	ProtoDir string `yaml:"proto_dir"`
 }
 
 // Plugin mirrors a lock plugins[] entry's identity fields.

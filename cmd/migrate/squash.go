@@ -140,7 +140,7 @@ func (c *SquashCmd) Run() error {
 	}
 
 	fmt.Fprintln(core.Stdout, "done. The baseline replaces the collapsed range; deployments at the old head will")
-	fmt.Fprintln(core.Stdout, "record it without running it on their next `migrate fetch` + `apply`.")
+	fmt.Fprintln(core.Stdout, "record it without running it on their next fetch + apply with the generated binary.")
 	return nil
 }
 

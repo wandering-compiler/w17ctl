@@ -14,7 +14,7 @@ import (
 // the only leaf is `add`; future: `module rename` /
 // `module remove`.
 type Cmd struct {
-	Add AddCmd `cmd:"" help:"Scaffold a new module under an existing domain — creates proto/<protoDir>/domains/<DOMAIN>/<MODULE>/w17.proto. With --with-example seeds the four-layer (queries/mutations/business/types) shape with annotation samples."`
+	Add AddCmd `cmd:"" help:"Scaffold a new module under an existing domain — creates <protoDir>/domains/<DOMAIN>/<MODULE>/w17.proto (<protoDir> is the project's proto root: \"proto\" unless init was given --proto-dir). With --with-example seeds the four-layer (queries/mutations/business/types) shape with annotation samples."`
 }
 
 // AddCmd implements `w17ctl module add DOMAIN/MODULE`.

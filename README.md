@@ -163,7 +163,7 @@ writes back what it returns.
 | `codegen` | Generate **all** derived code: Storage gRPC handlers + the ACL / eventbus / MCP bundles. Uploads every `.proto` under `proto/` to the console, which compiles the IR + emits the files; w17ctl writes them under `<root>/<gen_dir>/`. |
 | `verify` | Re-checks that every committed generated lock (ACL + eventbus) still matches the current proto — the CI drift hook paired with `codegen`. **Offline** (no console); non-zero exit on drift. |
 | `push --proto=…` | Push everything (schema + fixtures + future artifact types) to the console in one call; the server diffs + stores. Idempotent — safe to re-run whenever inputs change. |
-| `migrate generate` | Compile + push the schema; **the console plans the SQL migrations** (initial create vs. revision diff, auto-detected) and pins the lock target. `migrate list` shows history; `migrate fetch` downloads the planned `.up.sql`; `migrate push-raw` is the hand-authored-body escape hatch. |
+| `migrate generate` | Compile + push the schema; **the console plans the SQL migrations** (initial create vs. revision diff, auto-detected) and pins the lock target. `migrate list` shows history; `migrate push-raw` is the hand-authored-body escape hatch. To READ the planned SQL, `w17ctl schema render` writes `w17/schema/<connection>.ddl`; to APPLY it, your generated server binary owns the fetch + apply step — w17ctl plans migrations, the binary that owns the database applies them. |
 | `fixtures <cmd>` | Apply console-rendered fixture seeds (parameterized upserts) to a connection's target store (DSN via `W17_TARGET_<CONN>` env). |
 | `clean` | Remove codegen output (pb stubs / FE clients / languages / generated bundle files) while **preserving hand-written packages**. |
 

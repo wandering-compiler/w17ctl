@@ -43,7 +43,7 @@ func (c *StatusCmd) Run() error {
 		fmt.Fprintf(core.Stdout, "  %s: target=%s\n", conn.Name, target)
 		dir := filepath.Join(c.MigrationsDir, conn.Name)
 		if count := countOnDiskMigrations(dir); count == 0 {
-			fmt.Fprintln(core.Stdout, "    on disk: 0 (run `migrate fetch`)")
+			fmt.Fprintln(core.Stdout, "    on disk: 0 (fetch them with your generated server binary)")
 		} else {
 			fmt.Fprintf(core.Stdout, "    on disk: %d migration(s) in %s\n", count, dir)
 		}

@@ -116,6 +116,6 @@ func (c *ImportFromCmd) Run() error {
 		fmt.Fprintf(core.Stdout, "lock: re-pinned %s (the imported connections now have a fetch target)\n", c.LockPath)
 	}
 	fmt.Fprintln(core.Stdout, "Next: bring the source's protos into this repo so the next push diffs against a")
-	fmt.Fprintln(core.Stdout, "schema that matches what the console now holds, then `migrate fetch` + `apply`.")
+	fmt.Fprintln(core.Stdout, "schema that matches what the console now holds, then fetch + apply with the generated binary.")
 	return nil
 }

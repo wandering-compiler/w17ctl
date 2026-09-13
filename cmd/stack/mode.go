@@ -30,7 +30,7 @@ const dbTunnelTimeout = 10 * time.Second
 
 // modeFlags are the shared --mode/--remote overrides every compose verb
 // carries. They default to the resolved mode, so users almost never pass
-// them (mode is pinned per project via `stack use-remote` / global
+// them (mode is pinned per project via `stack remote use` / global
 // `set-mode`).
 type modeFlags struct {
 	Mode   string `name:"mode" enum:"local,remote," default:"" help:"Override the execution mode for this run: local | remote. Empty = the resolved mode (project pin → global default → local)."`

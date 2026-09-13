@@ -13,7 +13,7 @@ import (
 // Today the only leaf is `add`; future: `domain rename` /
 // `domain remove`.
 type Cmd struct {
-	Add AddCmd `cmd:"" help:"Scaffold a new domain — creates proto/<protoDir>/domains/<NAME>/w17.proto. With --with-example seeds a four-layer example module so operators can see the full shape on disk."`
+	Add AddCmd `cmd:"" help:"Scaffold a new domain — creates <protoDir>/domains/<NAME>/w17.proto (<protoDir> is the project's proto root: \"proto\" unless init was given --proto-dir). With --with-example seeds a four-layer example module so operators can see the full shape on disk."`
 }
 
 // AddCmd implements `w17ctl domain add NAME`.

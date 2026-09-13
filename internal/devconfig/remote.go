@@ -110,7 +110,7 @@ func ParseMode(s string) (Mode, error) {
 //
 //  1. flag — kong's --mode value (the W17_STACK_MODE env var is folded in
 //     by kong's `env` tag, so this single argument covers both flag+env).
-//  2. the project's pinned Mode (`stack use-local` / `stack use-remote`).
+//  2. the project's pinned Mode (`stack local` / `stack remote use`).
 //  3. the global DefaultMode.
 //  4. local — the bottom default.
 //
@@ -152,7 +152,7 @@ func (c *Config) ResolveRemote(absPath, flag string) (string, *Remote, error) {
 		name = c.DefaultRemote
 	}
 	if name == "" {
-		return "", nil, fmt.Errorf("no remote configured — register one with `w17ctl stack remote add <name> --ssh user@host --path /srv/w17`, then select it with --remote, `stack use-remote <name>`, or set a default")
+		return "", nil, fmt.Errorf("no remote configured — register one with `w17ctl stack remote add <name> --ssh user@host --path /srv/w17`, then select it with --remote, `stack remote use <name>`, or set a default")
 	}
 	r := c.Remotes[name]
 	if r == nil {

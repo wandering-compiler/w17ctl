@@ -3,14 +3,18 @@ package migrate
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/docker"
+	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	"github.com/wandering-compiler/w17ctl/internal/schema"
 	w17registrypb "github.com/wandering-compiler/sdk/go/pb/w17registry"
 )
@@ -59,9 +63,9 @@ type Cmd struct {
 // --initial forces the initial (create) push. The push machinery lives
 // in internal/schema (RunSchemaPush).
 type GenerateCmd struct {
-	Protos     []string `name:"proto" short:"p" placeholder:"PROTO" required:"" help:"Path to a .proto schema. Repeatable — multi-file schemas pass each file as its own --proto flag."`
+	Protos     []string `name:"proto" short:"p" placeholder:"PROTO" help:"Path to a .proto schema. Repeatable. Empty = every .proto under the project's proto root, the same tree codegen compiles."`
 	Imports    []string `name:"import" short:"I" placeholder:"DIR" help:"Additional proto import path. Repeatable. Each --proto's directory is always included; this flag points at the w17/*.proto vocabulary + project-shared trees."`
-	ProjectID  string   `name:"project" placeholder:"ID" required:"" help:"Project identifier matching the consuming repo's w17/lock.yaml project_id."`
+	ProjectID  string   `name:"project" placeholder:"ID" help:"Project identifier. Empty = project_id from w17/lock.yaml, which is where it already is."`
 	Console    string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console MigrationRegistry. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
 	LockPath   string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file. Created/updated with target_migration_id pinned to each connection's latest stored migration after a successful push."`
 	NoLock     bool     `name:"no-lock" help:"Skip the lock-file write (advanced/script use; the default writes the lock so the consuming repo commit can pin the deploy target)."`
@@ -70,7 +74,68 @@ type GenerateCmd struct {
 	Initiative string   `name:"initiative" placeholder:"ID" help:"Change-request (initiative) id these migrations belong to. Empty = the initiative of the current git branch, the same one 'w17ctl initiative current' shows. What 'w17ctl migrate squash --initiative' later collapses."`
 }
 
+// deriveFromProject fills --project and --proto from the project the command
+// is standing in.
+//
+// Both flags used to be required, while `AGENTS.md` and the README showed the
+// command bare — it is step 6 of the canonical workflow, so every new project
+// met it on day one. The project id sat in w17/lock.yaml (the flag's own help
+// said so), and the proto tree is the one codegen already walks, so the
+// operator was retyping answers the tool had. With twenty models the listing
+// becomes a script that breaks the next time a file is added.
+//
+// Explicit flags still win: a caller pushing a SUBSET of the tree is doing it
+// on purpose.
+func (c *GenerateCmd) deriveFromProject() error {
+	if c.ProjectID != "" && len(c.Protos) > 0 {
+		return nil
+	}
+	if c.ProjectID == "" {
+		if c.ProjectID = core.LockProjectIDBestEffort(); c.ProjectID == "" {
+			return fmt.Errorf("migrate generate: no --project and no project_id in w17/lock.yaml —\n" +
+				"  run this inside a w17 project, or pass --project <id>")
+		}
+	}
+	if len(c.Protos) > 0 {
+		return nil
+	}
+	root, err := core.FindProjectRoot()
+	if err != nil {
+		return fmt.Errorf("migrate generate: no --proto and not inside a w17 project: %w", err)
+	}
+	protoDir := "proto"
+	if lk, lerr := lockfile.Load(filepath.Join(root, "w17", "lock.yaml")); lerr == nil {
+		if d := strings.Trim(lk.GeneratedCode.ProtoDir, "/"); d != "" {
+			protoDir = d
+		}
+	}
+	protoRoot := filepath.Join(root, protoDir)
+	walkErr := filepath.WalkDir(protoRoot, func(path string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".proto") {
+			c.Protos = append(c.Protos, path)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return fmt.Errorf("migrate generate: walk %s: %w", protoRoot, walkErr)
+	}
+	if len(c.Protos) == 0 {
+		return fmt.Errorf("migrate generate: no .proto files under %s — pass --proto explicitly", protoRoot)
+	}
+	sort.Strings(c.Protos)
+	// The proto root has to be on the import path for the files to resolve
+	// each other; a hand-written invocation passes it as -I.
+	c.Imports = append(c.Imports, protoRoot)
+	return nil
+}
+
 func (c *GenerateCmd) Run() error {
+	if err := c.deriveFromProject(); err != nil {
+		return err
+	}
 	return schema.RunSchemaPush(schema.SchemaPushArgs{
 		Protos: c.Protos, Imports: c.Imports, ProjectID: c.ProjectID, Console: c.Console,
 		LockPath: c.LockPath, NoLock: c.NoLock,
@@ -240,12 +305,18 @@ func (c *ResetCmd) Run() error {
 	// --- step 4: the fresh baseline ---------------------------------
 	if c.LocalOnly {
 		fmt.Fprintln(core.Stdout, "done (--local-only: the console's migration history is UNTOUCHED).")
-		fmt.Fprintln(core.Stdout, "Next: re-run migrate fetch + apply to replay the existing history onto the empty DB.")
+		// `fetch` + `apply` live in the GENERATED binary, not here — they moved
+		// there when migrations did, and this line kept naming w17ctl. An
+		// adopter went looking for `w17ctl migrate fetch` and found no such
+		// command.
+		fmt.Fprintln(core.Stdout, "Next: replay the existing history onto the empty DB with your generated")
+		fmt.Fprintln(core.Stdout, "server binary's fetch + apply commands (w17ctl plans migrations; the")
+		fmt.Fprintln(core.Stdout, "binary that owns the database applies them).")
 		return nil
 	}
 	if len(c.Protos) == 0 {
 		fmt.Fprintln(core.Stdout, "done. Next: `w17ctl migrate generate --initial --proto <file>` to derive the fresh")
-		fmt.Fprintln(core.Stdout, "baseline, then migrate fetch + apply it.")
+		fmt.Fprintln(core.Stdout, "baseline, then fetch + apply it with your generated server binary.")
 		return nil
 	}
 

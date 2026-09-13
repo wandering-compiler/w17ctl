@@ -115,7 +115,7 @@ type Project struct {
 
 	// Mode pins this project's stack execution mode, winning over the
 	// global DefaultMode. "" = follow DefaultMode; "local" | "remote".
-	// Set by `stack use-local` / `stack use-remote`.
+	// Set by `stack local` / `stack remote use`.
 	Mode string `yaml:"mode,omitempty"`
 
 	// Remote pins which registered remote this project uses in remote
