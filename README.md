@@ -125,7 +125,7 @@ w17ctl finds your project by walking parent directories to the nearest
 
 | Command | What it does · under the hood |
 |---|---|
-| `guide` | Write `AGENTS.md` (how to DRIVE w17ctl — golden rules + workflow + task→command cheat-sheet; client-embedded, works offline) **and** fetch `w17/specs/` (how the w17 TECHNOLOGY works — the annotation catalog + architecture primer, generated server-side so it always matches the compiler). This is how a coding agent is onboarded: it reads `AGENTS.md` automatically, which points it at `w17/specs/`. `--stdout` prints the usage guide; `--force` refreshes `AGENTS.md`; `--no-specs` skips the server fetch. The `w17/specs/` fetch needs a reachable console (run `login` first). |
+| `guide` | Write `AGENTS.md` (how to DRIVE w17ctl — golden rules + workflow + task→command cheat-sheet; client-embedded, works offline) **and** fetch `w17/specs/` (how the w17 TECHNOLOGY works — the annotation catalog + architecture primer, generated server-side so it always matches the compiler). This is how a coding agent is onboarded: it reads `AGENTS.md` automatically, which points it at `w17/specs/`. `--stdout` prints the usage guide; `--force` refreshes `AGENTS.md`; `--no-specs` skips the server fetch. The `w17/specs/` fetch needs a reachable console and a logged-in identity; it is NOT scoped to an organization, so it works before you pick one (and before `init`). |
 
 ### Auth & organizations
 Talk to a console and pick your org scope. Login is a single gRPC call to the

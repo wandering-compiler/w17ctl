@@ -68,7 +68,13 @@ var root struct {
 	Version versioncmd.Cmd `cmd:"" help:"Print this binary's version, commit and build date, plus the console address compiled into it. A released binary reports its release; a locally built one reports \"dev\" rather than inventing a number."`
 
 	// --- Authentication (console identity, machine-local ~/.w17/auth.yaml) ---
-	Login  logincmd.Cmd  `cmd:"" help:"Log in to a console via OAuth (loopback + PKCE, like 'claude login'). Opens a browser to authorize, stores the bearer + org memberships in ~/.w17/auth.yaml. 'login https://console.w17.dev' (or an enterprise self-host URL)."`
+	// ⚠️ This help describes SignIn — email + password over gRPC, no browser.
+	// It used to promise "OAuth (loopback + PKCE), opens a browser", which the
+	// client has never done, next to its own --email/--password flags on the
+	// same screen. An adopter reported it: someone expecting a browser does
+	// not read "Email:" on stdin as normal progress, and someone reading only
+	// --help concludes there is no unattended path when there is one.
+	Login  logincmd.Cmd  `cmd:"" help:"Log in to a console — email + password over gRPC (AuthService.SignIn), no browser. Prompts on stdin; --email + the W17_PASSWORD env var make it unattended for CI. Stores the bearer + org memberships in ~/.w17/auth.yaml. 'login grpcs://api.w17.app:50051' (or an enterprise self-host URL)."`
 	Logout logoutcmd.Cmd `cmd:"" help:"Log out of a console — drop its stored credential from ~/.w17/auth.yaml. Defaults to the active console."`
 	Whoami whoamicmd.Cmd `cmd:"" help:"Show the stored identity + organizations for the active console (--all for every logged-in console)."`
 	Org    orgcmd.Cmd    `cmd:"" help:"Organizations on the active console — list the ones you belong to (list) and pick the default (use <slug>). The default org scopes subsequent commands."`

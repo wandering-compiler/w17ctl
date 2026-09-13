@@ -53,17 +53,36 @@ func (c *Cmd) Run() error {
 	if c.NoSpecs {
 		return nil
 	}
-	// Fetch the server-generated platform reference. Best-effort: AGENTS.md is
-	// already written, and the specs need a reachable console (+ login), which
-	// a fresh empty-dir first run may not have yet.
+	// Fetch the server-generated platform reference.
+	//
+	// Whether an unreachable console is a note or an error depends on WHERE
+	// this runs, because the same outcome means two different things:
+	//
+	//   - Outside a project — the documented first run, in an empty dir before
+	//     `init` — there is no console to reach yet. AGENTS.md is written,
+	//     which is what was asked for, so a note and exit 0 are honest.
+	//   - Inside a project, the specs ARE the point. Reporting "skipped" and
+	//     exiting 0 there made a failed fetch indistinguishable from an
+	//     up-to-date one: it cost us a wrong conclusion while verifying a
+	//     deploy (the reference looked stale when it had simply never
+	//     arrived), and a CI step that cannot fail is the class of defect this
+	//     project keeps finding. Same shape as a seed step that does nothing
+	//     and reports success.
 	root, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("guide: cwd: %w", err)
 	}
 	if err := codegen.GuideViaConsole(root, c.Console); err != nil {
-		fmt.Fprintf(core.Stdout, "note: skipped w17/specs/ (the platform reference): %v\n", err)
-		fmt.Fprintln(core.Stdout, "      run `w17ctl guide` again with a reachable console (after `w17ctl login`) to write it.")
-		return nil
+		if _, rerr := core.FindProjectRoot(); rerr != nil {
+			fmt.Fprintf(core.Stdout, "note: skipped w17/specs/ (the platform reference): %v\n", err)
+			fmt.Fprintln(core.Stdout, "      read the error above rather than repeating the step: `w17ctl whoami --verify`")
+			fmt.Fprintln(core.Stdout, "      says whether the credential is the problem. A refusal that survives a verified")
+			fmt.Fprintln(core.Stdout, "      login is something else, and running `login` again will not change it.")
+			return nil
+		}
+		return fmt.Errorf("guide: w17/specs/ (the platform reference) was not written: %w\n"+
+			"  fix: check the console is reachable and you are logged in (`w17ctl whoami`),\n"+
+			"       or pass --no-specs to write only AGENTS.md", err)
 	}
 	fmt.Fprintln(core.Stdout, "wrote w17/specs/ — the w17 platform reference (server-generated; read before designing)")
 	return nil
