@@ -12,10 +12,11 @@ import (
 // every .proto under proto/ to the console, and writes the returned
 // files under <root>/<gen_dir>/.
 type Cmd struct {
-	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console CodegenService. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
-	Force   bool   `name:"force" help:"Overwrite existing files at the target paths. Default: error if a target file already exists."`
+	Console        string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console CodegenService. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
+	Force          bool   `name:"force" help:"Overwrite existing files at the target paths. Default: error if a target file already exists."`
+	AdoptGitignore bool   `name:"adopt-gitignore" help:"Create w17/.gitignore if this project has none, so the compiler output stops showing up in your diffs. One-time and explicit: codegen never creates it on its own, because a project may be tracking some of the generated tree on purpose."`
 }
 
 func (c *Cmd) Run() error {
-	return codegenimpl.Run(c.Console, c.Force)
+	return codegenimpl.Run(c.Console, c.Force, c.AdoptGitignore)
 }

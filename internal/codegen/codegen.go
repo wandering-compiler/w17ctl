@@ -205,7 +205,7 @@ const w17StubsDir = "w17/stubs"
 // derivation: write / write-if-missing / delete, plus the two LOCAL-disk
 // merges it still owns (generated-go.mod replace preservation; the .po merge
 // moved server-side) and go.work sync.
-func Run(console string, force bool) error {
+func Run(console string, force bool, adoptGitignore bool) error {
 	// One window now covers the WHOLE server-side pipeline (pre-gen + main
 	// Generate + every declared generator + scaffold + sweep), where the
 	// former client gave each of those its own RPC deadline (60s main + 30s
@@ -453,10 +453,22 @@ func Run(console string, force bool) error {
 	//
 	// Non-fatal: the generated code is already on disk, and an unwritable
 	// .gitignore must not fail a good codegen.
-	if wrote, gerr := scaffold.RefreshW17Gitignore(root); gerr != nil {
+	// `--adopt-gitignore` is the one path that may CREATE the file. Codegen
+	// never does so on its own: a project may be tracking part of the
+	// generated tree deliberately, and because git ignores only what is not
+	// already tracked, a silently created ignore file would leave today's
+	// files in place and quietly stop adding tomorrow's. The consumer who
+	// reported this was tracking w17/web-client and w17/fixtures on purpose.
+	gitignore := scaffold.RefreshW17Gitignore
+	if adoptGitignore {
+		gitignore = scaffold.EnsureW17Gitignore
+	}
+	if wrote, gerr := gitignore(root); gerr != nil {
 		fmt.Fprintf(core.Stdout, "codegen: note: could not update w17/.gitignore: %v\n", gerr)
 	} else if wrote {
 		fmt.Fprintf(core.Stdout, "updated w17/.gitignore (compiler output stays out of your diffs)\n")
+	} else if adoptGitignore {
+		fmt.Fprintf(core.Stdout, "w17/.gitignore already carries every pattern w17ctl owns\n")
 	}
 	// Non-fatal advisories last — generation already succeeded.
 	printCodegenWarnings(core.Stdout, warnings)
