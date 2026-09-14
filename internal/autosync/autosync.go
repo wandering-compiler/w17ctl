@@ -37,6 +37,12 @@ func ResolveActiveInitiative(root string) (initiative string, branchFn func() st
 		if terr != nil {
 			// Autosync needs a git branch; on detached HEAD / no repo,
 			// point at the two ways out (not the removed --name flag).
+			// Name the unborn-branch case instead of blaming the repo: the
+			// two causes the generic message lists are both visibly false
+			// there, so it sends the reader to check something that is fine.
+			if b := storageclient.GitUnbornBranchFn(); b != "" {
+				return "", nil, fmt.Errorf("autosync is on and branch %q has no commits yet — the initiative is derived from the branch, and a branch with no HEAD cannot be resolved. Make the first commit (`git commit`), or set autosync:false and use 'w17ctl initiative activate <name>'", b)
+			}
 			return "", nil, fmt.Errorf("autosync is on but there's no current git branch (detached HEAD or not a git repo) — checkout a branch, or set autosync:false and use 'w17ctl initiative activate <name>'")
 		}
 		return name, func() string { return name }, nil

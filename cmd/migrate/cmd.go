@@ -335,7 +335,7 @@ func (c *ResetCmd) Run() error {
 		return fmt.Errorf("baseline push after reset: %w", err)
 	}
 
-	fmt.Fprintln(core.Stdout, "done. Next: migrate fetch + apply the new baseline, then re-seed.")
+	fmt.Fprintln(core.Stdout, "done. Next: fetch + apply the new baseline with your generated server binary, then re-seed.")
 	return nil
 }
 

@@ -197,6 +197,34 @@ func realGitCurrentBranch() string {
 	return branch
 }
 
+// GitUnbornBranchFn is indirected for the same reason GitCurrentBranchFn is.
+var GitUnbornBranchFn = realGitUnbornBranch
+
+// realGitUnbornBranch returns the checked-out branch name when the repo is on
+// an UNBORN branch — checked out, named, and with no commit yet.
+//
+// `git rev-parse --abbrev-ref HEAD` fails there, because HEAD points at a ref
+// that does not exist, and the caller above reads that failure as "no branch".
+// The message it then prints names detached HEAD and a missing repo, and on a
+// fresh `git init` + `git checkout -b` NEITHER is true — the user can see the
+// branch with `git branch --show-current` and is sent to check a repo that is
+// fine. Reported by a consumer who lost two rounds to it, in the first minute
+// of a new project, which is the only minute this state exists.
+//
+// `symbolic-ref` reads the ref HEAD NAMES rather than the commit it resolves
+// to, so it answers on an unborn branch and stays empty on a detached HEAD —
+// which is exactly the distinction the message was missing.
+func realGitUnbornBranch() string {
+	if _, err := exec.Command("git", "rev-parse", "--verify", "HEAD").Output(); err == nil {
+		return "" // HEAD resolves: whatever is wrong, it is not an unborn branch
+	}
+	out, err := exec.Command("git", "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // IsTrunkBranch reports whether name is a reserved trunk branch.
 func IsTrunkBranch(name string) bool {
 	return name == "main" || name == "master" || name == "trunk"
