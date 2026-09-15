@@ -5,6 +5,8 @@ import (
 	"net"
 	"strings"
 
+	"google.golang.org/grpc/credentials"
+
 	"github.com/wandering-compiler/w17ctl/internal/authstore"
 )
 
@@ -129,6 +131,12 @@ func ActiveInstanceURL() string {
 // addr is the console this credential set is dialing — see AuthTokenFn for
 // why the credential is resolved per address rather than from the active
 // instance.
+// BearerPerRPC is the console credential: the bearer for `addr`, plus the
+// active-org header that every scoped call needs. Exported so the storage-tier
+// dials use THIS one rather than a second copy — a second copy is how the org
+// half went missing from half the CLI for as long as it did.
+func BearerPerRPC(addr string) credentials.PerRPCCredentials { return bearerPerRPC{addr: addr} }
+
 type bearerPerRPC struct{ addr string }
 
 func (b bearerPerRPC) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
@@ -149,7 +157,7 @@ func (b bearerPerRPC) GetRequestMetadata(_ context.Context, _ ...string) (map[st
 	//
 	// It belongs here rather than at each call site for the reason the
 	// bearer does: a per-call decision is one somebody forgets.
-	if slug := orgSlugForRequest(b.addr); slug != "" {
+	if slug := OrgSlugForRequestFn(b.addr); slug != "" {
 		md["w17-org"] = slug
 	}
 	return md, nil
@@ -188,6 +196,11 @@ func ActiveOrgSlug() string { return OrgSlugFor("") }
 // back rather than sending nothing: it means the lock names an organization
 // this login cannot see, and the console's own refusal says that far better
 // than a request with no scope at all, which reads as "you picked nothing".
+// OrgSlugForRequestFn is indirected for the same reason AuthTokenFn is: a test
+// that wants to assert the credential's SHAPE should not have to stand up an
+// authstore and a project lock to do it.
+var OrgSlugForRequestFn = orgSlugForRequest
+
 func orgSlugForRequest(addr string) string {
 	if orgID := LockOrgIDBestEffort(); orgID != "" {
 		if inst := instanceFor(addr); inst != nil {

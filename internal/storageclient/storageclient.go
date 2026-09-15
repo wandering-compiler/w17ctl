@@ -15,7 +15,6 @@
 package storageclient
 
 import (
-	"context"
 	"fmt"
 	"os/exec"
 	"os/user"
@@ -23,6 +22,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
@@ -56,17 +56,20 @@ const storageMaxRecvMsgSize = 256 << 20
 // "Phase C"); the bearer rides the encrypted channel unchanged once TLS lands.
 // addr is the console being dialed — the credential is resolved per
 // address, not from the active instance (see core.AuthTokenFn).
-type bearerPerRPC struct{ addr string }
-
-func (b bearerPerRPC) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
-	token := core.AuthTokenFn(b.addr)
-	if token == "" {
-		return nil, nil
-	}
-	return map[string]string{"authorization": "Bearer " + token}, nil
-}
-
-func (bearerPerRPC) RequireTransportSecurity() bool { return false }
+// The storage tier uses core's credential rather than its own. It used to have
+// a copy, and the copy sent the bearer and NOT the active-org header — so
+// `initiative`, `checkpoint`, `review` and `env` reached the console with no org
+// scope, the grant narrowing fell back to realm-wide roles, and an org-admin was
+// refused on every one of them while codegen and migrate (which dial through
+// core) worked. The comment here claimed it was "the SAME seam core.Dial* uses";
+// it was the same shape with half the content, which is exactly the kind of
+// claim a reader believes.
+//
+// core.BearerPerRPC is the one implementation now. A second copy is how this
+// happened, and core's own comment already says why the header belongs in the
+// credential rather than at each call site: "a per-call decision is one somebody
+// forgets."
+func bearerFor(addr string) credentials.PerRPCCredentials { return core.BearerPerRPC(addr) }
 
 // ResolveStorageAddr resolves the console endpoint the storage-tier clients
 // dial. The storage tier (initiative / review / env / snapshot / checkpoint)
@@ -132,7 +135,7 @@ func DialStorage(addr string) (*StorageClients, error) {
 		core.ConsoleTransportCreds(a),
 		// Attach the logged-in bearer (no-op when not logged in) + lift the
 		// receive cap, mirroring core.Dial*. See bearerPerRPC above.
-		grpc.WithPerRPCCredentials(bearerPerRPC{addr: a}),
+		grpc.WithPerRPCCredentials(bearerFor(a)),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(storageMaxRecvMsgSize)),
 	)
 	if err != nil {
