@@ -471,6 +471,7 @@ func Run(console string, force bool, adoptGitignore bool) error {
 		fmt.Fprintf(core.Stdout, "w17/.gitignore already carries every pattern w17ctl owns\n")
 	}
 	// Non-fatal advisories last — generation already succeeded.
+	warnings = append(warnings, orphanedDBInitWarnings(root)...)
 	printCodegenWarnings(core.Stdout, warnings)
 	return nil
 }
@@ -497,7 +498,58 @@ func sdkGoModuleDirs(root, servicesDir, w17Stubs, genDir string) []string {
 	if w17Stubs != "" {
 		dirs = append(dirs, w17Stubs)
 	}
+	// genDir above is the CONVENTION, and the project's module root may not be
+	// there — a brownfield adopter who moved their stubs root keeps a
+	// `srcgo/` from their pre-w17 tree, so the conventional guess pins a
+	// go.mod this project does not own while the real one keeps the
+	// placeholder. Discover the rest the way the services dir is already
+	// discovered: a module that REQUIRES the sdk is one of ours, and the
+	// legacy tree does not.
+	dirs = append(dirs, discoverSdkModuleDirs(root, dirs)...)
 	return dirs
+}
+
+// discoverSdkModuleDirs finds project-relative dirs holding a go.mod that
+// requires the sdk and are not already listed. Bounded to two levels: every
+// module w17 emits or scaffolds sits at the root, one level down (the gen
+// dir), or two (`w17/stubs`, `w17/services/<bundle>`). Walking deeper would
+// reach a consumer's own trees, which are not ours to rewrite.
+func discoverSdkModuleDirs(root string, have []string) []string {
+	seen := map[string]bool{}
+	for _, d := range have {
+		seen[filepath.Clean(d)] = true
+	}
+	var found []string
+	var walk func(rel string, depth int)
+	walk = func(rel string, depth int) {
+		entries, err := os.ReadDir(filepath.Join(root, rel))
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			// Dot-dirs, vendored trees and node_modules are never ours, and
+			// walking them is the difference between a quick scan and a crawl.
+			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" {
+				continue
+			}
+			sub := filepath.Join(rel, name)
+			if _, err := os.Stat(filepath.Join(root, sub, "go.mod")); err == nil {
+				if c := filepath.Clean(sub); !seen[c] && sdkGoRequiredVersion(filepath.Join(root, sub, "go.mod"), core.SdkModuleBase+"/sdk/go") != "" {
+					seen[c] = true
+					found = append(found, sub)
+				}
+			}
+			if depth > 0 {
+				walk(sub, depth-1)
+			}
+		}
+	}
+	walk(".", 1)
+	return found
 }
 
 // snapshotSdkGoPins records the RESOLVED sdk/go version each module currently
@@ -1347,4 +1399,58 @@ func pruneOrphans(root string, roots []string, kept map[string]bool, stdout io.W
 		}
 	}
 	return removed, nil
+}
+
+// orphanedDBInitWarnings reports `db/init/<domain>/*.sql` files that nothing
+// applies any more.
+//
+// The generated README in that directory already explains that the schema
+// moved out, and names the hazard the move removed: "a database could be built
+// by a path no migration claimed". It does not look at what is sitting next to
+// it. A consumer had a 1969-line `01_schema.sql` there, left from before the
+// change, and their e2e suite was green BECAUSE of it — the document describing
+// the hazard was in the same folder as the hazard.
+//
+// A warning, not a deletion: the file is the project's, and deleting it would
+// have turned that green suite red with no explanation. Their ask was exactly
+// this and no more.
+//
+// `00_extensions.sql` is NOT orphaned — `CREATE EXTENSION` is the platform's
+// pre-apply step and deliberately stays, which is also why the generated
+// compose now mounts that ONE file rather than the directory. Warning about it
+// would teach the reader to ignore the warning.
+func orphanedDBInitWarnings(root string) []string {
+	domains, err := filepath.Glob(filepath.Join(root, "db", "init", "*"))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, dir := range domains {
+		sqls, err := filepath.Glob(filepath.Join(dir, "*.sql"))
+		if err != nil {
+			continue
+		}
+		for _, f := range sqls {
+			if filepath.Base(f) == "00_extensions.sql" {
+				continue
+			}
+			rel, rerr := filepath.Rel(root, f)
+			if rerr != nil {
+				rel = f
+			}
+			// Name the file. A warning that says "some file somewhere" costs
+			// the reader the same search it was written to save.
+			out = append(out, fmt.Sprintf(
+				"%s is not applied by anything.\n"+
+					"  why: the schema is no longer generated into db/init — `w17ctl schema render` writes the\n"+
+					"       plan, the generated binary applies it (`<binary> schema apply`), and `fixtures apply`\n"+
+					"       seeds it. This file only still runs if something feeds the directory to a database\n"+
+					"       by hand; the generated compose mounts 00_extensions.sql alone, so a stack built\n"+
+					"       from it ignores this.\n"+
+					"  fix: delete it once you have confirmed nothing you own applies it, or move it out of\n"+
+					"       db/init/ if you apply it yourself. It is your file — codegen will not remove it.",
+				rel))
+		}
+	}
+	return out
 }

@@ -416,6 +416,7 @@ message LockEditIntent {
     SetPluginVersionsIntent set_plugin_versions = 17;
     AdoptProjectIntent adopt_project = 18;
     SetSdkVersionIntent set_sdk_version = 19;
+    SetPbStubIntent set_pb_stub = 20;
   }
 }
 
@@ -635,6 +636,25 @@ message AddClientStubIntent {
 // rest), and re-signs. The client holds no lockpb and builds nothing.
 // project_id is the console-assigned id from RegisterProject; ci is the raw
 // wizard spec ("" / none / all / comma-separated providers).
+// SetPbStubIntent sets a `pb_stubs[]` entry's on-disk root and import prefix.
+//
+// It exists because those two fields had NO writer: `init` does not carry them
+// (BootstrapLockIntent has no such field) and no edit intent touched them, so
+// every project on earth had them empty and no way to change that. A project
+// whose stubs root is not the convention needs `package` — it is the module
+// identity, stated in the lock instead of recovered by reading a go.mod off
+// disk — and until now it could not state it.
+//
+// language selects the entry ("go"). An entry for that language is replaced;
+// one that does not exist yet is appended. An empty `output_root` keeps the
+// derivation from `stubs` (`<stubs>/pb`); `package` empty is still accepted
+// today and is what every pre-existing lock holds.
+message SetPbStubIntent {
+  string language = 1;
+  string output_root = 2;
+  string package = 3;
+}
+
 message BootstrapLockIntent {
   string project_id = 1;
   string project = 2;
@@ -698,6 +718,15 @@ message LockView {
   // derives stub_targets itself; the IR-compile path has only the lock view).
   // Lock-derived (no go.mod needed); the client supplies go_module separately.
   string plugin_pb_root = 17;
+
+  // 18 was a `gen_dir` projection, added and withdrawn on 2026-09-15. It went
+  // out in one SDK snapshot and one console deploy before being reverted: no
+  // released client ever read it, but the number is burned rather than reused.
+  // The gen dir is NOT projected on purpose — a project that moves its stubs
+  // root states its import prefix through `pb_stubs[].package`, which carries
+  // the module identity in the lock instead of having the client recover it by
+  // reading a go.mod off disk.
+  reserved 18;
 }
 
 // LockReplica projects one generated_code.replicas[] entry for
@@ -1459,6 +1488,17 @@ message GenerateRequest {
   // to a consumer: it compiled, it read as configured, and the event
   // was never published).
   repeated string business_domains = 20;
+
+  // proto_dir is the consuming project's hand-authored proto root
+  // (`generated_code.proto_dir`, default "proto"). The plugin install tree
+  // lives at `<proto_dir>/plugins/<name>/`, and a generated bundle's go.mod
+  // `replace` has to point at the plugin source THERE. It used to be a
+  // constant "proto/plugins" whose own comment named this gap ("read from the
+  // consumer's lock file when w17ctl evolves to override the default"): a
+  // project with a non-default proto dir got a replace pointing at a
+  // directory that does not exist, and only `go build` said so. Empty ==
+  // "proto".
+  string proto_dir = 21;
 }
 
 // FormatOverrideEntry is one (language, kind) → locale remap, the
