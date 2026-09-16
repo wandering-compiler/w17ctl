@@ -116,7 +116,7 @@ func (c *BuildCmd) Run() error {
 		c.cc = remoteComposeCtl(tgt.Runner)
 	} else {
 		// Compile Go + build images locally.
-		if err := docker.RunComposeFn(root, append([]string{"build"}, c.Services...)...); err != nil {
+		if err := docker.RunComposeFn(root, append(append(docker.FileArgs(root), "build"), c.Services...)...); err != nil {
 			return fmt.Errorf("stack build: compose build: %w", err)
 		}
 	}

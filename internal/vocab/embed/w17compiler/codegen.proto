@@ -417,6 +417,7 @@ message LockEditIntent {
     AdoptProjectIntent adopt_project = 18;
     SetSdkVersionIntent set_sdk_version = 19;
     SetPbStubIntent set_pb_stub = 20;
+    SetBusinessBundleIntent set_business_bundle = 21;
   }
 }
 
@@ -653,6 +654,29 @@ message SetPbStubIntent {
   string language = 1;
   string output_root = 2;
   string package = 3;
+}
+
+// SetBusinessBundleIntent rewrites an existing `business_bundles[]` entry.
+//
+// `add` refuses a second entry for a domain (one bundle per domain), and
+// nothing could edit the first — so a `register` path typed wrong in the
+// first five minutes of a project cost a full reinit. A consumer paid that,
+// and named it as one of a family: decisions taken at `init` that `init`
+// gives no way to revise. `pb_stubs` was the previous one.
+//
+// domain selects the entry and must already exist — this is `set`, not
+// `add`, and creating one here would hide a typo'd domain as a new bundle.
+// Empty `register` leaves the path as it stands; `env` REPLACES the whole
+// list when present, because a per-entry edit of an ordered list needs a
+// key those entries do not have.
+message SetBusinessBundleIntent {
+  string domain = 1;
+  string register = 2;
+  repeated string env = 3;
+  // replace_env distinguishes "leave the env list alone" from "set it to
+  // empty": both arrive as a zero-length repeated field, and a list that
+  // cannot be cleared is the same one-way door this intent exists to fix.
+  bool replace_env = 4;
 }
 
 message BootstrapLockIntent {

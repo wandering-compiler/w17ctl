@@ -80,7 +80,7 @@ func preflightPorts(root string, p *devconfig.Project, slots []devconfig.Slot, s
 // in-scope port as needing a free-port check, which is the safe default.
 func ownPublishedPorts(root string) map[int]bool {
 	out := map[int]bool{}
-	raw, err := docker.CaptureComposeFn(root, "ps", "--format", "json")
+	raw, err := docker.CaptureComposeFn(root, append(docker.FileArgs(root), "ps", "--format", "json")...)
 	if err != nil || len(raw) == 0 {
 		return out
 	}

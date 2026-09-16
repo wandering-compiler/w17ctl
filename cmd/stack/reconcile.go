@@ -76,7 +76,7 @@ func localComposeCtl(root string) composeCtl {
 	return composeCtl{
 		listServices: func() ([]string, error) { return composeServicesFn(root) },
 		stop: func(services []string) error {
-			return docker.RunComposeFn(root, append([]string{"stop"}, services...)...)
+			return docker.RunComposeFn(root, append(append(docker.FileArgs(root), "stop"), services...)...)
 		},
 	}
 }

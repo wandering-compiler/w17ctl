@@ -124,7 +124,7 @@ func (c *UpCmd) Run() error {
 		args = append(args, "--build")
 	}
 	args = append(args, services...)
-	if err := docker.RunComposeEnvFn(root, env, args...); err != nil {
+	if err := docker.RunComposeEnvFn(root, env, append(docker.FileArgs(root), args...)...); err != nil {
 		return err
 	}
 	// `stack up` doesn't sync the DB to the current branch (that's
@@ -202,7 +202,7 @@ func (c *DownCmd) Run() error {
 		}
 		return cerr
 	}
-	return docker.RunComposeFn(root, args...)
+	return docker.RunComposeFn(root, append(docker.FileArgs(root), args...)...)
 }
 
 // LogsCmd — follow service logs.
@@ -244,7 +244,7 @@ func (m modeFlags) composeVerb(root string, args ...string) error {
 		}
 		return remotecompose.Run(tgt.Runner, nil, args...)
 	}
-	return docker.RunComposeFn(root, args...)
+	return docker.RunComposeFn(root, append(docker.FileArgs(root), args...)...)
 }
 
 // PsCmd — list the stack's containers.

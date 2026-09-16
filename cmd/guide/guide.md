@@ -68,7 +68,9 @@ compiler directly — you drive `w17ctl`.
 | See how to annotate a surface | `w17ctl template <surface>` (`--list`) |
 | Add a domain / module | `w17ctl domain add` / `w17ctl module add` |
 | Add a DB/store connection | `w17ctl connection add` |
+| See what plugins exist | `w17ctl plugin list` |
 | Install a plugin (auth, …) | `w17ctl plugin install <name>` |
+| **Activate** it — installing does NOT | name it in `(w17.domain).plugins` in the domain's `w17.proto`, then `w17ctl codegen --force` |
 | Generate all code | `w17ctl codegen` |
 | Check for generated-vs-proto drift (CI) | `w17ctl verify` |
 | Plan / list migrations | `w17ctl migrate generate` / `migrate list` |

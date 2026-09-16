@@ -699,6 +699,30 @@ func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[stri
 		}
 	}
 	fmt.Fprintf(stdout, "codegen: pinned %s %s in %d module(s) (from %s)\n", sdkMod, ver, len(targets), how)
+	// A module the project has never pinned before inherits the version the
+	// project's EXISTING modules carry — which keeps a project on one
+	// version, and is also how a newly emitted bundle can be handed a
+	// version older than the code just written for it needs. A consumer's
+	// first composed binary imported tooling/migrate/migratecli and was
+	// pinned to an SDK predating that package: codegen exited 0 and
+	// `go build` reported a missing module with nothing tying it back here.
+	//
+	// Naming the inheritance at the moment it happens is what was missing;
+	// the version and its source were already printed, and neither says
+	// that THIS module is new.
+	if how == "project" {
+		var fresh []string
+		for _, d := range targets {
+			if v, ok := prior[filepath.ToSlash(d)]; !ok || v == "" {
+				fresh = append(fresh, d)
+			}
+		}
+		if len(fresh) > 0 {
+			fmt.Fprintf(stdout, "codegen: %s had no pin of its own and took the project's — "+
+				"if a build there reports a missing sdk/go package, that version predates it; "+
+				"`w17ctl sdk update` moves the whole project forward\n", strings.Join(fresh, ", "))
+		}
+	}
 	return nil
 }
 

@@ -159,12 +159,13 @@ func (c *ListCmd) Run() error {
 		name      string
 		version   string
 		source    string
+		desc      string
 		installed bool
 	}
 	rows := []row{}
 	seen := map[string]bool{}
 	for _, p := range served {
-		r := row{name: p.GetName(), version: p.GetVersion(), source: "console"}
+		r := row{name: p.GetName(), version: p.GetVersion(), source: "console", desc: p.GetDescription()}
 		if inst, ok := installed[p.GetName()]; ok {
 			r.installed = true
 			r.version = inst.Version
@@ -196,6 +197,11 @@ func (c *ListCmd) Run() error {
 			state = "installed"
 		}
 		fmt.Fprintf(core.Stdout, "%-20s %-12s %-9s (%s)\n", r.name, r.version, state, r.source)
+		// The description answers "what is this for", which is otherwise only
+		// discoverable by installing the plugin and reading its manifest.
+		if d := firstSentence(r.desc); d != "" {
+			fmt.Fprintf(core.Stdout, "  %s\n", d)
+		}
 	}
 	return nil
 }
@@ -327,7 +333,53 @@ func (c *InstallCmd) Run() error {
 		return fmt.Errorf("plugin install: install staged tree for %s: %w", name, err)
 	}
 	fmt.Fprintf(core.Stdout, "plugin install: %s@%s → %s (lock re-signed)\n", manifest.GetName(), manifest.GetVersion(), targetDir)
+	printActivationHint(manifest.GetName())
 	return nil
+}
+
+// printActivationHint tells the operator the step that installing does NOT do.
+//
+// Installing writes the plugin's tree and records it in the lock. It does not
+// switch anything on: a plugin is activated by naming it in a domain's
+// `(w17.domain).plugins`, and until that happens `codegen` emits nothing for
+// it — no file, no mention, no warning. A consumer reported that as a broken
+// plugin, which is the right reading of the evidence they had.
+//
+// Printed here rather than documented somewhere because this is the moment the
+// question is asked, and everything needed to answer it is in hand.
+func printActivationHint(name string) {
+	fmt.Fprintf(core.Stdout, `
+Installing does not enable it. Add the plugin to a domain's sentinel
+(<proto-dir>/domains/<domain>/w17.proto):
+
+    import "w17/domain.proto";
+
+    option (w17.domain) = {
+      plugins: [
+        { source_name: %q }
+      ]
+    };
+
+then run `+"`w17ctl codegen --force`"+`. Until a domain names it, codegen emits
+nothing for this plugin.
+`, name)
+}
+
+// firstSentence trims a manifest description to its first sentence, so a list
+// of plugins stays a list rather than becoming a page.
+func firstSentence(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if i := strings.Index(s, ". "); i > 0 {
+		return s[:i+1]
+	}
+	const max = 96
+	if len(s) > max {
+		return strings.TrimSpace(s[:max]) + "…"
+	}
+	return s
 }
 
 // UpdateCmd implements `w17ctl plugin update <name>` and

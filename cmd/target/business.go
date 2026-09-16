@@ -21,6 +21,7 @@ import (
 // domain, and re-signs); list reads through DescribeLock.
 type BusinessCmd struct {
 	Add  BusinessAddCmd  `cmd:"" help:"Append a business_bundles[] entry so codegen emits the domain's <domain>-business bundle (the facade tier the project's RegisterBusiness plugs into). Re-signs on save."`
+	Set  BusinessSetCmd  `cmd:"" help:"Rewrite an existing business_bundles[] entry — the way back from a register path typed wrong (add refuses a second entry for the domain)."`
 	List BusinessListCmd `cmd:"" help:"List the business_bundles[] entries declared in the lock."`
 }
 
@@ -57,6 +58,58 @@ func (c *BusinessAddCmd) Run() error {
 	}
 	fmt.Fprintf(core.Stdout, "business add: %s → %s-business (RegisterBusiness=%s, %d env) → %s\n",
 		c.Domain, c.Domain, strings.Trim(c.Register, "/"), len(c.Env), c.LockPath)
+	return nil
+}
+
+// BusinessSetCmd implements `w17ctl target business set` — the missing half
+// of `add`.
+//
+// `add` allows one entry per domain and nothing could edit it, so the first
+// `register` a project typed was final: a consumer who passed a full import
+// path where a module-relative one belongs had no way back short of
+// reinitialising the project. They named it as one of a family — decisions
+// taken at `init` that `init` gives no way to revise — of which `pb_stubs`
+// was the previous one.
+type BusinessSetCmd struct {
+	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the bindings the project was initialised against."`
+
+	Domain   string   `name:"domain" required:"" help:"Domain whose entry to rewrite. Must already exist — 'target business add' creates one."`
+	Register string   `name:"register" placeholder:"IMPORT" help:"New Go-module-RELATIVE import path of the package exposing RegisterBusiness. Empty leaves the current one."`
+	Env      []string `name:"env" placeholder:"SPEC" help:"Declared env var, repeatable. Passing any --env REPLACES the whole list; pass --clear-env to empty it. Format name[:type[:default[:description]]]."`
+	ClearEnv bool     `name:"clear-env" help:"Set the env list to empty. Without this, omitting --env leaves the current list alone — the two are different intents and a list that cannot be cleared is the same one-way door this command exists to open."`
+}
+
+func (c *BusinessSetCmd) Run() error {
+	if strings.TrimSpace(c.Domain) == "" {
+		return fmt.Errorf("business set: --domain required")
+	}
+	replaceEnv := len(c.Env) > 0 || c.ClearEnv
+	if strings.TrimSpace(c.Register) == "" && !replaceEnv {
+		return fmt.Errorf("business set: nothing to set — pass --register, --env, or --clear-env")
+	}
+	if err := core.EditLockOnDisk("business set", c.Console, c.LockPath, &codegenpb.LockEditIntent{
+		Intent: &codegenpb.LockEditIntent_SetBusinessBundle{
+			SetBusinessBundle: &codegenpb.SetBusinessBundleIntent{
+				Domain:     c.Domain,
+				Register:   c.Register,
+				Env:        c.Env,
+				ReplaceEnv: replaceEnv,
+			},
+		},
+	}); err != nil {
+		return err
+	}
+	switch {
+	case strings.TrimSpace(c.Register) != "" && replaceEnv:
+		fmt.Fprintf(core.Stdout, "business set: %s → RegisterBusiness=%s, %d env → %s\n",
+			c.Domain, strings.Trim(c.Register, "/"), len(c.Env), c.LockPath)
+	case strings.TrimSpace(c.Register) != "":
+		fmt.Fprintf(core.Stdout, "business set: %s → RegisterBusiness=%s → %s\n",
+			c.Domain, strings.Trim(c.Register, "/"), c.LockPath)
+	default:
+		fmt.Fprintf(core.Stdout, "business set: %s → %d env → %s\n", c.Domain, len(c.Env), c.LockPath)
+	}
 	return nil
 }
 

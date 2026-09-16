@@ -321,7 +321,7 @@ func projectPs(cfg *devconfig.Config, name string, p *devconfig.Project) error {
 		return err
 	}
 	if mode != devconfig.ModeRemote {
-		return docker.RunComposeFn(p.Path, "ps")
+		return docker.RunComposeFn(p.Path, append(docker.FileArgs(p.Path), "ps")...)
 	}
 	_, r, err := cfg.ResolveRemote(p.Path, "")
 	if err != nil {

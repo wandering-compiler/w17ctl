@@ -284,7 +284,7 @@ func (c *ResetCmd) Run() error {
 
 	// --- step 2: drop the DB ----------------------------------------
 	fmt.Fprintln(core.Stdout, "tearing down: docker compose down -v")
-	if err := docker.RunComposeFn(root, "down", "-v"); err != nil {
+	if err := docker.RunComposeFn(root, append(docker.FileArgs(root), "down", "-v")...); err != nil {
 		return fmt.Errorf("docker compose down -v: %w", err)
 	}
 
@@ -297,7 +297,7 @@ func (c *ResetCmd) Run() error {
 
 	if c.Up {
 		fmt.Fprintln(core.Stdout, "bringing stack back up: docker compose up -d")
-		if err := docker.RunComposeFn(root, "up", "-d"); err != nil {
+		if err := docker.RunComposeFn(root, append(docker.FileArgs(root), "up", "-d")...); err != nil {
 			return fmt.Errorf("docker compose up -d: %w", err)
 		}
 	}

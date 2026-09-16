@@ -58,7 +58,7 @@ func Run(stdout io.Writer, root, version string) error {
 	if version != "" && !semver.IsValid(version) {
 		return fmt.Errorf("sdk update: %q is not a valid version (want e.g. v0.0.0-20260716201145-36e33cc8168a)", version)
 	}
-	mods, err := findSdkModules(root, SdkModule)
+	mods, err := findSdkModules(stdout, root, SdkModule)
 	if err != nil {
 		return err
 	}
@@ -161,10 +161,32 @@ func goSumUpsert(prior, mod, ver, zipHash, modHash string) string {
 // module carrying a `replace` is co-dev: its resolution is owned by the
 // checkout it points at, so bumping a version there would be meaningless
 // churn.
-func findSdkModules(root, mod string) ([]string, error) {
+func findSdkModules(stdout io.Writer, root, mod string) ([]string, error) {
 	var out []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// A directory this process cannot read holds no go.mod it could
+			// act on, so it is not a reason to stop — it used to be. A
+			// consumer's `.volumes/postgres` (a root-owned docker mount that
+			// has nothing to do with w17) ended the whole walk, and with it
+			// the prescribed way to move a project's SDK version. The empty
+			// directory of a fresh project has no such entries; a repo that
+			// RUNS something almost always does.
+			//
+			// Said out loud rather than swallowed: a skipped subtree is a
+			// place this command did not look, and the author is the only
+			// one who knows whether a module lives there.
+			if os.IsPermission(err) {
+				rel, relErr := filepath.Rel(root, path)
+				if relErr != nil {
+					rel = path
+				}
+				fmt.Fprintf(stdout, "sdk update: skipping %s (not readable) — no module under it was considered\n", rel)
+				if d != nil && d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			return err
 		}
 		if d.IsDir() {
