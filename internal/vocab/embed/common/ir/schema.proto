@@ -596,6 +596,13 @@ message Column {
   // diagnostics (which labels were removed) and admin / client reconstruction.
   // Empty for non-enum elements and non-collection carriers.
   repeated string element_enum_names = 52;
+
+  // Geospatial parameters, carried for DBT_GEOMETRY / DBT_GEOGRAPHY only.
+  // geometry_type is the shape the column accepts; srid the spatial
+  // reference. Beside precision/scale above, which do the same job for
+  // DBT_NUMERIC.
+  string geometry_type = 60;
+  int32 srid = 61;
 }
 
 // PgOptions mirrors (w17.pg.field). Curated jsonb / inet / tsvector / hstore
@@ -1105,5 +1112,10 @@ enum DbType {
   DBT_INTERVAL = 74;
   DBT_BYTEA = 80;
   DBT_BLOB = 81;
-  DBT_BOOLEAN = 90;
+DBT_BOOLEAN = 90;
+  // Geospatial (PG-native, postgis). Shape + SRID ride on the Column as
+  // geometry_type / srid — see the authored (w17.field) doc for why the shape
+  // is required and why the SRID defaults to 4326.
+  DBT_GEOMETRY  = 100;
+  DBT_GEOGRAPHY = 101;
 }

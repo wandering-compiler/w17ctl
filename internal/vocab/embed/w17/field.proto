@@ -585,6 +585,28 @@ message Field {
   // 2-decimal number. Spec: docs/specs/i18n/formatting.md.
   string format = 32;
 
+  // --- GEOMETRY / GEOGRAPHY parameters (db_type GEOMETRY / GEOGRAPHY only) ---
+  //
+  // Same shape as `precision`/`scale` on DECIMAL: the db_type names the
+  // storage, the parameters live here, and the IR builder refuses them on a
+  // column that is not geometric.
+  //
+  // geometry_type is the SHAPE the column accepts — `Point`, `LineString`,
+  // `Polygon`, `MultiPolygon`, `GeometryCollection`, … Required, and required
+  // for a reason a reader should not have to discover: an unconstrained
+  // `geometry` column accepts any shape, so a table meant to hold building
+  // footprints will happily take a point, and the query that assumed
+  // otherwise returns a wrong answer rather than an error. PostGIS enforces
+  // the constraint in the column type; w17 makes you say which one.
+  string geometry_type = 71;
+  // srid is the spatial reference the coordinates are in. Defaults to 4326
+  // (WGS 84 lon/lat) when omitted, because that is what almost every source
+  // of geographic data hands over and a silent mismatch between two SRIDs is
+  // the geospatial equivalent of adding metres to feet — PostGIS refuses to
+  // compare them, which is the good case; the bad case is two columns that
+  // agree by accident.
+  int32 srid = 72;
+
   // Field numbers 3 (fk) and 15 (orphanable) have moved to
   // (w17.db.column) — they're DB-specific rules (like indexes /
   // constraints), not data semantics. See D8 rev 2026-04-21 and D12.

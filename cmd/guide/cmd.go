@@ -10,6 +10,7 @@
 package guide
 
 import (
+	"bytes"
 	_ "embed"
 	"fmt"
 	"os"
@@ -41,6 +42,26 @@ func (c *Cmd) Run() error {
 	if _, statErr := os.Stat(c.Out); statErr == nil {
 		if !c.Force {
 			return fmt.Errorf("guide: %s already exists — pass --force to refresh, or --stdout to print", c.Out)
+		}
+		// --force replaces the file with THIS binary's copy, which can be
+		// older than what is already there.
+		//
+		// The guide is compiled in, so the version that wrote the existing
+		// file is whatever w17ctl the author last ran — possibly a newer one,
+		// on another machine or for another domain. A consumer lost advice
+		// that way: their AGENTS.md carried lines their local binary had never
+		// heard of, and --force replaced them silently. They restored it from
+		// git, which is the only reason they noticed.
+		//
+		// Overwriting is still what --force means, so this does not refuse.
+		// It says what is happening, because a one-way replacement the user
+		// cannot see is the part that cost them.
+		if existing, rerr := os.ReadFile(c.Out); rerr == nil && !bytes.Equal(existing, guideBody) {
+			fmt.Fprintf(core.Stdout,
+				"guide: replacing %s with this binary's copy (w17ctl %s).\n"+
+					"  note: the guide ships INSIDE w17ctl, so a file written by a NEWER client loses\n"+
+					"        whatever that version had to say. `git diff %s` before committing.\n",
+				c.Out, core.Version, c.Out)
 		}
 	} else if !os.IsNotExist(statErr) {
 		return fmt.Errorf("guide: stat %s: %w", c.Out, statErr)
