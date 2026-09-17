@@ -391,7 +391,7 @@ func runDevDiffApply(sc *storageclient.StorageClients, project, actor, initiativ
 	// the plan/compat RPCs + the checkpoint advance all consume it verbatim.
 	ctx, cancel := context.WithTimeout(context.Background(), 120e9)
 	defer cancel()
-	if _, err := plan.DevPlanAndApply(ctx, baseBytes, currentBytes, applierFor, logf); err != nil {
+	if _, err := plan.DevPlanAndApply(ctx, baseBytes, currentBytes, applierFor, conns, logf); err != nil {
 		// Nil-checkpoint "already exists": the store was bootstrapped from
 		// db/init (full schema on a fresh volume) but has no dev checkpoint
 		// yet, so the first diff-apply — base nil → full create — collides

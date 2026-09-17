@@ -162,7 +162,11 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 			if err := wipeStores(ctx, applierFor, connNames, logf); err != nil {
 				return err
 			}
-			_, err := plan.DevPlanAndApply(ctx, nil, currentBytes, applierFor, logf)
+			// No connection list here: a reconcile builds from NIL base
+			// (a full create), so there is no checkpoint claim to verify
+			// against — the comparison exists to catch a base that lies,
+			// and an empty base cannot.
+			_, err := plan.DevPlanAndApply(ctx, nil, currentBytes, applierFor, nil, logf)
 			return err
 		},
 		SeedFixtures: func(ctx context.Context) error {

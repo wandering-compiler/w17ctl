@@ -1276,6 +1276,57 @@ message PlanIRRequest {
   // (`stack build`) sends none — it reconciles a developer's local store,
   // which no deploy gate ever inspects.
   repeated PlanBaseline baselines = 3;
+
+  // observed is what the caller's databases ACTUALLY contain right now, read
+  // straight out of them.
+  //
+  // `base` is what the console BELIEVES they contain — the checkpoint it
+  // recorded after the last apply — and the two can disagree without anybody
+  // noticing: a database edited by hand, a `--target` pointed somewhere else,
+  // a branch whose checkpoint belongs to a different tree. The plan is then
+  // computed against a state that does not exist, and the SQL it produces is
+  // applied to one that does.
+  //
+  // Sent so the server can REFUSE instead of planning against a fiction. It is
+  // deliberately a dumb structural read — tables and columns, no
+  // interpretation — because the client must not have to understand a schema
+  // to report one, and the console already owns every rule for deciding what a
+  // difference means.
+  //
+  // Optional. Absent means "I could not look" (a store with no introspection,
+  // an older client), which is not the same as "nothing is there" and does not
+  // refuse anything.
+  repeated ObservedStore observed = 4;
+}
+
+// ObservedStore is one connection's live schema as the client found it.
+message ObservedStore {
+  // connection is the lock connection NAME, so the server can line each store
+  // up with the migration the plan produces for it.
+  string connection = 1;
+  repeated ObservedTable tables = 2;
+}
+
+// ObservedTable is one table as the database reports it.
+message ObservedTable {
+  // schema is the namespace the table lives in — `public` unless a
+  // (w17.module).schema put it elsewhere. Carried because a table's identity
+  // is the pair, and a namespace that failed to be created is exactly the kind
+  // of drift this exists to catch.
+  string schema = 1;
+  string name = 2;
+  repeated ObservedColumn columns = 3;
+}
+
+// ObservedColumn is one column as the database reports it.
+//
+// Type is the database's OWN spelling (`character varying`, `bigint`), not a
+// w17 type: the client does not map, and the server compares what it knows the
+// emitter wrote against what the database says it stored.
+message ObservedColumn {
+  string name = 1;
+  string type = 2;
+  bool nullable = 3;
 }
 
 // PlanBaseline is one connection's ledger pin, mirroring the two lock fields
