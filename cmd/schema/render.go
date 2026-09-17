@@ -2,6 +2,7 @@ package schema
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
@@ -76,7 +77,40 @@ func (c *RenderCmd) Run() error {
 		fmt.Fprintf(core.Stdout, "schema render: %s — %d byte(s) of DDL\n", m.GetConnection(), len(m.GetUpSql()))
 	}
 	fmt.Fprintf(core.Stdout, "schema render: %d connection(s) → %s\n", len(p.GetMigrations()), c.Out)
+	warnStaleArtefactName(c.Out)
 	return nil
+}
+
+// warnStaleArtefactName says so when the OLD artefact is still lying beside
+// the new one.
+//
+// The file this writes was renamed (`dev-plan.json` → `schema-snapshot.json`),
+// and the binary that READS it is not this client — it is built from the SDK
+// version the lock pins. Upgrade the client without moving that pin and the
+// new name is written while the old binary looks for the old one, which is a
+// version skew reported as a missing file.
+//
+// A consumer hit exactly that and spent the time on it that the message cost
+// them: `fix: run schema render and commit what it writes` — which they had
+// just done, a second earlier, with the file sitting right there. Advice that
+// names a state which did not happen sends the reader the wrong way before
+// they start looking.
+//
+// The leftover file is the visible half of the skew and the only half this
+// command can see, so it is what gets named.
+func warnStaleArtefactName(dir string) {
+	legacy := filepath.Join(dir, "dev-plan.json")
+	if _, err := os.Stat(legacy); err != nil {
+		return
+	}
+	fmt.Fprintf(core.Stdout,
+		"\nschema render: %s is still here, and nothing writes it any more.\n"+
+			"  why: this artefact was renamed to schema-snapshot.json. The binary that READS it is\n"+
+			"       built from the SDK version your lock pins, NOT from this client — so if that pin\n"+
+			"       predates the rename, it will look for dev-plan.json and report it missing while\n"+
+			"       the snapshot sits beside it.\n"+
+			"  fix: w17ctl sdk update && w17ctl sdk pin <version>, then delete %s\n",
+		legacy, legacy)
 }
 
 // resolveProtos mirrors `fixtures render`: an explicit --proto when given,

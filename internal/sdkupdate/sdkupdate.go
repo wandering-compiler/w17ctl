@@ -94,6 +94,46 @@ func Run(stdout io.Writer, root, version string) error {
 }
 
 // applyToModule rewrites one module's go.mod require + go.sum entries.
+// AlreadyAt reports whether every module that requires `mod` already requires
+// exactly `ver` — i.e. an update would move nothing.
+//
+// It exists so the caller can stop advising a follow-up step that has nothing
+// to follow: a consumer ran `sdk update` on an already-consistent tree, was
+// told to pin, pinned nothing, and read the same advice again. Advice printed
+// unconditionally is advice people learn to skip, and the next time it matters
+// they will skip it then too.
+func AlreadyAt(root, mod, ver string) bool {
+	mods, err := findSdkModules(io.Discard, root, mod)
+	if err != nil || len(mods) == 0 {
+		return false
+	}
+	for _, d := range mods {
+		have, err := requiredVersion(filepath.Join(root, d), mod)
+		if err != nil || have != ver {
+			return false
+		}
+	}
+	return true
+}
+
+// requiredVersion reads one module's recorded requirement for `mod`.
+func requiredVersion(dir, mod string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return "", err
+	}
+	f, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range f.Require {
+		if r.Mod.Path == mod {
+			return r.Mod.Version, nil
+		}
+	}
+	return "", nil
+}
+
 func applyToModule(dir, mod, ver, zipHash, modHash string) error {
 	goModPath := filepath.Join(dir, "go.mod")
 	data, err := os.ReadFile(goModPath)

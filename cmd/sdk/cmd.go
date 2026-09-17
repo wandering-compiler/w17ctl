@@ -46,8 +46,19 @@ type UpdateCmd struct {
 // Run delegates to the implementation, rendering progress to the shared
 // output writer.
 func (c *UpdateCmd) Run() error {
+	// Whether anything MOVED decides whether the advice below is worth
+	// printing, and it has to be read before the update rewrites it.
+	settled := c.Version != "" && sdkupdate.AlreadyAt(c.ProjectRoot, sdkupdate.SdkModule, c.Version)
 	if err := sdkupdate.Run(core.Stdout, c.ProjectRoot, c.Version); err != nil {
 		return err
+	}
+	if settled {
+		// Nothing moved, so there is nothing to make stick. A consumer ran
+		// this on an already-consistent tree, was told to pin, pinned nothing,
+		// and got the same line again — advice printed unconditionally is
+		// advice people learn to skip, and then skip on the run where it
+		// mattered.
+		return nil
 	}
 	// The files are moved; the LOCK is not, and this command cannot move it
 	// — the lock is signed by the console and this command deliberately
