@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	"io"
 	"io/fs"
 	"net/http"
@@ -251,7 +252,22 @@ func Run(console string, force bool, adoptGitignore bool) error {
 	servicesDir := view.GetServicesDir()
 	languagesDir := view.GetLanguagesDir()
 
+	// The project's own lock says where its Go module lives; the convention is
+	// only the fallback. Assuming `srcgo` reads the WRONG go.mod in a repo
+	// that has one there for its own reasons — a consumer's bundle ended up
+	// with `replace <their module> => ../../../srcgo`, pointing at an
+	// unrelated module that happened to sit at the conventional path, which
+	// Go reports as conflicting replacements rather than as a wrong guess.
+	//
+	// Read from the lock FILE rather than from DescribeLock: the projection
+	// deliberately carries no gen dir, and this is a local question anyway —
+	// which file on this disk holds the module.
 	genDir := defaultGenDir
+	if lk, lkErr := lockfile.Load(filepath.Join(root, "w17", "lock.yaml")); lkErr == nil {
+		if d := lk.GeneratedCode.GenDir(); d != "" {
+			genDir = d
+		}
+	}
 	goModule := readGoModule(root, genDir)
 	if goModule == "" && core.DomainsActivatePlugin(filepath.Join(root, protoDir, "domains")) {
 		// readGoModule found no `module` line yet a domain activates a plugin —

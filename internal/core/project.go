@@ -100,6 +100,17 @@ func realReadProtoTree(root, protoDir string) ([]*codegenpb.ProtoFile, error) {
 	protoRoot := filepath.Join(root, protoDir)
 	info, err := os.Stat(protoRoot)
 	if err != nil {
+		// A project between `init` and its first `domain add` has no proto
+		// tree yet, and that is a state every adoption passes through — the
+		// second command looks at it. It used to surface as a bare `stat`
+		// naming an absolute path, which says what the tool tried and nothing
+		// about what to do. Installing a plugin does not create this
+		// directory either: a plugin is activated FROM a domain's sentinel,
+		// so the domain comes first.
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("no proto tree at %s yet — `w17ctl domain add <name>` "+
+				"scaffolds the first domain, and codegen has something to read once it exists", protoDir)
+		}
 		return nil, fmt.Errorf("stat %s: %w", protoRoot, err)
 	}
 	if !info.IsDir() {

@@ -129,6 +129,26 @@ option (w17.module) = {
     version: "18"
   }
 };
+// Plugins are activated HERE, and only here. 'w17ctl plugin install'
+// writes a plugin's tree and records it in the lock; it does not switch
+// anything on. Until a domain names a plugin below, codegen emits
+// nothing for it — no file, no mention, no warning.
+//
+// Uncomment and name a plugin from 'w17ctl plugin list':
+//
+// import "w17/domain.proto";
+//
+// option (w17.domain) = {
+//   plugins: [
+//     {
+//       source_name:   "auth"    // as listed by 'w17ctl plugin list'
+//       registered_as: "auth"    // this activation's name; the tables,
+//                                // packages and pb paths key off it, so
+//                                // the same plugin can be activated twice
+//       // features: { names: [ "rbac" ] }   // opt into the optional halves
+//     }
+//   ]
+// };
 `
 
 // DomainWithExampleProto extends the bare skeleton with the

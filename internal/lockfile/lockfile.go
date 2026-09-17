@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -85,6 +86,33 @@ type Lock struct {
 // offline; the console owns the rest).
 type GeneratedCode struct {
 	ProtoDir string `yaml:"proto_dir"`
+	// Stubs is the Go stub tree root (`srcgo/gen` conventionally). Its FIRST
+	// SEGMENT is the directory holding the project's hand-written Go module,
+	// which is where `init` scaffolds the go.mod — so it is how a client finds
+	// that module without assuming the convention.
+	//
+	// Read from disk rather than from DescribeLock on purpose: the projection
+	// deliberately does NOT carry a gen dir (field 18 of LockView is reserved
+	// for a version of exactly that, added and withdrawn), because the console
+	// applies the project's real value server-side. That is right for what the
+	// SERVER composes; it leaves the client needing a local answer for a local
+	// question — which file on this disk holds the module — and the lock is
+	// already here.
+	Stubs string `yaml:"stubs"`
+}
+
+// GenDir is the directory holding the project's hand-written Go module: the
+// first segment of the stubs root. Empty when the lock does not say, and the
+// caller then keeps the convention.
+func (g GeneratedCode) GenDir() string {
+	s := strings.Trim(g.Stubs, "/")
+	if s == "" {
+		return ""
+	}
+	if i := strings.Index(s, "/"); i > 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // Plugin mirrors a lock plugins[] entry's identity fields.
