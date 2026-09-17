@@ -14,5 +14,5 @@ package schema
 
 // Cmd is the `w17ctl schema` parent.
 type Cmd struct {
-	Render RenderCmd `cmd:"" help:"Render the project's DEV schema plan into the artefact a generated binary applies (<out>/dev-plan.json). Replaces the db/init bootstrap: that ran only on a FRESH postgres volume, so a schema change never reached a database that already existed."`
+	Render RenderCmd `cmd:"" help:"Render the project's DEV schema SNAPSHOT — one create-from-empty per connection — into the artefact a generated binary applies at start-up (schema-snapshot.json + a .ddl beside it). It BOOTSTRAPS an empty database; it cannot reconcile one that already has a schema. For that use 'w17ctl stack build'."`
 }

@@ -47,6 +47,7 @@ type BuildCmd struct {
 	Console         string   `name:"console" placeholder:"HOST:PORT" env:"CONSOLE_STORAGE_ADDR" help:"Console storage endpoint (holds the checkpoints). Defaults to the logged-in console (w17ctl login), else the compiled-in default."`
 	Reconcile       bool     `name:"reconcile" help:"Force the branch-switch reconcile even when the project's autosync mode is off. (When on — the default — reconcile already runs on an initiative change.)"`
 	NoCodegen       bool     `name:"no-codegen" help:"Skip the codegen step (assume the generated code is already current). By default 'stack build' runs codegen first so the images compile against fresh generated code."`
+	NoBuild         bool     `name:"no-build" help:"Skip building images and sync the local database only. The schema sync and the image build are independent steps that happen to share this command; with this flag the sync needs no Docker daemon, no build context and no compose file at all. Use it when you changed a proto and want the database to match."`
 	modeFlags
 
 	// cc is the compose control reconcile's Quiesce uses to stop non-store
@@ -114,12 +115,18 @@ func (c *BuildCmd) Run() error {
 		// Reconcile's Quiesce must stop the REMOTE non-store services (over
 		// SSH), not local ones.
 		c.cc = remoteComposeCtl(tgt.Runner)
-	} else {
+	} else if !c.NoBuild {
 		// Compile Go + build images locally.
 		if err := docker.RunComposeFn(root, append(append(docker.FileArgs(root), "build"), c.Services...)...); err != nil {
 			return fmt.Errorf("stack build: compose build: %w", err)
 		}
 	}
+	// --no-build stops HERE and falls through to the diff-apply. The two steps
+	// are independent and only share a command: building images has nothing to
+	// do with reconciling a schema, and a consumer who asked for the second
+	// could not reach it because the first failed on a compose file that was
+	// none of w17's business. Reported as the half that mattered most of the
+	// three they asked for.
 
 	return c.diffApplyTail(root, applyWrap)
 }

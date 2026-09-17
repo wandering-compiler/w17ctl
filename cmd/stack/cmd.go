@@ -25,7 +25,7 @@ import (
 // lifecycle verbs (up / down / logs / ps / restart). `clean` stays
 // top-level: it removes codegen output, not the compose stack.
 type Cmd struct {
-	Build   BuildCmd   `cmd:"" help:"Compile + build images, then dev diff-apply the current proto to the local stores (no run). See 'stack build --help'."`
+	Build   BuildCmd   `cmd:"" help:"SYNC the local dev database to the current proto (diff-apply), and build images on the way. This is how a schema change reaches a database that ALREADY EXISTS — 'schema apply' builds one from empty and leaves an existing schema alone, and 'migrate apply' is for deployed environments."`
 	Up      UpCmd      `cmd:"" help:"Bring the local compose stack (or named services) up: docker compose up -d. Pass --build to rebuild images first; run 'stack build' for dev diff-apply."`
 	Down    DownCmd    `cmd:"" help:"Tear the local compose stack down: docker compose down -v (drops volumes unless --keep-volumes)."`
 	Reset   ResetCmd   `cmd:"" help:"Recover a tangled local dev DB: wipe the stores, re-apply db/init (current schema), and adopt it as the checkpoint baseline so the next 'stack build' is a no-op. The fix for the first-build db/init collision + any wiped-volume/checkpoint drift."`

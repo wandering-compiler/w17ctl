@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -26,10 +25,18 @@ import (
 
 // composeServicesFn captures `docker compose config --services` (the
 // full service inventory). A package var so tests can stub it.
+//
+// Goes through docker.CaptureComposeFn — which prepends the explicit `-f` —
+// rather than shelling out itself. It used to shell out, and that one call
+// was enough to undo the scoping everywhere else: a consumer's `stack build`
+// still read the compose file at their repo root, because THIS is the call
+// that discovers services and it never saw the flag the other nine got.
+//
+// The rule is worth stating because the bypass is so easy to write: nothing
+// in this client runs `docker compose` except through internal/docker, and
+// the reason is that the file selection lives there and nowhere else.
 var composeServicesFn = func(root string) ([]string, error) {
-	cmd := exec.Command("docker", "compose", "config", "--services")
-	cmd.Dir = root
-	out, err := cmd.Output()
+	out, err := docker.CaptureComposeFn(root, append(docker.FileArgs(root), "config", "--services")...)
 	if err != nil {
 		return nil, err
 	}

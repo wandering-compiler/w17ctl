@@ -47,7 +47,7 @@ import (
 // migration pipeline; `migrate generate` always goes through the
 // console.
 type Cmd struct {
-	Generate      GenerateCmd      `cmd:"" help:"Compile the proto schema and push it to the console, which plans + stores the SQL migrations and pins the lock target. Auto-detects initial (create) vs revision (update + diff); --initial forces the initial push."`
+	Generate      GenerateCmd      `cmd:"" help:"Compile the proto schema and push it to the console, which plans + stores the SQL migrations and pins the lock target. Run it ONCE, when the schema is settled and you are opening a PR — not after every proto edit. During development the local database is kept in step by 'w17ctl stack build', which writes no migration; running generate per change produces a history of round-trips instead of a record of decisions."`
 	List          ListCmd          `cmd:"" help:"List migrations stored on the console for a project. Optional connection-name filter + pagination."`
 	PushRaw       PushRawCmd       `cmd:"" name:"push-raw" help:"Push a hand-authored YAML data migration body to console (escape hatch for TRANSFORM_FIELD + complex transitions)."`
 	Status        StatusCmd        `cmd:"" help:"Show each connection's pinned target migration + how many fetched artifacts are on disk. Offline, read-only."`

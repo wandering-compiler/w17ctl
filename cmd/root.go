@@ -106,7 +106,7 @@ var root struct {
 
 	// --- Schema & migration lifecycle ---
 	Push    pushcmd.Cmd    `cmd:"" help:"Push everything (schema + fixtures + future artifact types) to console in one call. Server diffs and stores. Idempotent — safe to re-run any time inputs change."`
-	Migrate migratecmd.Cmd `cmd:"" help:"Migration surface — generate (compile + push schema; console plans the SQL migrations), list history, push a raw body, reset (DEV-only destructive recreate). See 'migrate --help'."`
+	Migrate migratecmd.Cmd `cmd:"" help:"Migration surface for a DEPLOYED environment — generate (compile + push schema; console plans the SQL migrations), list history, push a raw body, reset (DEV-only destructive recreate). To change a LOCAL dev database, this is the wrong command: use 'w17ctl stack build', which diff-applies the current proto to the local stores."`
 	// Fixtures — fetch a console-rendered fixture seed (parameterized
 	// upserts, schema-aware render done server-side) and execute it
 	// against a local target store. The thin-client successor to
