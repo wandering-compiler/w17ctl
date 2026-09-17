@@ -742,6 +742,14 @@ message LockView {
   // derives stub_targets itself; the IR-compile path has only the lock view).
   // Lock-derived (no go.mod needed); the client supplies go_module separately.
   string plugin_pb_root = 17;
+  // gen_dir is the project's Go module root for hand-written code — the FIRST
+  // SEGMENT of the effective stubs root (`w17src` for `stubs: w17src/gen`,
+  // `srcgo` by default). The client needs it to NAME the path a domain's
+  // hand-written facade belongs at; it cannot read the lock itself, and the
+  // default is only right for a project that took the default. A consumer
+  // whose tree is `w17src/` was told by `domain add` to write into `srcgo/`,
+  // a directory their project does not have.
+  string gen_dir = 19;
 
   // 18 was a `gen_dir` projection, added and withdrawn on 2026-09-15. It went
   // out in one SDK snapshot and one console deploy before being reverted: no

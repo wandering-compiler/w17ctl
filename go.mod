@@ -6,7 +6,7 @@ require (
 	github.com/alecthomas/kong v1.16.1
 	github.com/coder/websocket v1.8.15
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/wandering-compiler/sdk/go v0.0.0-20260917190433-8bd5eb4c19d9
+	github.com/wandering-compiler/sdk/go v0.0.0-20260917221557-68762cec1df5
 	golang.org/x/mod v0.38.0
 	golang.org/x/term v0.45.0
 	google.golang.org/grpc v1.83.2

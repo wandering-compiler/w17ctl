@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/scaffold"
@@ -73,8 +76,27 @@ func (c *AddCmd) Run() error {
 		return fmt.Errorf("domain add: stat %s: %w", domainDir, err)
 	}
 
+	// The package prefix the project ALREADY uses, falling back to the one
+	// derived from the project name.
+	//
+	// The derived one is a guess that is right exactly once: at init, when
+	// there is nothing to compare it to. A consumer whose project is called
+	// `marb-finplatform` — named after its first domain, which is ordinary —
+	// has domains under `marb.finplatform`, and a second domain scaffolded
+	// from the project name lands in `marb_finplatform.geoplatform`. Seven
+	// files, consistently wrong, and a proto package is WIRE IDENTITY: fixing
+	// it after a client exists is a breaking change to the contract, not a
+	// rename.
+	//
+	// So ask the tree. An existing `domains/<d>/w17.proto` declares
+	// `package <prefix>.<d>;`, and that prefix is the project's own answer to
+	// this question — whatever it was derived from or edited to.
+	prefix := scaffold.ProtoSafePackagePrefix(view.GetProject())
+	if existing, ok := existingPackagePrefix(filepath.Join(root, protoDir)); ok {
+		prefix = existing
+	}
 	ctx := scaffold.Ctx{
-		Project: scaffold.ProtoSafePackagePrefix(view.GetProject()),
+		Project: prefix,
 		Domain:  c.Name,
 	}
 
@@ -140,10 +162,20 @@ func (c *AddCmd) Run() error {
 	// generated <domain>-business bundle imports them via RegisterBusiness.
 	// Never hand-edit anything under w17/services/ (DO NOT EDIT + fully
 	// regenerated). See w17/specs/architecture.md (zero-code isolation).
+	// The PROJECT's Go module root, not the default one. A consumer whose
+	// lock says `stubs: w17src` was sent to `srcgo/`, a directory their tree
+	// does not have — the line names where hand-written code goes, so naming
+	// somewhere else is worse than saying nothing.
+	genDir := view.GetGenDir()
+	if genDir == "" {
+		// An older console does not send it; the default is what that console
+		// would have assumed anyway.
+		genDir = core.DefaultGenDir
+	}
 	fmt.Fprintf(core.Stdout,
-		"\nhand-written facade → srcgo/domains/%s/grpcapi/business/ "+
+		"\nhand-written facade → %s/domains/%s/grpcapi/business/ "+
 			"(outside w17/; wired into the generated bundle via RegisterBusiness)\n",
-		c.Name)
+		genDir, c.Name)
 	return nil
 }
 
@@ -166,3 +198,52 @@ func writeDomainSentinel(domainDir string, ctx scaffold.Ctx, tmpl string) ([]str
 	}
 	return []string{scaffold.RelFromProject(w17Path)}, nil
 }
+
+// existingPackagePrefix reads the package prefix an existing domain uses.
+//
+// It looks for `domains/<d>/w17.proto` declaring `package <prefix>.<d>;` —
+// the shape every scaffolded domain has — and returns <prefix>. A file whose
+// package does not end in its own directory name is skipped rather than
+// guessed at: that is a tree somebody has reorganised, and inventing a prefix
+// from it would be the same mistake one level deeper.
+//
+// Domains are visited in sorted order so two of them disagreeing produces one
+// answer rather than a coin toss. Disagreement is not refused: a project can
+// legitimately have been migrated halfway, and the first name wins the same
+// way a human reading the tree top-down would decide.
+func existingPackagePrefix(protoRoot string) (string, bool) {
+	entries, err := os.ReadDir(filepath.Join(protoRoot, "domains"))
+	if err != nil {
+		return "", false
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		body, err := os.ReadFile(filepath.Join(protoRoot, "domains", name, "w17.proto"))
+		if err != nil {
+			continue
+		}
+		m := packageLineRe.FindSubmatch(body)
+		if m == nil {
+			continue
+		}
+		pkg := string(m[1])
+		suffix := "." + name
+		if !strings.HasSuffix(pkg, suffix) {
+			continue
+		}
+		if prefix := strings.TrimSuffix(pkg, suffix); prefix != "" {
+			return prefix, true
+		}
+	}
+	return "", false
+}
+
+// packageLineRe matches a proto package declaration, anchored to the start of
+// a line so a `package` word inside a comment cannot answer for the file.
+var packageLineRe = regexp.MustCompile(`(?m)^package\s+([A-Za-z0-9_.]+)\s*;`)

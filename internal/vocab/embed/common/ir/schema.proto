@@ -65,6 +65,26 @@ message Schema {
   // per-dialect registries in parallel fields when they arrive).
   map<string, w17.pg.CustomFunction> pg_custom_functions = 7;
 
+  // Which proto package DECLARED each domain-level entry above, keyed
+  // the same way (lowercase function name). Project-level entries are
+  // absent from this map: they are declared for the whole project and
+  // scope to it.
+  //
+  // It exists because a registry entry carries `required_extensions`,
+  // and those become a requirement written into a connection's manifest.
+  // The registry is merged project-wide, so without this every
+  // connection inherited every extension any domain asked for: a
+  // consumer adding a geospatial domain wrote `postgis` into the
+  // manifest of a SIBLING domain's database, which shares no connection
+  // with it, and got that domain's `unaccent` back in return (2026-09-17).
+  // Over-approximating looked safe while it only meant an extra
+  // `CREATE EXTENSION IF NOT EXISTS` in one's own database; it is not
+  // safe when the statement lands in somebody else's.
+  //
+  // A table's `message_fqn` carries its package, so the planner can ask
+  // whether a bucket hosts any table of the declaring domain.
+  map<string, string> pg_function_scope = 8;
+
   // Raw FileDescriptorSet bytes for the proto files this schema
   // was loaded from (D-iter3-24). Populated by the loader
   // (`srcgo/domains/migrator/loader`) when at least one connection
