@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wandering-compiler/w17ctl/internal/autosync"
 	plan "github.com/wandering-compiler/w17ctl/internal/plan"
@@ -292,7 +294,56 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 		return fmt.Errorf("stack build: dev diff-apply: %w", err)
 	}
 	fmt.Fprintf(core.Stdout, "stack build: dev diff-apply complete (%s/%s, checkpoint advanced)\n", initiative, actor)
+	warnSnapshotBehind(root)
 	return nil
+}
+
+// warnSnapshotBehind says so when the rendered snapshot is older than the
+// protos this build just applied.
+//
+// A schema change has TWO artefacts: the dev database, which this command
+// moves, and `w17/schema/schema-snapshot.json`, which builds a database from
+// empty and which this command does not touch. They are one truth stored
+// twice, and only one of them advanced here.
+//
+// A consumer added a constraint, ran this, watched it apply — and found out
+// later that the snapshot never got it, because their CI builds its schema
+// from the snapshot rather than from the dev database. A test that passed
+// against the dev DB failed there. Nothing in this command's output suggested
+// a second step; it moved the half that is visible and left the other.
+func warnSnapshotBehind(root string) {
+	snap := filepath.Join(root, "w17", "schema", "schema-snapshot.json")
+	si, err := os.Stat(snap)
+	if err != nil {
+		// No snapshot at all is a different project shape, not a drift.
+		return
+	}
+	newest, ok := newestProtoModTime(root)
+	if !ok || !newest.After(si.ModTime()) {
+		return
+	}
+	fmt.Fprintf(core.Stdout,
+		"\nstack build: the dev database moved, the SNAPSHOT did not.\n"+
+			"  why: schema-snapshot.json builds a database from EMPTY — CI, a fresh checkout, a\n"+
+			"       new environment — and this command only reconciles the database you pointed\n"+
+			"       it at. A proto is newer than that file, so the two now disagree.\n"+
+			"  fix: w17ctl schema render, and commit what it writes\n")
+}
+
+// newestProtoModTime is the most recent mtime among the project's protos.
+func newestProtoModTime(root string) (time.Time, bool) {
+	var newest time.Time
+	var found bool
+	_ = filepath.WalkDir(filepath.Join(root, "proto"), func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".proto") {
+			return nil
+		}
+		if fi, ferr := d.Info(); ferr == nil && fi.ModTime().After(newest) {
+			newest, found = fi.ModTime(), true
+		}
+		return nil
+	})
+	return newest, found
 }
 
 // runDevDiffApply is the dev DB lifecycle's per-build orchestration,

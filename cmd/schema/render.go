@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/plan"
@@ -77,40 +78,10 @@ func (c *RenderCmd) Run() error {
 		fmt.Fprintf(core.Stdout, "schema render: %s — %d byte(s) of DDL\n", m.GetConnection(), len(m.GetUpSql()))
 	}
 	fmt.Fprintf(core.Stdout, "schema render: %d connection(s) → %s\n", len(p.GetMigrations()), c.Out)
-	warnStaleArtefactName(c.Out)
-	return nil
-}
-
-// warnStaleArtefactName says so when the OLD artefact is still lying beside
-// the new one.
-//
-// The file this writes was renamed (`dev-plan.json` → `schema-snapshot.json`),
-// and the binary that READS it is not this client — it is built from the SDK
-// version the lock pins. Upgrade the client without moving that pin and the
-// new name is written while the old binary looks for the old one, which is a
-// version skew reported as a missing file.
-//
-// A consumer hit exactly that and spent the time on it that the message cost
-// them: `fix: run schema render and commit what it writes` — which they had
-// just done, a second earlier, with the file sitting right there. Advice that
-// names a state which did not happen sends the reader the wrong way before
-// they start looking.
-//
-// The leftover file is the visible half of the skew and the only half this
-// command can see, so it is what gets named.
-func warnStaleArtefactName(dir string) {
-	legacy := filepath.Join(dir, "dev-plan.json")
-	if _, err := os.Stat(legacy); err != nil {
-		return
+	if root, err := core.FindProjectRootFn(); err == nil {
+		warnVersionSkew(root)
 	}
-	fmt.Fprintf(core.Stdout,
-		"\nschema render: %s is still here, and nothing writes it any more.\n"+
-			"  why: this artefact was renamed to schema-snapshot.json. The binary that READS it is\n"+
-			"       built from the SDK version your lock pins, NOT from this client — so if that pin\n"+
-			"       predates the rename, it will look for dev-plan.json and report it missing while\n"+
-			"       the snapshot sits beside it.\n"+
-			"  fix: w17ctl sdk update && w17ctl sdk pin <version>, then delete %s\n",
-		legacy, legacy)
+	return nil
 }
 
 // resolveProtos mirrors `fixtures render`: an explicit --proto when given,
@@ -181,4 +152,56 @@ func (c *RenderCmd) baselines() []*codegenpb.PlanBaseline {
 		})
 	}
 	return out
+}
+
+// artefactRenamedAt is the SDK pseudo-version stamp at which this client's
+// schema artefact became `schema-snapshot.json`. A lock pinned before it names
+// a binary that still looks for `dev-plan.json`.
+const artefactRenamedAt = "20260917084555"
+
+// pseudoVersionStamp pulls `YYYYMMDDHHMMSS` out of `v0.0.0-<stamp>-<hash>`.
+var pseudoVersionStamp = regexp.MustCompile(`^v[0-9.]+-(\d{14})-`)
+
+// sdkVersionInLock reads the one lock field this command needs.
+var sdkVersionInLock = regexp.MustCompile(`(?m)^sdk_version:\s*"?([^"\s]+)"?\s*$`)
+
+// warnVersionSkew says so when the lock pins an SDK older than the rename.
+//
+// The file this command writes was renamed, and the binary that READS it is
+// built from the SDK version the LOCK pins — not from this client. Upgrade the
+// client without moving that pin and the new name is written while the old
+// binary looks for the old one, which then surfaces as a missing file in a
+// completely different command.
+//
+// A consumer met exactly that, and the message they got advised `run schema
+// render and commit what it writes` — which they had run a second earlier,
+// with the file sitting right there. Advice naming a state that did not happen
+// sends the reader the wrong way before they start looking.
+//
+// Checked against the LOCK rather than a leftover file, because the leftover
+// cannot be there: WriteDevPlan removes it in the same breath that writes the
+// new one, deliberately. This check WAS written that way first, and a live run
+// showed it could never fire — a warning shadowed by the cleanup it was
+// warning about.
+func warnVersionSkew(root string) {
+	data, err := os.ReadFile(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil {
+		return
+	}
+	m := sdkVersionInLock.FindSubmatch(data)
+	if m == nil || len(m[1]) == 0 {
+		return
+	}
+	pinned := string(m[1])
+	stamp := pseudoVersionStamp.FindStringSubmatch(pinned)
+	if stamp == nil || stamp[1] >= artefactRenamedAt {
+		return
+	}
+	fmt.Fprintf(core.Stdout,
+		"\nschema render: wrote schema-snapshot.json, but your lock pins SDK %s.\n"+
+			"  why: the binary that READS this file is built from that pinned SDK, not from this\n"+
+			"       client, and an SDK from before the rename looks for dev-plan.json — it will\n"+
+			"       report that file missing while the snapshot sits beside it.\n"+
+			"  fix: w17ctl sdk update && w17ctl sdk pin <version>\n",
+		pinned)
 }
