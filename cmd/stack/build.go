@@ -288,7 +288,7 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 	defer sc.Close()
 
 	logf := func(format string, args ...any) { fmt.Fprintf(core.Stdout, format+"\n", args...) }
-	if err := runDevDiffApply(sc, project, actor, initiative, currentBytes, applierFor, c.CompilerVersion, logf); err != nil {
+	if err := runDevDiffApply(sc, project, actor, initiative, currentBytes, applierFor, specConnections(specs), c.CompilerVersion, logf); err != nil {
 		return fmt.Errorf("stack build: dev diff-apply: %w", err)
 	}
 	fmt.Fprintf(core.Stdout, "stack build: dev diff-apply complete (%s/%s, checkpoint advanced)\n", initiative, actor)
@@ -307,7 +307,7 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 //  3. advance the checkpoint to `current` ONLY on a clean apply (a
 //     failed apply leaves the checkpoint at the last good state, so the
 //     next build re-attempts the same diff).
-func runDevDiffApply(sc *storageclient.StorageClients, project, actor, initiative string, currentBytes []byte, applierFor migrate.ApplierFor, compilerVersion string, logf func(string, ...any)) error {
+func runDevDiffApply(sc *storageclient.StorageClients, project, actor, initiative string, currentBytes []byte, applierFor migrate.ApplierFor, conns []string, compilerVersion string, logf func(string, ...any)) error {
 	ckpt, err := sc.GetCheckpoint(project, actor, initiative)
 	if err != nil {
 		return fmt.Errorf("read checkpoint: %w", err)
@@ -317,6 +317,23 @@ func runDevDiffApply(sc *storageclient.StorageClients, project, actor, initiativ
 	var baseBytes []byte
 	if ckpt != nil {
 		baseBytes = ckpt.GetIrSchema()
+	}
+
+	// A non-empty base says "these stores already hold that schema" — and the
+	// checkpoint is keyed by project/actor/INITIATIVE, never by the database
+	// this run is pointed at. Point a build with an advanced checkpoint at a
+	// different, empty database and the diff is empty, so the apply writes
+	// nothing, succeeds, and reports a converged store. A consumer hit exactly
+	// that: a second dev database came back with no tables and no extensions,
+	// and the command that made it said "dev diff-apply complete".
+	//
+	// Refuse on EMPTY only. A store that cannot answer proceeds as before —
+	// the KV stores have no fingerprint and are genuinely re-appliable, and
+	// turning "I cannot tell" into a refusal would block the normal case.
+	if len(baseBytes) != 0 {
+		if err := refuseEmptyStores(applierFor, conns, initiative); err != nil {
+			return err
+		}
 	}
 
 	// currentBytes is the opaque compiled IR (the client never decodes it) —
@@ -336,6 +353,49 @@ func runDevDiffApply(sc *storageclient.StorageClients, project, actor, initiativ
 	}
 
 	return adoptCheckpoint(sc, project, actor, initiative, currentBytes, compilerVersion)
+}
+
+// specConnections names the connections this run is pointed at, which is what
+// the checkpoint guard has to inspect. The plan cannot supply them: when the
+// checkpoint is already at the current schema the plan is EMPTY, and that is
+// precisely the case the guard exists for.
+func specConnections(specs []factory.TargetSpec) []string {
+	out := make([]string, 0, len(specs))
+	for _, sp := range specs {
+		out = append(out, sp.Connection)
+	}
+	return out
+}
+
+// refuseEmptyStores fails when a store this build is pointed at holds no
+// schema while the checkpoint says the initiative already has one. Reporting
+// success over a database in which nothing was created is the failure worth
+// catching; every remedy below is a real command, because "your checkpoint is
+// ahead" is not something a reader can act on by itself.
+func refuseEmptyStores(applierFor migrate.ApplierFor, conns []string, initiative string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30e9)
+	defer cancel()
+	for _, conn := range conns {
+		state, err := migrate.StoreSchemaStateOf(ctx, applierFor, conn)
+		if err != nil {
+			// Unreachable or unreadable is not this guard's business — the
+			// apply below will fail with the driver's own error, which says
+			// more than anything this function could invent.
+			continue
+		}
+		if state != migrate.StoreSchemaEmpty {
+			continue
+		}
+		return fmt.Errorf("connection %q holds no schema, but the checkpoint for initiative %q says it should\n\n"+
+			"  why: the checkpoint records what THIS INITIATIVE has applied, not what any\n"+
+			"       one database contains. Pointed at a different or freshly created\n"+
+			"       database, the diff comes out empty and this build would create\n"+
+			"       nothing while reporting success.\n\n"+
+			"  to build this database from empty:   <your binary> schema apply\n"+
+			"  to re-baseline the checkpoint here:  w17ctl stack reset\n"+
+			"  or point --target at the database the checkpoint describes", conn, initiative)
+	}
+	return nil
 }
 
 // adoptCheckpoint records `currentBytes` as the initiative's checkpoint WITHOUT
