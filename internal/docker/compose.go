@@ -93,10 +93,23 @@ func FileArgs(root string) []string {
 // question is "does this file reference ours", the answer must not depend on
 // the file elsewhere being valid, and a malformed compose.yaml belonging to
 // someone else must not stop w17 from starting its own.
+//
+// Comments are cut first, and that is not tidiness. A brownfield repo whose
+// own compose merely MENTIONS our file in a comment — "the w17 services live
+// in compose.w17.yaml" — was read as including it, so every stack command
+// drove the foreign file instead: `stack build <our service>` answered "no
+// such service", and the port lookup that follows found nothing and said to
+// run `stack up` first, about a database that was already running. A
+// consumer reported both and guessed they shared a root. They did.
 func includesW17Compose(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
-	return bytes.Contains(data, []byte(ComposeFile))
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if code, _, _ := bytes.Cut(line, []byte("#")); bytes.Contains(code, []byte(ComposeFile)) {
+			return true
+		}
+	}
+	return false
 }
