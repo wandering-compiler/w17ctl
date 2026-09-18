@@ -820,10 +820,35 @@ message LockSecrets {
 // compose render needs that the server can't see: the lock (connections
 // + project name), the on-disk bundle compose-include paths, and the
 // protos (for plugin-sandbox discovery).
+// ConnectionExtensions is one connection's required-extension set, as the
+// migration manifest computed it.
+message ConnectionExtensions {
+  string connection = 1;          // lock connection name
+  repeated string extensions = 2; // e.g. ["postgis"]
+}
+
 message RenderProjectScaffoldRequest {
   repeated ProtoFile files = 1;          // protos, for sandbox discovery
   bytes lock = 2;                        // proto-marshalled w17.console.lock.Lock
   repeated string bundle_includes = 3;   // services-dir-relative compose.yaml paths
+
+  // What each connection's schema REQUIRES — the manifest's own set, per
+  // connection. It picks the database IMAGE: a connection whose plan opens
+  // with `CREATE EXTENSION postgis` cannot run on stock postgres, where the
+  // extension is not on disk.
+  //
+  // Passed IN rather than derived here, and that is the whole point. This
+  // request carries the protos but not `go_module` / `gen_dir` /
+  // `stub_targets`, which plugin activation staging needs — so an IR compile
+  // attempted from it succeeds for a project without plugins and fails for
+  // one with them. The first version of this did exactly that and swallowed
+  // the error: a consumer with the agent plugin got `postgres:18` for a
+  // geometry connection while the same codegen run wrote `postgis` into their
+  // snapshot, and the byte size of the file never changed.
+  //
+  // The caller that owns the IR answers. An empty list means stock images —
+  // which is correct for every project that requires nothing.
+  repeated ConnectionExtensions connection_extensions = 4;
 
 }
 

@@ -50,47 +50,53 @@ var skipDirs = map[string]bool{
 
 // Run bumps every project module that requires the SDK onto version (or the
 // proxy's @latest when version is empty), writing go.mod + go.sum.
-func Run(stdout io.Writer, root, version string) error {
+//
+// Returns the version every module ended up on — resolved from the proxy when
+// the caller named none. The caller needs it to decide whether anything
+// actually MOVED, and that decision cannot be made before this runs: without
+// an explicit version, what "already up to date" means is whatever @latest
+// turns out to be.
+func Run(stdout io.Writer, root, version string) (string, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if version != "" && !semver.IsValid(version) {
-		return fmt.Errorf("sdk update: %q is not a valid version (want e.g. v0.0.0-20260716201145-36e33cc8168a)", version)
+		return "", fmt.Errorf("sdk update: %q is not a valid version (want e.g. v0.0.0-20260716201145-36e33cc8168a)", version)
 	}
 	mods, err := findSdkModules(stdout, root, SdkModule)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(mods) == 0 {
 		fmt.Fprintf(stdout, "sdk update: no module requires %s — nothing to do\n", SdkModule)
-		return nil
+		return "", nil
 	}
 
 	ctx := context.Background()
 	if version == "" {
 		if version, err = latestVersion(ctx, SdkModule); err != nil {
-			return fmt.Errorf("sdk update: %w", err)
+			return "", fmt.Errorf("sdk update: %w", err)
 		}
 	}
 
 	zipHash, modHash, err := moduleHashes(ctx, SdkModule, version)
 	if err != nil {
-		return fmt.Errorf("sdk update: %w", err)
+		return "", fmt.Errorf("sdk update: %w", err)
 	}
 	if err := verifyAgainstSumDB(ctx, SdkModule, version, zipHash, modHash); err != nil {
-		return fmt.Errorf("sdk update: %w", err)
+		return "", fmt.Errorf("sdk update: %w", err)
 	}
 
 	for _, d := range mods {
 		if err := applyToModule(filepath.Join(root, d), SdkModule, version, zipHash, modHash); err != nil {
-			return fmt.Errorf("sdk update: %s: %w", d, err)
+			return "", fmt.Errorf("sdk update: %s: %w", d, err)
 		}
 		fmt.Fprintf(stdout, "  %s\n", filepath.ToSlash(d))
 	}
 	fmt.Fprintf(stdout, "sdk update: %s → %s in %d module(s)\n", SdkModule, version, len(mods))
 	fmt.Fprintf(stdout, "  go.sum hashes computed from the module proxy — no Go toolchain used.\n")
-	return nil
+	return version, nil
 }
 
 // applyToModule rewrites one module's go.mod require + go.sum entries.
