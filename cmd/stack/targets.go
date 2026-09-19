@@ -1,7 +1,13 @@
 package stack
 
 import (
+	"context"
 	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/wandering-compiler/w17ctl/internal/containerdump"
 
 	"github.com/wandering-compiler/w17ctl/internal/devconfig"
 	"github.com/wandering-compiler/w17ctl/internal/localtarget"
@@ -18,11 +24,25 @@ import (
 // name returned in `skipped`) rather than failing the whole snapshot.
 func SnapshotConns(specs []factory.TargetSpec) (conns []snapstore.Conn, skipped []string, err error) {
 	sf := factory.SnapshotterFromTargets(specs)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	for _, s := range specs {
 		snap, serr := sf(s.Connection)
 		if serr != nil {
 			skipped = append(skipped, fmt.Sprintf("%s (%v)", s.Connection, serr))
 			continue
+		}
+		// A snapshot is taken by the database's OWN client, and this machine
+		// may not have one — deliberately, for a project that keeps every
+		// tool in Docker. The store's container has one, so the dump runs
+		// there instead.
+		//
+		// Only as a FALLBACK: where the host has the client, it is used, so a
+		// snapshot does not silently depend on a container still running.
+		if !hostHasClientFor(s.DSN) {
+			if in := containerdump.For(ctx, s.DSN); in != nil {
+				snap = in
+			}
 		}
 		conns = append(conns, snapstore.Conn{
 			Name:        s.Connection,
@@ -31,6 +51,28 @@ func SnapshotConns(specs []factory.TargetSpec) (conns []snapstore.Conn, skipped 
 		})
 	}
 	return conns, skipped, nil
+}
+
+// hostHasClientFor reports whether THIS machine carries the dump client a
+// store's dialect needs.
+//
+// Asked before the dump rather than after it fails: the failure is an exec
+// error naming a binary, which reads like a bug in w17 rather than a missing
+// package — and it arrives at the moment somebody chose the careful option.
+func hostHasClientFor(dsn string) bool {
+	var bin string
+	switch {
+	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"):
+		bin = "pg_dump"
+	case strings.HasPrefix(dsn, "mysql://"):
+		bin = "mysqldump"
+	default:
+		// Every other store dumps through its own protocol, with no external
+		// client to miss.
+		return true
+	}
+	_, err := exec.LookPath(bin)
+	return err == nil
 }
 
 // resolveLocalTargets derives the local-store dev-diff-apply targets for
