@@ -164,6 +164,17 @@ func (c *SnapshotListCmd) Run() error {
 		if len(short) > 12 {
 			short = short[:12]
 		}
+		// A savepoint with no recorded schema says so. `(schema )` was an
+		// empty slot that read like a missing value — which it is, but the
+		// reader could not tell whether the value was lost or never taken.
+		// It is never taken when the console could not be reached at save
+		// time, and the consequence is worth knowing: `activate` cannot warn
+		// that this savepoint belongs to a different schema than the one you
+		// are on.
+		if short == "" {
+			fmt.Fprintf(core.Stdout, "  %s\t(schema not recorded — activate cannot check it matches)\n", n)
+			continue
+		}
 		fmt.Fprintf(core.Stdout, "  %s\t(schema %s)\n", n, short)
 	}
 	return nil

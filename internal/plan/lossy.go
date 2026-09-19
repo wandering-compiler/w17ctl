@@ -67,7 +67,7 @@ func LossyRefusal(lossy []*codegenpb.LossyChange) string {
 		"       means removing what they no longer describe. Refused rather than applied,\n" +
 		"       because this is the one direction that cannot be undone by running it again.\n" +
 		"  choose:\n" +
-		"    --lossy=snapshot   snapshot these stores first, then apply (restore: w17ctl db snapshot restore)\n" +
+		"    --lossy=snapshot   snapshot these stores first, then apply (put it back: w17ctl db snapshot activate <name>)\n" +
 		"    --lossy=apply      apply it; the data is gone\n" +
 		"    (or change the protos back, and this disappears)")
 	return b.String()
