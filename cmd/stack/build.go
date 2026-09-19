@@ -211,6 +211,34 @@ func (c *BuildCmd) resolveProtos(root string) (protos, imports []string, cleanup
 	return models, imports, vcleanup, nil
 }
 
+// restoreFlags are the flags the printed restore command needs to reach the
+// same stores and the same console THIS run was pointed at.
+//
+// A line telling you to run a command has to work when you run it. A sync
+// driven with `--target` is talking to a database the dev registry does not
+// know about, so a bare `db snapshot activate <name>` answers "no resolvable
+// local store targets" — the second way this same line has sent somebody
+// somewhere that does not work.
+func (c *BuildCmd) restoreFlags() string {
+	var b strings.Builder
+	for _, t := range c.Targets {
+		fmt.Fprintf(&b, " --target %s", t)
+	}
+	if c.Console != "" {
+		fmt.Fprintf(&b, " --console %s", c.Console)
+	}
+	return b.String()
+}
+
+// schemaHashOf is the hash the checkpoint will carry once this sync lands —
+// the same one adoptCheckpoint records, so a savepoint's "way back from" and
+// the initiative's later "current" are the same string or the match never
+// fires.
+func schemaHashOf(currentBytes []byte) string {
+	sum := sha256.Sum256(currentBytes)
+	return hex.EncodeToString(sum[:])
+}
+
 // checkpointLockHash is the schema lineage a savepoint taken right now
 // belongs to — the checkpoint's own hash, read BEFORE this sync advances it.
 //
@@ -244,7 +272,7 @@ func (c *BuildCmd) lossyMode() (string, error) {
 // snapshotFn snapshots the named stores before a destructive sync, into the
 // same branch-scoped store `db snapshot` and the branch-switch reconcile use —
 // so what it keeps is restorable by a command that already exists.
-func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiative, schemaHash string) func([]string) error {
+func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiative, schemaHash, undoes string) func([]string) error {
 	return func(conns []string) error {
 		wanted := map[string]bool{}
 		for _, c := range conns {
@@ -277,7 +305,11 @@ func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiativ
 		// It is the schema the database holds NOW, i.e. the checkpoint BEFORE
 		// this sync advances it: the snapshot is of what is there, not of
 		// what is about to be.
-		if err := snapstore.New(root).SaveNamed(ctx, initiative, name, schemaHash, snapConns); err != nil {
+		// `undoes` is where this sync is GOING, so the savepoint knows which
+		// change it is the way back from. Without it the consistency guard
+		// refuses the return trip: the schema has moved by then, which is the
+		// whole reason the savepoint was taken.
+		if err := snapstore.New(root).SaveNamedUndoing(ctx, initiative, name, schemaHash, undoes, snapConns); err != nil {
 			// A snapshot is taken by the database's OWN client tools, and a
 			// machine without them cannot take one. Said plainly, because the
 			// raw failure is `exec: "pg_dump": executable file not found` —
@@ -296,7 +328,8 @@ func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiativ
 		// data and is copying the command out of it. `restore` was refused
 		// with "unexpected argument", at the one moment nobody goes looking
 		// through --help (deinvo, 2026-09-19).
-		fmt.Fprintf(core.Stdout, "stack build: snapshot %q taken before applying (put it back: w17ctl db snapshot activate %s)\n", name, name)
+		fmt.Fprintf(core.Stdout, "stack build: snapshot %q taken before applying (put it back: w17ctl db snapshot activate %s%s)\n",
+			name, name, c.restoreFlags())
 		return nil
 	}
 }
@@ -411,7 +444,8 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 	logf := func(format string, args ...any) { fmt.Fprintf(core.Stdout, format+"\n", args...) }
 	if err := runDevDiffApplyLossy(sc, project, actor, initiative, currentBytes, applierFor,
 		specConnections(specs), c.CompilerVersion, logf, mode,
-		c.snapshotFn(root, specs, initiative, checkpointLockHash(sc, project, actor, initiative))); err != nil {
+		c.snapshotFn(root, specs, initiative,
+			checkpointLockHash(sc, project, actor, initiative), schemaHashOf(currentBytes))); err != nil {
 		return fmt.Errorf("stack build: dev diff-apply: %w", err)
 	}
 	fmt.Fprintf(core.Stdout, "stack build: dev diff-apply complete (%s/%s, checkpoint advanced)\n", initiative, actor)

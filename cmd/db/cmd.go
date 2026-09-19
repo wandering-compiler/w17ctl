@@ -217,7 +217,18 @@ func (c *SnapshotActivateCmd) Run() error {
 	if err != nil && !c.Force {
 		return fmt.Errorf("cannot reach the console to read the current schema (the consistency guard's reference): %w (pass --force to restore without the guard)", err)
 	}
-	if schemaGuardBlocks(pinned, current, c.Force) {
+	// The savepoint may BE the way back from the very change that moved the
+	// schema. A destructive sync writes down where it was going, so the one
+	// moment this savepoint is wanted — right after that sync — is a match
+	// rather than a mismatch.
+	//
+	// Without this the guard refused exactly the case the savepoint exists
+	// for, and the message printed two lines earlier told the developer to
+	// run the command that would be refused (deinvo, 2026-09-19).
+	undoes, _ := be.undoesHash(initiative, c.Name)
+	if isReturnTrip(undoes, current) {
+		fmt.Fprintf(core.Stdout, "db snapshot: %q is the way back from the change this initiative is standing on — restoring it\n", c.Name)
+	} else if schemaGuardBlocks(pinned, current, c.Force) {
 		return fmt.Errorf("savepoint %q was taken at schema %.12s but the initiative is now at %.12s — restoring would put old-shaped data into the new schema; pass --force to override", c.Name, pinned, current)
 	}
 
@@ -228,6 +239,23 @@ func (c *SnapshotActivateCmd) Run() error {
 	}
 	fmt.Fprintf(core.Stdout, "db snapshot: activated %q for initiative %q\n", c.Name, initiative)
 	return nil
+}
+
+// isReturnTrip reports whether this savepoint is the way back from the change
+// the initiative is standing on right now.
+//
+// A savepoint taken by a destructive sync records where that sync was going.
+// The only moment anybody wants it is AFTER the sync, when the initiative's
+// schema no longer matches the one the savepoint was taken at — which is
+// exactly what the consistency guard refuses. Without this the guard blocked
+// the case the savepoint exists for, and the sync's own output told the
+// developer to run the command it would block (deinvo, 2026-09-19).
+//
+// Both halves must be KNOWN. An unrecorded "undoes" (every ordinary
+// savepoint, and every one taken before this existed) and an unreadable
+// current schema each leave the guard exactly as it was.
+func isReturnTrip(undoes, current string) bool {
+	return undoes != "" && current != "" && undoes == current
 }
 
 // schemaGuardBlocks reports whether activating a savepoint must be

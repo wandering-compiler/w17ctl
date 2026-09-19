@@ -21,6 +21,9 @@ type snapBackend interface {
 	has(initiative, name string) (bool, error)
 	list(initiative string) ([]string, error)
 	schemaHash(initiative, name string) (string, error)
+	// undoesHash is the schema a savepoint is the way back FROM — set only
+	// for one taken ahead of a known change. "" for an ordinary savepoint.
+	undoesHash(initiative, name string) (string, error)
 	remove(initiative, name string) error
 }
 
@@ -69,6 +72,9 @@ func (b *localBackend) list(initiative string) ([]string, error) {
 }
 func (b *localBackend) schemaHash(initiative, name string) (string, error) {
 	return b.st.NamedSchemaHash(initiative, name)
+}
+func (b *localBackend) undoesHash(initiative, name string) (string, error) {
+	return b.st.NamedUndoesHash(initiative, name)
 }
 func (b *localBackend) remove(initiative, name string) error {
 	return b.st.RemoveNamed(initiative, name)
@@ -127,6 +133,12 @@ func (b *remoteBackend) list(initiative string) ([]string, error) {
 func (b *remoteBackend) schemaHash(initiative, name string) (string, error) {
 	return b.rs.NamedSchemaHash(initiative, name)
 }
+
+// undoesHash: the remote store keeps no such pin, so a remote savepoint never
+// claims to be the way back from a particular change. "" refuses nothing that
+// was not already refused — it only means the return trip needs --force
+// there, exactly as it did everywhere before this existed.
+func (b *remoteBackend) undoesHash(string, string) (string, error) { return "", nil }
 func (b *remoteBackend) remove(initiative, name string) error {
 	return b.rs.RemoveNamed(initiative, name)
 }

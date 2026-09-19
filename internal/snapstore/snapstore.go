@@ -378,6 +378,22 @@ func (s *Store) ensureGitignored() error {
 
 const namedSchemaFile = "schema"
 
+// namedUndoesFile records the schema a savepoint is the WAY BACK FROM.
+//
+// A savepoint taken by a destructive sync is a different animal from one
+// somebody saved by hand: it exists for one specific change, and the only
+// moment anybody wants it is AFTER that change has happened — when the
+// initiative's schema no longer matches the one the savepoint was taken at,
+// by construction. The consistency guard, reading only the taken-at hash,
+// therefore refused exactly the case the savepoint exists for (deinvo,
+// 2026-09-19).
+//
+// So the sync writes down where it was going. `activate` allows the return
+// trip without --force when the initiative is standing on precisely that
+// schema, and keeps refusing every other mismatch — which is the case the
+// guard was written for.
+const namedUndoesFile = "undoes"
+
 func (s *Store) namedRoot(initiative, name string) (string, error) {
 	ik, err := branchKey(initiative)
 	if err != nil {
@@ -414,6 +430,13 @@ func (s *Store) HasNamed(initiative, name string) bool {
 // so a later activate can verify the savepoint belongs to the lineage it
 // is restored into. Overwrites an existing savepoint of the same name.
 func (s *Store) SaveNamed(ctx context.Context, initiative, name, schemaHash string, conns []Conn) error {
+	return s.SaveNamedUndoing(ctx, initiative, name, schemaHash, "", conns)
+}
+
+// SaveNamedUndoing is SaveNamed for a savepoint taken AHEAD of a known
+// change: `undoes` is the schema that change moves to. Empty = an ordinary
+// savepoint, which is what `db snapshot save` takes.
+func (s *Store) SaveNamedUndoing(ctx context.Context, initiative, name, schemaHash, undoes string, conns []Conn) error {
 	if err := s.ensureGitignored(); err != nil {
 		return err
 	}
@@ -432,6 +455,11 @@ func (s *Store) SaveNamed(ctx context.Context, initiative, name, schemaHash stri
 	root, err := s.namedRoot(initiative, name)
 	if err != nil {
 		return err
+	}
+	if undoes != "" {
+		if err := os.WriteFile(filepath.Join(root, namedUndoesFile), []byte(undoes+"\n"), 0o644); err != nil {
+			return fmt.Errorf("snapstore SaveNamed %s/%s: pin the change it undoes: %w", initiative, name, err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(root, namedSchemaFile), []byte(schemaHash+"\n"), 0o644); err != nil {
 		return fmt.Errorf("snapstore SaveNamed %s/%s: pin schema: %w", initiative, name, err)
@@ -471,6 +499,26 @@ func (s *Store) NamedSchemaHash(initiative, name string) (string, error) {
 		return "", fmt.Errorf("snapstore NamedSchemaHash %s/%s: %w", initiative, name, err)
 	}
 	return strings.TrimSpace(string(body)), nil
+}
+
+// NamedUndoesHash returns the schema a savepoint is the way back FROM, or ""
+// when it is an ordinary savepoint that undoes nothing in particular.
+//
+// Absent is not an error: every savepoint taken before this existed has no
+// such file, and an ordinary `db snapshot save` never writes one.
+func (s *Store) NamedUndoesHash(initiative, name string) (string, error) {
+	root, err := s.namedRoot(initiative, name)
+	if err != nil {
+		return "", err
+	}
+	raw, err := os.ReadFile(filepath.Join(root, namedUndoesFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("snapstore NamedUndoesHash %s/%s: %w", initiative, name, err)
+	}
+	return strings.TrimSpace(string(raw)), nil
 }
 
 // ListNamed lists the initiative's savepoint names, decoded + sorted.
