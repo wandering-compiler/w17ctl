@@ -35,6 +35,14 @@ func generatedFileWriter(root string, announce bool) func(*codegenpb.GeneratedFi
 		if err != nil {
 			return fmt.Errorf("server file path %q escapes the project root: %w", f.GetRelativePath(), err)
 		}
+		// Same rule as the codegen write pass: a body whose only difference
+		// from the file on disk is its own generation timestamp is not a
+		// change, and writing it produces a diff every run and a conflict in
+		// every parallel PR. This path is where the client manifests come
+		// through, which is where the churn was actually visible.
+		if unchangedApartFromTimestamp(dst, f.GetContents()) {
+			return nil
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
 		}

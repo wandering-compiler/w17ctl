@@ -4,6 +4,9 @@
 package test
 
 import (
+	stackcmd "github.com/wandering-compiler/w17ctl/cmd/stack"
+	"github.com/wandering-compiler/sdk/go/tooling/migrate/factory"
+
 	"github.com/wandering-compiler/w17ctl/internal/testsuite"
 )
 
@@ -53,5 +56,14 @@ func (c *Cmd) Run() error {
 		Keep:           c.Keep,
 		Timeout:        c.Timeout,
 		Console:        c.Console,
+		// The stores' schema, reconciled before the bundles start.
+		//
+		// The same path `stack build --no-build` takes, called with the
+		// targets the suite's own dynamically published ports resolve to —
+		// this is what replaced the compose service that applied a rendered
+		// schema file.
+		SyncFn: func(root string, targets []factory.TargetSpec) error {
+			return stackcmd.SyncStores(root, c.Console, targets)
+		},
 	})
 }

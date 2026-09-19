@@ -1025,6 +1025,13 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 	// can fail on input parsing: a half-regenerated tree is reachable only via a
 	// filesystem error (mkdir/write), not a malformed input.
 	for _, p := range planned {
+		// A body whose ONLY difference from the file on disk is its own
+		// generation timestamp is not a change. Writing it anyway produces a
+		// diff in every regeneration, a review comment nobody can act on, and
+		// a conflict in every parallel PR touching the same catalog.
+		if unchangedApartFromTimestamp(p.target, p.contents) {
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(p.target), 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(p.target), err)
 		}
@@ -1482,11 +1489,10 @@ func orphanedDBInitWarnings(root string) []string {
 			// the reader the same search it was written to save.
 			out = append(out, fmt.Sprintf(
 				"%s is not applied by anything.\n"+
-					"  why: the schema is no longer generated into db/init — `w17ctl schema render` writes the\n"+
-					"       plan, the generated binary applies it (`<binary> schema apply`), and `fixtures apply`\n"+
-					"       seeds it. This file only still runs if something feeds the directory to a database\n"+
-					"       by hand; the generated compose mounts 00_extensions.sql alone, so a stack built\n"+
-					"       from it ignores this.\n"+
+					"  why: the schema is no longer generated into db/init — `w17ctl stack build` reconciles a\n"+
+					"       store against your protos, and `fixtures apply` seeds it. This file only still runs\n"+
+					"       if something feeds the directory to a database by hand; the generated compose mounts\n"+
+					"       00_extensions.sql alone, so a stack built from it ignores this.\n"+
 					"  fix: delete it once you have confirmed nothing you own applies it, or move it out of\n"+
 					"       db/init/ if you apply it yourself. It is your file — codegen will not remove it.",
 				rel))

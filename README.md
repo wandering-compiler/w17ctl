@@ -183,7 +183,7 @@ Docker + local project ergonomics. This is where w17ctl drives compose.
 
 | Command | What it does · under the hood |
 |---|---|
-| `stack <cmd>` | Local docker-compose lifecycle: `build` / `up` / `down` / `logs` / `ps` / `restart`. Injects the project's unique host ports from `~/.w17/config.yaml`. |
+| `stack <cmd>` | Local docker-compose lifecycle: `build` / `up` / `down` / `logs` / `ps` / `restart`. `build` SYNCS the stores to your protos — it reads what each database holds, the console plans the difference, the client applies it; `--no-build` does only that. `up` runs the same sync after starting the containers (`--no-sync` to skip). A sync that would DROP a table or column, or RETYPE one, is refused with the list: `--lossy=apply` does it, `--lossy=snapshot` keeps a copy first. Injects the project's unique host ports from `~/.w17/config.yaml`. |
 | `project <cmd>` | Dev-machine project registry: `list` / `import` / `remove` / `ports` / `ps` + run presets. Keeps **unique host ports across all installed projects** (no env-file juggling) in `~/.w17/config.yaml`. |
 | `db <cmd>` | Local dev DB snapshots scoped to the current initiative: `save` / `list` / `activate` / `delete`. Branch-scoped checkpoints for fast switching. |
 | `test` | Run the generated e2e suite against a deployed gateway. Locates the `e2erunner` module and runs it in Docker against `--target` — a pure HTTP/MCP client that never touches a DB. |

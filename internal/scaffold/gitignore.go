@@ -65,10 +65,8 @@ var w17IgnoreEntries = []w17IgnoreEntry{
 	//     them and the ids renumber, so every seeded RolePermission then
 	//     grants a DIFFERENT permission — silently. `w17/lock.yaml` is the
 	//     same class: project id, plugin pins, signature.
-	//   - What a FRESH CLONE needs before codegen can run: `w17/schema/` is
-	//     applied by pipelines that never reach a console, and `w17/ci/` is
-	//     the bootstrap that would otherwise have to exist to regenerate
-	//     itself.
+	//   - What a FRESH CLONE needs before codegen can run: `w17/ci/` is the
+	//     bootstrap that would otherwise have to exist to regenerate itself.
 	//   - What is AUTHORED after being scaffolded once: `w17/e2e/` skeletons,
 	//     `w17/languages/` catalogues, `w17/admin-custom/`, and the
 	//     hand-written fixtures under `w17/fixtures/`.

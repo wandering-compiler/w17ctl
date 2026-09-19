@@ -52,6 +52,9 @@ type Cmd struct {
 // active preset) also selects which services to start — handy to run
 // just the admin binary on a weak machine.
 type UpCmd struct {
+	NoSync  bool   `name:"no-sync" help:"Start the containers without syncing the stores' schema from the console."`
+	Console string `name:"console" placeholder:"HOST:PORT" env:"CONSOLE_STORAGE_ADDR" help:"Console address for the schema sync. Empty = the lock's."`
+
 	Services []string `arg:"" optional:"" help:"Services to start; overrides the preset's selection. Empty = the preset's services, or the whole stack."`
 	Preset   string   `name:"preset" short:"p" help:"Run preset to apply (services + extra env). Empty = the project's active preset, if any."`
 	Build    bool     `name:"build" help:"Rebuild images before starting (docker compose up -d --build). For dev diff-apply of the proto to local stores, run 'stack build' (with --proto/--target) first."`
@@ -127,10 +130,28 @@ func (c *UpCmd) Run() error {
 	if err := docker.RunComposeEnvFn(root, env, append(docker.FileArgs(root), args...)...); err != nil {
 		return err
 	}
-	// `stack up` doesn't sync the DB to the current branch (that's
-	// `stack build`'s job) — nudge if it looks stale after a switch.
-	if hint := autosync.StaleDBHint(root); hint != "" {
-		fmt.Fprintln(core.Stdout, hint)
+	// The stores now hold whatever they held before — which, on a fresh
+	// volume, is nothing. Sync them.
+	//
+	// This is what `<binary> schema apply` used to do from a rendered file,
+	// and the file is gone: the schema a database should hold is computed
+	// from the database itself against the current protos, which needs the
+	// planner and therefore the console. One way into a database, and it is
+	// this one.
+	//
+	// `--no-sync` skips it for someone who only wants the containers up —
+	// and then the stale-database hint still has something to say, because
+	// nothing reconciled the stores to the branch they are on.
+	if c.NoSync {
+		if hint := autosync.StaleDBHint(root); hint != "" {
+			fmt.Fprintln(core.Stdout, hint)
+		}
+		return nil
+	}
+	{
+		if err := (&BuildCmd{NoBuild: true, NoCodegen: true, Console: c.Console, modeFlags: c.modeFlags}).Run(); err != nil {
+			return fmt.Errorf("stack up: the containers are running, but the schema sync failed: %w", err)
+		}
 	}
 	return nil
 }

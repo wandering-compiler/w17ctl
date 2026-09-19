@@ -278,8 +278,10 @@ func (c *InstallCmd) Run() error {
 	// EditLock — must leave the project exactly as it was, and a half-written
 	// plugin tree that the "already exists" guard then blocks is the worst of
 	// both outcomes.
-	staging := filepath.Join(root, protoDir, "plugins", "."+name+".w17tmp")
-	_ = os.RemoveAll(staging) // clear a stale staging dir from a prior aborted run
+	staging, err := newStagingDir(filepath.Join(root, protoDir, "plugins"), name)
+	if err != nil {
+		return err
+	}
 	manifestData, err := fetchPluginInto(cl, name, staging)
 	if err != nil {
 		_ = os.RemoveAll(staging)
@@ -470,8 +472,10 @@ func (c *UpdateCmd) Run() error {
 		}
 
 		target := filepath.Join(root, protoDir, "plugins", name)
-		staging := filepath.Join(root, protoDir, "plugins", "."+name+".w17tmp")
-		_ = os.RemoveAll(staging) // clear a stale staging dir from a prior aborted run
+		staging, err := newStagingDir(filepath.Join(root, protoDir, "plugins"), name)
+		if err != nil {
+			return err
+		}
 		manifestData, err := fetchPluginInto(cl, name, staging)
 		if err != nil {
 			_ = os.RemoveAll(staging)
@@ -573,6 +577,31 @@ func isPluginURL(s string) bool {
 // `go.mod.src`, `go.sum.src`) so Go tooling treats them as inert data on the
 // server; the suffix is stripped here so the installed project dir has real
 // `.go` + `go.mod` + `go.sum` ready for the consuming project's codegen.
+// newStagingDir makes a staging directory nothing else will touch.
+//
+// ⚠️ Both call sites used a FIXED name, `.<plugin>.w17tmp`, and opened with
+// `os.RemoveAll` "to clear a stale staging dir from a prior aborted run". Two
+// runs staging the same plugin in one project therefore shared a directory and
+// each one's opening move DELETED the other's half-fetched tree — and `w17ctl
+// plugin update --all` in one terminal against an install in another is not an
+// exotic pairing. No advisory lock is taken anywhere in these commands, so
+// nothing upstream serialises them (T3-7 pass #15, D15-4).
+//
+// A unique name also removes the reason the RemoveAll was there: a dir this
+// process just created cannot hold another run's leftovers. An aborted run
+// leaves its own directory behind, which is litter rather than damage, and the
+// `.`-prefix keeps it out of the way.
+func newStagingDir(pluginsDir, name string) (string, error) {
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", pluginsDir, err)
+	}
+	dir, err := os.MkdirTemp(pluginsDir, "."+name+".w17tmp-")
+	if err != nil {
+		return "", fmt.Errorf("staging dir for %s: %w", name, err)
+	}
+	return dir, nil
+}
+
 func fetchPluginInto(cl codegenpb.CodegenServiceClient, name, target string) ([]byte, error) {
 	ctx, cancel := core.ClientCtx()
 	defer cancel()

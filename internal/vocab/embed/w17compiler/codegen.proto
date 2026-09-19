@@ -1340,6 +1340,27 @@ message ObservedStore {
   repeated ObservedTable tables = 2;
 }
 
+// ObservedIndex is one index as the database defines it.
+message ObservedIndex {
+  string name = 1;
+  bool unique = 2;
+  // The whole CREATE INDEX statement, as `pg_get_indexdef` renders it.
+  // Carried for the indexes this reader does not model; nothing parses it.
+  string definition = 3;
+}
+
+// ObservedForeignKey is one FK constraint as the database defines it.
+message ObservedForeignKey {
+  string name = 1;
+  // Every column the key constrains, in the database's order. Plural because
+  // a scope-preserving key constrains two, and the PAIR is what identifies it
+  // against a declaration — the name Postgres derives for such a key picks a
+  // different column than w17's own derivation does.
+  repeated string columns = 2;
+  string target_table = 3;
+  string target_column = 4;
+}
+
 // ObservedTable is one table as the database reports it.
 message ObservedTable {
   // schema is the namespace the table lives in — `public` unless a
@@ -1349,6 +1370,24 @@ message ObservedTable {
   string schema = 1;
   string name = 2;
   repeated ObservedColumn columns = 3;
+
+  // The table's own indexes — the ones a CREATE INDEX made. The index a
+  // primary key or a unique CONSTRAINT creates underneath itself is left out:
+  // it belongs to the constraint, no migration names it, and reported here it
+  // would read as an index the schema never declared.
+  repeated ObservedIndex indexes = 4;
+
+  // The primary key's columns, in key order, as the database spells them.
+  repeated string primary_key = 5;
+
+  repeated ObservedForeignKey foreign_keys = 6;
+
+  // The NAMES of the table's CHECK constraints. Names rather than
+  // expressions: Postgres rewrites a check body, so comparing expressions
+  // reports a change on every check ever written, while the name is derived
+  // from the column and the kind of check and answers the only question a
+  // sync has — is it still there.
+  repeated string checks = 7;
 }
 
 // ObservedColumn is one column as the database reports it.
@@ -1360,6 +1399,15 @@ message ObservedColumn {
   string name = 1;
   string type = 2;
   bool nullable = 3;
+
+  // The DEFAULT expression as the database renders it (`'untitled'::text`,
+  // `now()`, `nextval('...')`), empty when the column has none.
+  //
+  // Carried because a default is part of the schema the sync reconciles, and
+  // the server cannot ask the database itself: the client holds the
+  // connection. Compared against what the emitter would render rather than
+  // parsed back into a declaration.
+  string default_expr = 4;
 }
 
 // PlanBaseline is one connection's ledger pin, mirroring the two lock fields
@@ -1385,6 +1433,31 @@ message PlanIRResponse {
   // client applies to its local stores (the migrator plan type is a compiler
   // internal, kept off this PUBLIC contract).
   bytes plan = 1;
+
+  // lossy names every change in this plan that DESTROYS something: a table
+  // dropped, a column dropped, a column retyped.
+  //
+  // The console can see it and the client cannot — the plan crosses the wire
+  // as SQL, and asking the client to recognise a DROP in a string is asking it
+  // to parse SQL. So the judgement is made where the ops are, and the DECISION
+  // is left where the person is: a developer's local database is theirs, and
+  // the answer to "this will drop the column you were working on" is not the
+  // same for everyone every time.
+  repeated LossyChange lossy = 2;
+}
+
+// LossyChange is one destructive step of a plan, named so a person can decide
+// about it without reading SQL.
+message LossyChange {
+  // connection is the store it lands in.
+  string connection = 1;
+  // kind is what happens: `drop_table`, `drop_column`, `retype_column`.
+  string kind = 2;
+  // object is what it happens to: `users` or `users.email`.
+  string object = 3;
+  // detail says what changes, when the kind alone does not: a retype's old
+  // and new type. Empty otherwise.
+  string detail = 4;
 }
 
 message GenerateRequest {

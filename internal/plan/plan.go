@@ -48,13 +48,20 @@ func PlanMigration(base, current []byte, baselines []*codegenpb.PlanBaseline) (*
 // `observed` nil or empty means "I could not look", which is not "nothing is
 // there" and refuses nothing.
 func PlanMigrationObserved(base, current []byte, baselines []*codegenpb.PlanBaseline, observed []*codegenpb.ObservedStore) (*applyplanpb.DevApplyPlan, error) {
+	p, _, err := planObserved(base, current, baselines, observed)
+	return p, err
+}
+
+// planObserved is PlanMigrationObserved plus what the plan would DESTROY —
+// the list the caller needs before deciding whether to apply it.
+func planObserved(base, current []byte, baselines []*codegenpb.PlanBaseline, observed []*codegenpb.ObservedStore) (*applyplanpb.DevApplyPlan, []*codegenpb.LossyChange, error) {
 	addr, err := core.ResolveConsoleAddr("")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cl, conn, err := core.DialCodegen(addr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -62,13 +69,13 @@ func PlanMigrationObserved(base, current []byte, baselines []*codegenpb.PlanBase
 	defer cancel()
 	resp, err := cl.Plan(ctx, &codegenpb.PlanIRRequest{Base: base, Head: current, Baselines: baselines, Observed: observed})
 	if err != nil {
-		return nil, fmt.Errorf("migration plan: %w", err)
+		return nil, nil, fmt.Errorf("migration plan: %w", err)
 	}
 	var plan applyplanpb.DevApplyPlan
 	if err := proto.Unmarshal(resp.GetPlan(), &plan); err != nil {
-		return nil, fmt.Errorf("migration plan: decode: %w", err)
+		return nil, nil, fmt.Errorf("migration plan: decode: %w", err)
 	}
-	return &plan, nil
+	return &plan, resp.GetLossy(), nil
 }
 
 // DevPlanAndApply is the dev DB lifecycle's diff-apply orchestration,
@@ -79,6 +86,17 @@ func PlanMigrationObserved(base, current []byte, baselines []*codegenpb.PlanBase
 // on a clean apply. logf receives one line per destructive finding; nil = a
 // no-op.
 func DevPlanAndApply(ctx context.Context, base, current []byte, applierFor migrate.ApplierFor, conns []string, logf func(string, ...any)) (*applyplanpb.DevApplyPlan, error) {
+	return DevPlanAndApplyLossy(ctx, base, current, applierFor, conns, logf, LossyApply, nil)
+}
+
+// DevPlanAndApplyLossy is DevPlanAndApply plus the answer to "what if this
+// destroys something".
+//
+// lossyMode is one of LossyRefuse / LossyApply / LossySnapshot. snapshot is
+// called with the connections that would lose data, before anything is
+// applied, and only in snapshot mode — supplied by the command layer because
+// taking one is a command's job.
+func DevPlanAndApplyLossy(ctx context.Context, base, current []byte, applierFor migrate.ApplierFor, conns []string, logf func(string, ...any), lossyMode string, snapshot func(conns []string) error) (*applyplanpb.DevApplyPlan, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -96,13 +114,41 @@ func DevPlanAndApply(ctx context.Context, base, current []byte, applierFor migra
 		}
 	}
 
-	// Read what the databases actually hold before asking for a plan against
-	// what the console thinks they hold. Best-effort by design: a store with
-	// no introspection reports nothing, and nothing refuses nothing.
-	plan, err := PlanMigrationObserved(base, current, nil, observeStores(ctx, conns, applierFor))
+	// Read what the databases actually hold — that reading IS the base the
+	// server plans against.
+	observed, err := observeStores(ctx, conns, applierFor)
+	if err != nil {
+		return nil, err
+	}
+	plan, lossy, err := planObserved(base, current, nil, observed)
 	if err != nil {
 		return nil, fmt.Errorf("devapply: plan: %w", err)
 	}
+
+	// The destructive half of the plan, and the decision about it.
+	//
+	// Before this, a drop simply happened: the sync makes the database match
+	// the protos, and a column the protos no longer describe is a column that
+	// goes. That is right for the developer who just renamed a field and
+	// wrong for the one with an hour of test data in that table, and nothing
+	// asked which of the two was running the command.
+	if len(lossy) > 0 {
+		for _, l := range lossy {
+			logf("⚠ %s", describeLoss(l))
+		}
+		switch lossyMode {
+		case LossyRefuse:
+			return nil, fmt.Errorf("%s", LossyRefusal(lossy))
+		case LossySnapshot:
+			if snapshot == nil {
+				return nil, fmt.Errorf("devapply: --lossy=snapshot, but this caller cannot take one")
+			}
+			if err := snapshot(LossyConnections(lossy)); err != nil {
+				return nil, fmt.Errorf("devapply: snapshot before a destructive sync: %w", err)
+			}
+		}
+	}
+
 	if err := migrate.DevApply(ctx, plan, applierFor); err != nil {
 		return nil, wrapDesync(base, err)
 	}
@@ -135,14 +181,20 @@ func isAlreadyExists(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "already exists")
 }
 
-// observeStores reads each connection's live schema, for the server to compare
-// against the checkpoint it is about to plan from.
+// observeStores reads each connection's live schema — the BASE the server
+// plans from.
 //
-// Every failure here is SILENT and yields nothing for that store, which is the
-// only safe direction: an unreadable database must not become "an empty
-// database", because the server would then refuse a caller whose only sin was
-// a store it cannot introspect. Absent observation is absent evidence.
-func observeStores(ctx context.Context, conns []string, applierFor migrate.ApplierFor) []*codegenpb.ObservedStore {
+// A store that CANNOT be introspected is skipped in silence — the schemaless
+// ones have nothing to report, and the server leaves a connection it heard
+// nothing about alone.
+//
+// A store that CAN be introspected and fails to be is an ERROR, and the
+// difference matters now in a way it did not before. This reading used to be
+// evidence for a drift check, where absent evidence refused nothing. It is now
+// the BASE: a store that goes unreported is planned as "already at the desired
+// schema", so a database nobody could reach would be quietly skipped and the
+// build would report a converged store it never touched.
+func observeStores(ctx context.Context, conns []string, applierFor migrate.ApplierFor) ([]*codegenpb.ObservedStore, error) {
 	var out []*codegenpb.ObservedStore
 	for _, conn := range conns {
 		ap, err := applierFor(conn)
@@ -157,19 +209,38 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 		live, oerr := obs.Observe(ctx)
 		_ = ap.Close()
 		if oerr != nil {
-			continue
+			return nil, fmt.Errorf("devapply: reading the schema of connection %q: %w\n\n"+
+				"  why: the sync is planned against what this database HOLDS, so an unreadable\n"+
+				"       one cannot be planned for at all — skipped, it would be reported as\n"+
+				"       already converged", conn, oerr)
 		}
 		store := &codegenpb.ObservedStore{Connection: conn}
 		for _, t := range live.Tables {
-			ot := &codegenpb.ObservedTable{Schema: t.Schema, Name: t.Name}
+			ot := &codegenpb.ObservedTable{
+				Schema:     t.Schema,
+				Name:       t.Name,
+				PrimaryKey: t.PrimaryKey,
+				Checks:     t.Checks,
+			}
 			for _, c := range t.Columns {
 				ot.Columns = append(ot.Columns, &codegenpb.ObservedColumn{
-					Name: c.Name, Type: c.DataType, Nullable: c.Nullable,
+					Name: c.Name, Type: c.DataType, Nullable: c.Nullable, DefaultExpr: c.Default,
+				})
+			}
+			for _, idx := range t.Indexes {
+				ot.Indexes = append(ot.Indexes, &codegenpb.ObservedIndex{
+					Name: idx.Name, Unique: idx.Unique, Definition: idx.Definition,
+				})
+			}
+			for _, fk := range t.ForeignKeys {
+				ot.ForeignKeys = append(ot.ForeignKeys, &codegenpb.ObservedForeignKey{
+					Name: fk.Name, Columns: fk.Columns,
+					TargetTable: fk.TargetTable, TargetColumn: fk.TargetColumn,
 				})
 			}
 			store.Tables = append(store.Tables, ot)
 		}
 		out = append(out, store)
 	}
-	return out
+	return out, nil
 }

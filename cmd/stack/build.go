@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/autosync"
 	plan "github.com/wandering-compiler/w17ctl/internal/plan"
 	"github.com/wandering-compiler/w17ctl/internal/schema"
+	"github.com/wandering-compiler/w17ctl/internal/snapstore"
 	"github.com/wandering-compiler/w17ctl/internal/storageclient"
 
 	codegen "github.com/wandering-compiler/w17ctl/internal/codegen"
@@ -49,6 +49,7 @@ type BuildCmd struct {
 	Console         string   `name:"console" placeholder:"HOST:PORT" env:"CONSOLE_STORAGE_ADDR" help:"Console storage endpoint (holds the checkpoints). Defaults to the logged-in console (w17ctl login), else the compiled-in default."`
 	Reconcile       bool     `name:"reconcile" help:"Force the branch-switch reconcile even when the project's autosync mode is off. (When on — the default — reconcile already runs on an initiative change.)"`
 	NoCodegen       bool     `name:"no-codegen" help:"Skip the codegen step (assume the generated code is already current). By default 'stack build' runs codegen first so the images compile against fresh generated code."`
+	Lossy           string   `name:"lossy" default:"refuse" help:"What to do when the sync would DESTROY data (drop a table or column, retype one): refuse | apply | snapshot. snapshot takes one of the affected stores first."`
 	NoBuild         bool     `name:"no-build" help:"Skip building images and sync the local database only. The schema sync and the image build are independent steps that happen to share this command; with this flag the sync needs no Docker daemon, no build context and no compose file at all. Use it when you changed a proto and want the database to match."`
 	modeFlags
 
@@ -56,6 +57,11 @@ type BuildCmd struct {
 	// services. Set to the remote runner in remote mode (Run); nil ⇒
 	// buildReconcileDeps defaults to the local daemon.
 	cc composeCtl
+
+	// root pins the project directory instead of discovering it from the
+	// working directory. Set by SyncStores, whose caller already knows which
+	// project it is running and does not necessarily stand in it.
+	root string
 }
 
 // runCodegenFn regenerates all derived code (the codegen step `stack
@@ -67,9 +73,12 @@ var runCodegenFn = func() error {
 }
 
 func (c *BuildCmd) Run() error {
-	root, err := core.FindProjectRoot()
-	if err != nil {
-		return err
+	root := c.root
+	if root == "" {
+		var err error
+		if root, err = core.FindProjectRoot(); err != nil {
+			return err
+		}
 	}
 	// Regenerate code so the images compile against fresh generated code
 	// (codegen is deterministic — a no-op in effect when the proto is
@@ -202,6 +211,84 @@ func (c *BuildCmd) resolveProtos(root string) (protos, imports []string, cleanup
 	return models, imports, vcleanup, nil
 }
 
+// lossyMode validates --lossy. An unknown value is refused rather than
+// treated as the default: a typo in the flag that meant "apply" would
+// otherwise silently refuse, and one that meant "refuse" would silently
+// destroy.
+func (c *BuildCmd) lossyMode() (string, error) {
+	switch c.Lossy {
+	case "", plan.LossyRefuse:
+		return plan.LossyRefuse, nil
+	case plan.LossyApply, plan.LossySnapshot:
+		return c.Lossy, nil
+	default:
+		return "", fmt.Errorf("stack build: --lossy=%q is not one of: %s", c.Lossy, plan.ValidLossyModes())
+	}
+}
+
+// snapshotFn snapshots the named stores before a destructive sync, into the
+// same branch-scoped store `db snapshot` and the branch-switch reconcile use —
+// so what it keeps is restorable by a command that already exists.
+func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiative string) func([]string) error {
+	return func(conns []string) error {
+		wanted := map[string]bool{}
+		for _, c := range conns {
+			wanted[c] = true
+		}
+		var mine []factory.TargetSpec
+		for _, s := range specs {
+			if wanted[s.Connection] {
+				mine = append(mine, s)
+			}
+		}
+		snapConns, skipped, err := SnapshotConns(mine)
+		if err != nil {
+			return err
+		}
+		for _, s := range skipped {
+			fmt.Fprintf(core.Stdout, "stack build: snapshot skipping store %s\n", s)
+		}
+		if len(snapConns) == 0 {
+			return fmt.Errorf("none of the stores that would lose data can be snapshotted (%s)", strings.Join(conns, ", "))
+		}
+		name := "before-lossy-sync-" + time.Now().UTC().Format("20060102T150405Z")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if err := snapstore.New(root).SaveNamed(ctx, initiative, name, "", snapConns); err != nil {
+			// A snapshot is taken by the database's OWN client tools, and a
+			// machine without them cannot take one. Said plainly, because the
+			// raw failure is `exec: "pg_dump": executable file not found` —
+			// which reads like a bug in w17 rather than a missing package,
+			// and arrives at the moment somebody chose the careful option.
+			if strings.Contains(err.Error(), "executable file not found") {
+				return fmt.Errorf("%w\n\n"+
+					"  why: a snapshot is taken with the database's own client tools (pg_dump /\n"+
+					"       mysqldump), and this machine does not have them\n"+
+					"  fix: install them, or choose --lossy=apply having decided the data can go", err)
+			}
+			return err
+		}
+		fmt.Fprintf(core.Stdout, "stack build: snapshot %q taken before applying (restore: w17ctl db snapshot restore %s)\n", name, name)
+		return nil
+	}
+}
+
+// SyncStores reconciles the given stores to the project's protos, through the
+// console — the whole of `stack build --no-build`, with the targets supplied
+// rather than resolved.
+//
+// Exported for `w17ctl test`, whose stack publishes its stores on ports it
+// allocates itself, so the addresses are known to the caller and to nobody
+// else. The reconcile is otherwise identical: compile the protos, ask the
+// console for the plan against what those databases HOLD, apply it.
+func SyncStores(root, console string, targets []factory.TargetSpec) error {
+	cmd := &BuildCmd{NoBuild: true, NoCodegen: true, Console: console, root: root}
+	for _, t := range targets {
+		cmd.Targets = append(cmd.Targets, t.Connection+"="+t.DSN)
+	}
+	return cmd.Run()
+}
+
 // ResolveTargets returns the dev-diff-apply targets: explicit --target
 // wins; otherwise they are auto-resolved from the lock's connections +
 // the dev-machine port allocation (the same ports `stack up` publishes).
@@ -289,61 +376,17 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 	}
 	defer sc.Close()
 
+	mode, err := c.lossyMode()
+	if err != nil {
+		return err
+	}
 	logf := func(format string, args ...any) { fmt.Fprintf(core.Stdout, format+"\n", args...) }
-	if err := runDevDiffApply(sc, project, actor, initiative, currentBytes, applierFor, specConnections(specs), c.CompilerVersion, logf); err != nil {
+	if err := runDevDiffApplyLossy(sc, project, actor, initiative, currentBytes, applierFor,
+		specConnections(specs), c.CompilerVersion, logf, mode, c.snapshotFn(root, specs, initiative)); err != nil {
 		return fmt.Errorf("stack build: dev diff-apply: %w", err)
 	}
 	fmt.Fprintf(core.Stdout, "stack build: dev diff-apply complete (%s/%s, checkpoint advanced)\n", initiative, actor)
-	warnSnapshotBehind(root)
 	return nil
-}
-
-// warnSnapshotBehind says so when the rendered snapshot is older than the
-// protos this build just applied.
-//
-// A schema change has TWO artefacts: the dev database, which this command
-// moves, and `w17/schema/schema-snapshot.json`, which builds a database from
-// empty and which this command does not touch. They are one truth stored
-// twice, and only one of them advanced here.
-//
-// A consumer added a constraint, ran this, watched it apply — and found out
-// later that the snapshot never got it, because their CI builds its schema
-// from the snapshot rather than from the dev database. A test that passed
-// against the dev DB failed there. Nothing in this command's output suggested
-// a second step; it moved the half that is visible and left the other.
-func warnSnapshotBehind(root string) {
-	snap := filepath.Join(root, "w17", "schema", "schema-snapshot.json")
-	si, err := os.Stat(snap)
-	if err != nil {
-		// No snapshot at all is a different project shape, not a drift.
-		return
-	}
-	newest, ok := newestProtoModTime(root)
-	if !ok || !newest.After(si.ModTime()) {
-		return
-	}
-	fmt.Fprintf(core.Stdout,
-		"\nstack build: the dev database moved, the SNAPSHOT did not.\n"+
-			"  why: schema-snapshot.json builds a database from EMPTY — CI, a fresh checkout, a\n"+
-			"       new environment — and this command only reconciles the database you pointed\n"+
-			"       it at. A proto is newer than that file, so the two now disagree.\n"+
-			"  fix: w17ctl schema render, and commit what it writes\n")
-}
-
-// newestProtoModTime is the most recent mtime among the project's protos.
-func newestProtoModTime(root string) (time.Time, bool) {
-	var newest time.Time
-	var found bool
-	_ = filepath.WalkDir(filepath.Join(root, "proto"), func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".proto") {
-			return nil
-		}
-		if fi, ferr := d.Info(); ferr == nil && fi.ModTime().After(newest) {
-			newest, found = fi.ModTime(), true
-		}
-		return nil
-	})
-	return newest, found
 }
 
 // runDevDiffApply is the dev DB lifecycle's per-build orchestration,
@@ -359,6 +402,21 @@ func newestProtoModTime(root string) (time.Time, bool) {
 //     failed apply leaves the checkpoint at the last good state, so the
 //     next build re-attempts the same diff).
 func runDevDiffApply(sc *storageclient.StorageClients, project, actor, initiative string, currentBytes []byte, applierFor migrate.ApplierFor, conns []string, compilerVersion string, logf func(string, ...any)) error {
+	return runDevDiffApplyLossy(sc, project, actor, initiative, currentBytes, applierFor, conns, compilerVersion, logf, plan.LossyApply, nil)
+}
+
+// runDevDiffApplyLossy is runDevDiffApply with the answer to a destructive
+// plan, and the snapshot to take when the answer is to keep what it removes.
+func runDevDiffApplyLossy(sc *storageclient.StorageClients, project, actor, initiative string, currentBytes []byte, applierFor migrate.ApplierFor, conns []string, compilerVersion string, logf func(string, ...any), lossyMode string, snapshot func([]string) error) error {
+	// The checkpoint the console records carries the compiler that produced
+	// it, and an empty one is refused by the column's own constraint. The
+	// flag's default fills this in for a command line; a caller that BUILDS a
+	// BuildCmd (`stack up`'s sync, `w17ctl test`'s) gets the zero value, and
+	// the sync then failed after applying — the database changed, the record
+	// of it refused. Defaulted here so no constructor can forget.
+	if compilerVersion == "" {
+		compilerVersion = "dev"
+	}
 	ckpt, err := sc.GetCheckpoint(project, actor, initiative)
 	if err != nil {
 		return fmt.Errorf("read checkpoint: %w", err)
@@ -370,28 +428,11 @@ func runDevDiffApply(sc *storageclient.StorageClients, project, actor, initiativ
 		baseBytes = ckpt.GetIrSchema()
 	}
 
-	// A non-empty base says "these stores already hold that schema" — and the
-	// checkpoint is keyed by project/actor/INITIATIVE, never by the database
-	// this run is pointed at. Point a build with an advanced checkpoint at a
-	// different, empty database and the diff is empty, so the apply writes
-	// nothing, succeeds, and reports a converged store. A consumer hit exactly
-	// that: a second dev database came back with no tables and no extensions,
-	// and the command that made it said "dev diff-apply complete".
-	//
-	// Refuse on EMPTY only. A store that cannot answer proceeds as before —
-	// the KV stores have no fingerprint and are genuinely re-appliable, and
-	// turning "I cannot tell" into a refusal would block the normal case.
-	if len(baseBytes) != 0 {
-		if err := refuseEmptyStores(applierFor, conns, initiative); err != nil {
-			return err
-		}
-	}
-
 	// currentBytes is the opaque compiled IR (the client never decodes it) —
 	// the plan/compat RPCs + the checkpoint advance all consume it verbatim.
 	ctx, cancel := context.WithTimeout(context.Background(), 120e9)
 	defer cancel()
-	if _, err := plan.DevPlanAndApply(ctx, baseBytes, currentBytes, applierFor, conns, logf); err != nil {
+	if _, err := plan.DevPlanAndApplyLossy(ctx, baseBytes, currentBytes, applierFor, conns, logf, lossyMode, snapshot); err != nil {
 		// Nil-checkpoint "already exists": the store was bootstrapped from
 		// db/init (full schema on a fresh volume) but has no dev checkpoint
 		// yet, so the first diff-apply — base nil → full create — collides
@@ -416,37 +457,6 @@ func specConnections(specs []factory.TargetSpec) []string {
 		out = append(out, sp.Connection)
 	}
 	return out
-}
-
-// refuseEmptyStores fails when a store this build is pointed at holds no
-// schema while the checkpoint says the initiative already has one. Reporting
-// success over a database in which nothing was created is the failure worth
-// catching; every remedy below is a real command, because "your checkpoint is
-// ahead" is not something a reader can act on by itself.
-func refuseEmptyStores(applierFor migrate.ApplierFor, conns []string, initiative string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30e9)
-	defer cancel()
-	for _, conn := range conns {
-		state, err := migrate.StoreSchemaStateOf(ctx, applierFor, conn)
-		if err != nil {
-			// Unreachable or unreadable is not this guard's business — the
-			// apply below will fail with the driver's own error, which says
-			// more than anything this function could invent.
-			continue
-		}
-		if state != migrate.StoreSchemaEmpty {
-			continue
-		}
-		return fmt.Errorf("connection %q holds no schema, but the checkpoint for initiative %q says it should\n\n"+
-			"  why: the checkpoint records what THIS INITIATIVE has applied, not what any\n"+
-			"       one database contains. Pointed at a different or freshly created\n"+
-			"       database, the diff comes out empty and this build would create\n"+
-			"       nothing while reporting success.\n\n"+
-			"  to build this database from empty:   <your binary> schema apply\n"+
-			"  to re-baseline the checkpoint here:  w17ctl stack reset\n"+
-			"  or point --target at the database the checkpoint describes", conn, initiative)
-	}
-	return nil
 }
 
 // adoptCheckpoint records `currentBytes` as the initiative's checkpoint WITHOUT

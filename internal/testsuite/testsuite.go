@@ -22,7 +22,10 @@ import (
 	"golang.org/x/mod/modfile"
 	"gopkg.in/yaml.v3"
 
+	"github.com/wandering-compiler/w17ctl/internal/codegen"
 	"github.com/wandering-compiler/w17ctl/internal/core"
+	"github.com/wandering-compiler/w17ctl/internal/localtarget"
+	"github.com/wandering-compiler/sdk/go/tooling/migrate/factory"
 )
 
 // Config drives a run of the project's generated e2e suite against an
@@ -38,6 +41,14 @@ import (
 // http://localhost:<port> as a TRUE external client over the exposed
 // port (no docker-internal networking), and tears the stack down.
 type Config struct {
+	// SyncFn reconciles the stack's stores to the project's protos, through
+	// the console. Supplied by the command layer: the reconcile is a
+	// command's job, and this package cannot import one without a cycle.
+	//
+	// Nil = no reconcile, which is the unit tests' shape and the shape of a
+	// caller that manages its own schema.
+	SyncFn func(root string, targets []factory.TargetSpec) error
+
 	ComposeFile    string
 	Project        string
 	GatewayService string
@@ -188,6 +199,20 @@ func (c *Config) Run() (err error) {
 	// a half-up backend.
 	c.status("waiting", fmt.Sprintf("bringing up %s (project %q) — waiting for healthy", filepath.Base(composeFile), project),
 		map[string]any{"project": project, "compose": filepath.Base(composeFile)})
+	// The stores FIRST, and their schema before anything that reads it.
+	//
+	// A generated stack used to carry its own schema step — a compose service
+	// running `<binary> schema apply` over a rendered file, gated ahead of the
+	// bundles by `depends_on: service_completed_successfully`. The file is
+	// gone: a store's schema is the difference between what it HOLDS and what
+	// the protos say, and the console computes that. So the step runs from
+	// here, where both the console and the (dynamically published) stores are
+	// reachable — and it still has to happen before the bundles start, because
+	// a bundle whose tables do not exist never becomes healthy.
+	if err = c.syncStores(files, composeFile, project, root); err != nil {
+		return err
+	}
+
 	upArgs := []string{"up", "-d", "--wait"}
 	if c.Timeout > 0 {
 		upArgs = append(upArgs, "--wait-timeout", fmt.Sprint(c.Timeout))
@@ -542,6 +567,25 @@ func workspace() string {
 // value, so one sweep collects both. It is spelled out rather than imported:
 // w17ctl is the public thin client and imports zero private srcgo (D4), so
 // the agreement is pinned by a gate instead (srcgo/tests/dockernames).
+// storePort is the port a relational store listens on, recognised by the
+// service's IMAGE.
+//
+// By image rather than by what the service publishes, because several stacks
+// reset the publication on their database outright — nothing inside the
+// compose network dials it — and a rule keyed on the published port then finds
+// no store at all. The sync would do nothing, say nothing, and the bundles
+// would start against empty tables.
+func storePort(image string) int {
+	image = strings.ToLower(image)
+	switch {
+	case strings.Contains(image, "postgres"), strings.Contains(image, "postgis"):
+		return 5432
+	case strings.Contains(image, "mysql"), strings.Contains(image, "mariadb"):
+		return 3306
+	}
+	return 0
+}
+
 func (c *Config) analyzeCompose(composeFile, root string) (override string, hasBuild bool, err error) {
 	out, err := outputCmd(exec.Command("docker", "compose", "-f", composeFile, "--project-directory", root, "config", "--format", "json"))
 	if err != nil {
@@ -550,6 +594,7 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 	var cfg struct {
 		Services map[string]struct {
 			Build json.RawMessage `json:"build"`
+			Image string          `json:"image"`
 			Ports []struct {
 				Target   int    `json:"target"`
 				Protocol string `json:"protocol"`
@@ -587,6 +632,13 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 			fmt.Fprintf(&b, "    build:\n      labels:\n        %s: %q\n", reclaimLabelKey, workspace())
 		}
 		if len(svc.Ports) == 0 {
+			// A store that publishes nothing still has to be reachable from
+			// here: the schema sync runs on THIS side and dials it by host
+			// port. Published dynamically like everything else, so it cannot
+			// collide with a parallel run.
+			if port := storePort(svc.Image); port != 0 {
+				fmt.Fprintf(&b, "    ports: !override\n      - \"%d\"\n", port)
+			}
 			continue
 		}
 		fmt.Fprintf(&b, "    ports: !override\n")
@@ -606,6 +658,96 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 		return "", hasBuild, err
 	}
 	return f, hasBuild, nil
+}
+
+// syncStores brings the stack's relational stores up on their own and
+// reconciles each one to the project's protos.
+//
+// A stack with no relational store does nothing here — the schemaless ones are
+// provisioned by the bundle that owns them, not diffed.
+//
+// SyncFn is supplied by the caller (cmd/test), because the reconcile is a
+// command's job and this package cannot import one without an import cycle.
+// Nil = the caller did not ask for it, which is what the unit tests use.
+func (c *Config) syncStores(files []string, composeFile, project, root string) error {
+	if c.SyncFn == nil {
+		return nil
+	}
+	stores, err := c.storeServices(composeFile, root)
+	if err != nil {
+		return err
+	}
+	if len(stores) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(stores))
+	for n := range stores {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	c.status("schema", fmt.Sprintf("bringing up %d store(s) and reconciling their schema", len(names)),
+		map[string]any{"stores": names})
+	upArgs := append([]string{"up", "-d", "--wait", "--wait-timeout", "180"}, names...)
+	if err := c.compose(files, project, root, upArgs...); err != nil {
+		return fmt.Errorf("docker compose up (stores): %w", err)
+	}
+
+	targets := make([]factory.TargetSpec, 0, len(names))
+	for _, name := range names {
+		port, err := c.servicePort(files, project, root, name, stores[name])
+		if err != nil {
+			return fmt.Errorf("store %s: %w", name, err)
+		}
+		dsn := localtarget.DSN(storeDialect(stores[name]), codegen.ConnectionDomain(name), port)
+		if dsn == "" {
+			continue
+		}
+		targets = append(targets, factory.TargetSpec{Connection: name, DSN: dsn})
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	if err := c.SyncFn(root, targets); err != nil {
+		return fmt.Errorf("schema sync: %w", err)
+	}
+	return nil
+}
+
+// storeDialect names the dialect a container port belongs to.
+func storeDialect(containerPort int) string {
+	switch containerPort {
+	case 5432:
+		return "postgres"
+	case 3306:
+		return "mysql"
+	}
+	return ""
+}
+
+// storeServices lists the stack's relational stores as service → container
+// port, discovered from the resolved config so it needs no list and survives a
+// stack growing one.
+func (c *Config) storeServices(composeFile, root string) (map[string]int, error) {
+	out, err := outputCmd(exec.Command("docker", "compose", "-f", composeFile, "--project-directory", root, "config", "--format", "json"))
+	if err != nil {
+		return nil, fmt.Errorf("docker compose config: %w", err)
+	}
+	var cfg struct {
+		Services map[string]struct {
+			Image string `json:"image"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(out, &cfg); err != nil {
+		return nil, fmt.Errorf("parse compose config: %w", err)
+	}
+	found := map[string]int{}
+	for name, svc := range cfg.Services {
+		if port := storePort(svc.Image); port != 0 {
+			found[name] = port
+		}
+	}
+	return found, nil
 }
 
 // compose runs a `docker compose` subcommand (with every -f file)
