@@ -21,6 +21,19 @@ import (
 // fixtures/<domain>/<name>.json. Tomorrow: any other artifact
 // types we add (initial_data once it lands, …).
 //
+// ⚠️ THIS IS A CI COMMAND. It is what turns a merged schema into a STORED
+// MIGRATION — a permanent, ordered record the console plans every later
+// migration against and a deployed database applies in series.
+//
+// Run by hand from a feature branch, it mints a migration for code that may
+// still change or may never merge, and nothing removes it afterwards: the
+// next migration is then planned on top of a state the repository never
+// reached. The generated CI configs run it on the default branch, after the
+// e2e suite passes, which is the moment the code is final.
+//
+// The developer loop needs none of it — `w17ctl stack build` applies the diff
+// to the local stores and persists NO migration, however many times it runs.
+//
 // Idempotent: calling repeatedly with the same inputs is safe.
 // Server-side stores latest body; in the future the
 // PR/approval workflow gates promotion, but the wire contract
@@ -31,7 +44,7 @@ import (
 // figures out what changed.
 type Cmd struct {
 	Protos      []string `name:"proto" short:"p" placeholder:"PROTO" required:"" help:"Path to a .proto schema. Repeatable for multi-file schemas. Routing-style flag (operator decides what's in scope), so flag is fine."`
-	Imports     []string `name:"import" short:"I" placeholder:"DIR" help:"Additional proto import path. Repeatable."`
+	Imports     []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
 	ProjectID   string   `name:"project" placeholder:"ID" env:"W17_PROJECT_ID" help:"Project identifier. Falls back to W17_PROJECT_ID env var; then to w17/lock.yaml project_id."`
 	Console     string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of console. Optional — falls back to console_addr in w17/lock.yaml, then the binary's compile-time default."`
 	LockPath    string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file. Updated to pin target_migration_id per connection after a successful schema push."`

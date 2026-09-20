@@ -53,11 +53,22 @@ func ExplainAuthFailure(addr string, err error) error {
 
 func explainUnauthenticated(addr string) string {
 	var b strings.Builder
+	// An unattended caller is answered first and separately. `w17ctl login`
+	// is the fix for a person at a terminal and is no fix at all in a CI job
+	// or on a production host — offering it there sends the reader to a
+	// command they cannot usefully run, on a machine with no home directory
+	// to store the result in.
+	if hint := explainEnvToken(addr); hint != "" {
+		return hint
+	}
 	b.WriteString("  this is one of three, and they look identical from here:\n")
 	inst := instanceFor(addr)
 	switch {
 	case inst == nil:
-		b.WriteString("    · no stored credential for this console — run `w17ctl login " + displayAddr(addr) + "`\n")
+		b.WriteString("    · no stored credential for this console, and W17_TOKEN is not set either.\n")
+		b.WriteString("      interactive: w17ctl login " + displayAddr(addr) + "\n")
+		b.WriteString("      unattended:  set W17_TOKEN (a machine account's API token) and\n")
+		b.WriteString("                   W17_CONSOLE_ADDR=" + displayAddr(addr) + "\n")
 		return b.String()
 	case isLoopback(inst.URL):
 		b.WriteString("    · the token is for a console that is GONE. A dev console publishes an\n")
@@ -70,6 +81,39 @@ func explainUnauthenticated(addr string) string {
 	b.WriteString("      (a login SUCCEEDS and everything after it fails; re-login does not help).\n")
 	b.WriteString("  fix, for the first two: w17ctl login " + displayAddr(addr) + "\n")
 	return b.String()
+}
+
+// explainEnvToken answers the two refusals an unattended caller actually
+// gets, and returns "" when no token is in play so the interactive
+// explanation stands.
+//
+// The distinction it draws is the whole value. "Set and refused" and "set and
+// never sent" arrive as the same `invalid credentials`, and they have nothing
+// in common: the first is a question for the console (revoked? minted
+// elsewhere?), the second is a missing line in a pipeline file. A deployment
+// debugging the second one against the first reads as the token being wrong,
+// and the token is fine.
+func explainEnvToken(addr string) string {
+	bound, presented := EnvTokenBinding(addr)
+	if !EnvTokenIsSet() {
+		return ""
+	}
+	if presented {
+		return "  " + EnvTokenVar + " WAS presented to this console and refused.\n" +
+			"    · the token was revoked, or its account was disabled.\n" +
+			"    · the token was minted on a DIFFERENT console than " + displayAddr(addr) + ".\n" +
+			"    · the console runs code whose schema its database does not have.\n" +
+			"  a machine account's token does not expire by sitting unused, so an\n" +
+			"  unchanged pipeline that suddenly fails here points at the account.\n"
+	}
+	if bound == "" {
+		return "  " + EnvTokenVar + " is set but bound to no console, so NOTHING was sent.\n" +
+			"  fix: set " + envConsoleAddrVar + "=" + displayAddr(addr) + "\n"
+	}
+	return "  " + EnvTokenVar + " is bound to " + bound + " and was NOT sent to " + displayAddr(addr) + ".\n" +
+		"  a token is only presented to the console it was minted for, so this\n" +
+		"  call went out unauthenticated — the token itself is not implicated.\n" +
+		"  fix: point " + envConsoleAddrVar + " at the console being dialed, or dial the one it names.\n"
 }
 
 // explainPermissionDenied speaks only when this client can see a cause. A real

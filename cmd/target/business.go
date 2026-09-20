@@ -56,8 +56,26 @@ func (c *BusinessAddCmd) Run() error {
 	}); err != nil {
 		return err
 	}
+	reg := strings.Trim(c.Register, "/")
 	fmt.Fprintf(core.Stdout, "business add: %s → %s-business (RegisterBusiness=%s, %d env) → %s\n",
-		c.Domain, c.Domain, strings.Trim(c.Register, "/"), len(c.Env), c.LockPath)
+		c.Domain, c.Domain, reg, len(c.Env), c.LockPath)
+
+	// ⚠️ SAY WHOSE CODE THAT PATH IS. The bundle codegen renders IMPORTS the
+	// register package and calls `RegisterBusiness` in it — and nothing
+	// creates it, because it is the author's own service code. So an adopter
+	// who runs `add` and then `codegen` gets two commands that both succeed
+	// and a tree that does not build, with an error naming an import path
+	// rather than a decision they made two steps earlier.
+	//
+	// That is the shape a consumer reported (#24): a path that only fails
+	// several commands later. The path is not wrong and codegen is not wrong;
+	// what was missing is that `add` never said the package is theirs to
+	// write.
+	fmt.Fprintf(core.Stdout, "\n  Next: write %s — it is YOUR code, not generated.\n", reg)
+	fmt.Fprintf(core.Stdout, "  The bundle imports it and calls:\n")
+	fmt.Fprintf(core.Stdout, "      func RegisterBusiness(cfg *EnvConfig, registry HandlerRegistry, clients ClientSet) error\n")
+	fmt.Fprintf(core.Stdout, "  (the three types come from the generated gen package for %s).\n", c.Domain)
+	fmt.Fprintf(core.Stdout, "  Until it exists, `w17ctl codegen` succeeds and the bundle does not compile.\n")
 	return nil
 }
 

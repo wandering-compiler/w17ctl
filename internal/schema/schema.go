@@ -69,6 +69,26 @@ func compileIRBytesViaConsole(ctx context.Context, paths, imports []string, cons
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("no --proto paths given")
 	}
+	// ⚠️ `--import` IS IGNORED, and saying so is the point of this block.
+	//
+	// The flag is on eight commands and its help promises "additional proto
+	// import path(s)". It stopped meaning anything when the IR compile moved
+	// server-side: the console loads the vocabulary from its own proto root
+	// and resolves everything else out of the uploaded project tree, so an
+	// import root computed on the client reaches nobody. The argument arrives
+	// here and is never read again.
+	//
+	// Warned rather than refused. The flag does nothing today, so nobody's
+	// working command depends on its effect — but somebody's script may pass
+	// it out of habit, and turning that into an error buys them a broken
+	// pipeline in exchange for a correction they cannot act on. A line on
+	// stderr tells the person who can
+	// (docs/decisions/client-carries-compiler-payloads.md §2).
+	if len(imports) > 0 {
+		fmt.Fprintf(core.Stderr, "w17ctl: --import is ignored (%d path(s)): the console compiles the IR "+
+			"and resolves imports from the uploaded proto tree and its own w17 vocabulary. "+
+			"Protos your project imports must live under its proto dir.\n", len(imports))
+	}
 	root, err := core.FindProjectRoot()
 	if err != nil {
 		return nil, err

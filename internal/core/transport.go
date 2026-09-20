@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -55,7 +56,46 @@ var devCACert []byte
 // resolver still receives it.
 func ConsoleTarget(addr string) string {
 	_, target := splitConsoleScheme(addr)
+	noteConsoleAddr(addr)
 	return target
+}
+
+// lastConsoleAddr is the address of the most recent console dial.
+//
+// It exists for DIAGNOSTICS, and for one specific failure: the top-level
+// error handler explains an auth refusal, and it resolved the console by
+// calling ResolveConsoleAddr("") — with an empty flag value, so it never saw
+// the `--console` the command was given nor the W17_CONSOLE_ADDR it read.
+// With no stored login that chain falls through to the COMPILED default, so
+// every such message named api.w17.app whichever console had actually been
+// dialed. An operator following "set W17_CONSOLE_ADDR=<that>" would then bind
+// their token to the wrong console and be refused by the very check meant to
+// protect them.
+//
+// Recorded HERE because this is the one function every dial passes through,
+// so it cannot drift from what was really contacted.
+var (
+	lastConsoleMu   sync.Mutex
+	lastConsoleAddr string
+)
+
+func noteConsoleAddr(addr string) {
+	if addr == "" {
+		return
+	}
+	lastConsoleMu.Lock()
+	lastConsoleAddr = addr
+	lastConsoleMu.Unlock()
+}
+
+// LastConsoleAddr returns the console this process most recently dialed, or
+// "" if it has not dialed one. Prefer it over re-resolving when explaining a
+// failure: re-resolution answers "where would we go", this answers "where did
+// we go", and only the second can be wrong in a way the reader acts on.
+func LastConsoleAddr() string {
+	lastConsoleMu.Lock()
+	defer lastConsoleMu.Unlock()
+	return lastConsoleAddr
 }
 
 // ConsoleTransportCreds returns the transport credentials for a console dial.

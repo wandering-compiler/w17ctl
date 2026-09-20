@@ -104,7 +104,7 @@ var root struct {
 	Admission admissioncmd.Cmd `cmd:"" help:"Read the console's codegen admission-gate counters: whether the gate is on, its limits, the queue depth right now, decisions by outcome, wait times, and the estimate-vs-observed drift that says when to recalibrate. A console read — takes no project."`
 
 	// --- Schema & migration lifecycle ---
-	Push    pushcmd.Cmd    `cmd:"" help:"Push everything (schema + fixtures + future artifact types) to console in one call. Server diffs and stores. Idempotent — safe to re-run any time inputs change."`
+	Push    pushcmd.Cmd    `cmd:"" help:"CI ONLY — push everything (schema + fixtures) and MINT A MIGRATION. Runs from your pipeline on the default branch after tests pass; running it by hand mints a migration for code that may never merge. Your own loop is 'w17ctl stack build', which persists none."`
 	Migrate migratecmd.Cmd `cmd:"" help:"Migration surface for a DEPLOYED environment — generate (compile + push schema; console plans the SQL migrations), list history, push a raw body, reset (DEV-only destructive recreate). To change a LOCAL dev database, this is the wrong command: use 'w17ctl stack build', which diff-applies the current proto to the local stores."`
 	// Fixtures — fetch a console-rendered fixture seed (parameterized
 	// upserts, schema-aware render done server-side) and execute it
@@ -187,8 +187,7 @@ func Run(args []string) {
 		// forgets. It adds only what the CLIENT can see — which credential it
 		// attached, which organization it named — and stays silent when the
 		// server's own wording is already the whole story.
-		addr, _ := core.ResolveConsoleAddr("")
-		ctx.FatalIfErrorf(core.ExplainAuthFailure(addr, err))
+		ctx.FatalIfErrorf(core.ExplainAuthFailure(consoleAddrForDiagnostics(), err))
 		return
 	}
 }
@@ -215,4 +214,25 @@ func verifyProjectLock() error {
 		return loadErr // present but corrupt / unparseable → refuse
 	}
 	return nil
+}
+
+// consoleAddrForDiagnostics is the console an error message should name: the
+// one that was DIALED, falling back to resolution only when nothing was.
+//
+// Re-resolving is what this replaced, and it was wrong in a way the reader
+// acts on: the handler passed an empty flag value, so resolution saw neither
+// the command's --console nor its W17_CONSOLE_ADDR and fell through to the
+// COMPILED default. Every auth failure then named that default whichever
+// console had really been contacted — and the message tells the reader to set
+// W17_CONSOLE_ADDR to it, which would bind their token to the wrong console
+// and have it refused by the check meant to protect them.
+//
+// Its own function so the choice is testable: the handler around it runs
+// inside kong's dispatch and a test that reached it would be testing kong.
+func consoleAddrForDiagnostics() string {
+	if addr := core.LastConsoleAddr(); addr != "" {
+		return addr
+	}
+	addr, _ := core.ResolveConsoleAddr("")
+	return addr
 }

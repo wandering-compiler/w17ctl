@@ -1039,13 +1039,57 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 		if filepath.Ext(p.target) == ".sh" {
 			mode = 0o755
 		}
+		// ⚠️ Read the OLD pin fingerprint before overwriting it — afterwards
+		// there is nothing left to compare against.
+		movedFrom := pinFingerprintOf(p.target)
 		if err := os.WriteFile(p.target, p.contents, mode); err != nil {
 			return fmt.Errorf("write %s: %w", p.target, err)
 		}
 		fmt.Fprintf(core.Stdout, "wrote %s (%d bytes)\n", p.target, len(p.contents))
+		if to := pinFingerprintIn(p.contents); movedFrom != "" && to != "" && movedFrom != to {
+			// A pin move used to arrive INVISIBLY: codegen rewrote the go.mod
+			// and said only "wrote". That is how a security bump reached one
+			// bundle and not another without anyone noticing — the finding this
+			// fingerprint exists for
+			// (docs/todos/grpc-pin-is-silent-at-the-consumer.md).
+			//
+			// It does not close the case: a consumer who never re-runs codegen
+			// still gets no signal, and answering THAT needs the comparison to
+			// travel to them. What it does is turn a silent overwrite into a
+			// line they can review.
+			fmt.Fprintf(core.Stdout, "  ecosystem pins moved: %s → %s (this bundle was rendered "+
+				"against an older pin set; check the require block in the diff)\n", movedFrom, to)
+		}
 	}
 	return nil
 }
+
+// pinFingerprintOf reads the ecosystem-pin fingerprint a generated go.mod
+// records, or "" when the file does not exist or predates the stamp.
+//
+// Empty is not an error and must not be reported as a move: every bundle
+// generated before the stamp existed has none, and telling those consumers
+// their pins "moved" on the first regeneration would be noise on the one run
+// where nothing is wrong.
+func pinFingerprintOf(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return pinFingerprintIn(b)
+}
+
+// pinFingerprintIn extracts the stamp from go.mod bytes. The line is emitted by
+// genmain's template as `// Ecosystem pins: <hex> — …`.
+func pinFingerprintIn(b []byte) string {
+	m := pinFingerprintRe.FindSubmatch(b)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
+}
+
+var pinFingerprintRe = regexp.MustCompile(`(?m)^// Ecosystem pins: ([0-9a-f]+)`)
 
 // syncGoWork ensures every generated bundle module (each
 // `<servicesDir>/<bundle>/go.mod` + the `<w17Stubs>/go.mod` stubs

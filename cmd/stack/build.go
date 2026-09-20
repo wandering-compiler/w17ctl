@@ -22,7 +22,6 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/protoscan"
 	"github.com/wandering-compiler/w17ctl/internal/reconcile"
 	"github.com/wandering-compiler/w17ctl/internal/remotecompose"
-	"github.com/wandering-compiler/w17ctl/internal/vocab"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate/factory"
 )
@@ -41,7 +40,7 @@ type BuildCmd struct {
 	Services []string `arg:"" optional:"" help:"Services to build; empty = the whole stack."`
 
 	Protos          []string `name:"proto" short:"p" placeholder:"PROTO" help:"Model proto file(s) to compile into the current IR for dev diff-apply. Repeatable. Empty = auto-discover the model protos (those declaring (w17.db.table)) under the project's proto dir."`
-	Imports         []string `name:"import" short:"I" placeholder:"DIR" help:"Additional proto import path(s). Repeatable."`
+	Imports         []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
 	Targets         []string `name:"target" short:"t" placeholder:"CONN=DSN" help:"Local store target(s) to dev diff-apply to, <connection>=<dsn>. Repeatable. Empty = auto-resolved from the lock's connections + the host ports 'stack up' published."`
 	Project         string   `name:"project" placeholder:"ID" help:"Project id. Empty = read from the current project's lock."`
 	CompilerVersion string   `name:"compiler-version" placeholder:"VER" default:"dev" help:"Compiler version pinned into the advanced checkpoint."`
@@ -201,14 +200,17 @@ func (c *BuildCmd) resolveProtos(root string) (protos, imports []string, cleanup
 	// AFTER the emptiness check so they can never make a table-less project
 	// diff-apply an empty schema.
 	models = append(models, modules...)
-	vocabDir, vcleanup, err := vocab.ExtractW17Vocab()
-	if err != nil {
-		return nil, nil, cleanup, fmt.Errorf("stack build: stage w17 vocab: %w", err)
-	}
-	// Import roots: the proto dir (cross-domain model imports) + the
-	// staged vocab (w17/*.proto) + any explicit --import.
-	imports = append([]string{base, vocabDir}, c.Imports...)
-	return models, imports, vcleanup, nil
+	// ⚠️ No vocabulary is staged here any more, and no import roots are
+	// computed, because the CONSOLE resolves both.
+	//
+	// The IR compile moved server-side (`CompileIR`): the client uploads the
+	// project's proto tree and the console loads `w17/*.proto` from its own
+	// proto root — `schema.compileIRBytesViaConsole` says so in as many words,
+	// and ignores the `imports` argument entirely. What was left behind was
+	// the client extracting 576 KB of embedded vocabulary to a temp directory
+	// on every run, to build a list nothing read
+	// (docs/decisions/client-carries-compiler-payloads.md §2).
+	return models, nil, cleanup, nil
 }
 
 // restoreFlags are the flags the printed restore command needs to reach the

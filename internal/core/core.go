@@ -23,6 +23,11 @@ import (
 // global; it exists for the thin cmd layer + transitional callers.
 var Stdout io.Writer = os.Stdout
 
+// Stderr is the twin for lines that are NOT the command's result — warnings a
+// person should see without them landing in a pipe somebody is parsing. Same
+// contract as Stdout: tests point it at a buffer.
+var Stderr io.Writer = os.Stderr
+
 // DefaultGenDir is the conventions-global default generated-code
 // directory (`structure.md`): go.mod + generated stubs live under
 // <root>/srcgo/ unless the lock overrides it.

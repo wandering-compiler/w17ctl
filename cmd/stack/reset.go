@@ -30,7 +30,7 @@ import (
 // acl_roles admin role) is a separate step: `w17ctl fixtures apply`.
 type ResetCmd struct {
 	Protos          []string `name:"proto" short:"p" placeholder:"PROTO" help:"Model proto(s) whose schema to adopt as the checkpoint baseline. Empty = auto-discover the (w17.db.table) protos under the project's proto dir (same as 'stack build')."`
-	Imports         []string `name:"import" short:"I" placeholder:"DIR" help:"Additional proto import path. Repeatable."`
+	Imports         []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
 	Project         string   `name:"project" placeholder:"ID" help:"Project id. Empty = read from the lock."`
 	Console         string   `name:"console" placeholder:"HOST:PORT" env:"CONSOLE_STORAGE_ADDR" help:"Console storage endpoint (holds the checkpoints). Defaults to the logged-in console, else the compiled-in default."`
 	By              string   `name:"by" placeholder:"ACTOR" help:"Actor stamp (checkpoint user_id). Empty = local OS user."`

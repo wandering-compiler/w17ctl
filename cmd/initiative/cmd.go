@@ -180,7 +180,7 @@ type PushCmd struct {
 	Project         string   `name:"project" placeholder:"ID" help:"Project id. Empty = read from the current project's lock."`
 	Name            string   `name:"name" placeholder:"NAME" help:"Initiative name. Empty = current git branch (main/master → trunk)."`
 	Protos          []string `name:"proto" short:"p" placeholder:"PROTO" help:"Proto schema file(s) to compile into the snapshot's real IR (enables compat diffs). Repeatable. Empty = store a lock-bytes stand-in."`
-	Imports         []string `name:"import" short:"I" placeholder:"DIR" help:"Additional proto import path(s) (w17 vocab + shared trees). Repeatable."`
+	Imports         []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
 	CompilerVersion string   `name:"compiler-version" placeholder:"VER" default:"dev" help:"Compiler version pinned into the snapshot."`
 	By              string   `name:"by" placeholder:"ACTOR" help:"Actor stamp (created_by). Empty = local OS user (v1 self-only)."`
 }

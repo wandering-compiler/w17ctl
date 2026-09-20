@@ -19,5 +19,6 @@ type Cmd struct {
 	Binary     BinaryCmd     `cmd:"" help:"Composed-binary (binaries[]) entries — fold a domain's generated components (gateway ± admin, or the full gateway+storage+business -server) into one binary. Re-signs on save."`
 	Ci         CiCmd         `cmd:"" help:"CI-config (ci_configs[]) entries — opt a CI provider (github|gitlab|circleci|azure|bitbucket|jenkins|generic) into generated e2e CI under w17/ci/<provider>/. Re-signs on save."`
 	Scale      ScaleCmd      `cmd:"" help:"Per-service PROD replica counts (replicas[]) — set/list/unset how many replicas a deployable bundle runs. A <domain>-storage bundle past 1 materializes the contract-blind storage gRPC proxy in prod. Re-signs on save."`
+	Layout     LayoutCmd     `cmd:"" help:"Directory layout (proto_dir / stubs / languages_dir) — re-point where the project keeps its proto, stubs and language catalogues. Moves no files."`
 	PbStubs    PbStubsCmd    `cmd:"" name:"pb-stubs" help:"pb_stubs[] entries — where the generated protobuf stubs land (output_root) and what import prefix they carry (package). Set package whenever the stubs root is not the conventional one; it is the module identity."`
 }

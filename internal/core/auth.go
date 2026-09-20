@@ -24,7 +24,17 @@ import (
 // logging into either one silently broke commands aimed at the other, with
 // `invalid credentials` as the only symptom. That reads like an expired
 // session and sends you looking at the server.
+//
+// An environment-supplied token (W17_TOKEN — see envtoken.go) is consulted
+// FIRST, and beats anything in the store. An unattended caller is the case
+// that has no store at all, so the order only matters on a developer machine
+// that has both: there, exporting the variable is a deliberate, per-shell act
+// aimed at THIS process, while the store is a persistent default set at some
+// earlier login. The narrower, more recent, more explicit signal wins.
 var AuthTokenFn = func(addr string) string {
+	if token := envTokenFor(addr); token != "" {
+		return token
+	}
 	if inst := instanceFor(addr); inst != nil {
 		return inst.Token
 	}

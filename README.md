@@ -139,6 +139,25 @@ bearer out.
 | `whoami` | Prints the stored identity + orgs for the active console (`--all` = every logged-in console). Pure local read. |
 | `org list` / `org use <slug>` | List orgs you belong to (server read) and pick the default; the default org scopes subsequent commands. |
 
+**Unattended callers don't log in.** CI and a production deployment have no
+terminal to run `login` on and no home directory worth writing a credential
+into. They set two variables instead:
+
+| Variable | |
+|---|---|
+| `W17_TOKEN` | an API token minted for a **machine account** (console → Users → add bot), not a person's password. Takes precedence over a stored login. |
+| `W17_CONSOLE_ADDR` | the console the token was minted for. **Not optional.** |
+
+The second is what makes the first safe: a token is presented only to the
+console it is bound to, never to a host named by a `--console` flag. Without
+the binding it is presented nowhere — which arrives as `invalid credentials`,
+so w17ctl warns on stderr when a token is set and then not sent. (A build with
+a compiled-in `DefaultConsoleAddr` — every released binary — uses that when
+`W17_CONSOLE_ADDR` is unset.)
+
+Nothing here is required locally: with no token set, the credential store
+answers exactly as before.
+
 ### Project setup & scaffolding
 These **edit the signed lock** and write starter proto files. No codegen — they
 prepare inputs.

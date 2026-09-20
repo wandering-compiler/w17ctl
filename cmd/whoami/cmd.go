@@ -39,6 +39,15 @@ func (c *Cmd) Run() error {
 	if err != nil {
 		return err
 	}
+	// A machine account leaves no trace in the store, so report it before
+	// reading the store at all — otherwise a CI job debugging its own
+	// credential is told "Not logged in" by the very command it ran to find
+	// out who it is, while every call it makes is authenticated.
+	if core.EnvTokenIsSet() {
+		fmt.Fprintf(core.Stdout, "Acting as a machine account: %s is set in this environment.\n", core.EnvTokenVar)
+		fmt.Fprintln(core.Stdout, "  The token carries the identity; nothing below comes from it.")
+	}
+
 	if len(st.Instances) == 0 {
 		// "Not logged in" is exact here: with nothing stored there is no
 		// credential that could be valid. The claim only outruns the evidence

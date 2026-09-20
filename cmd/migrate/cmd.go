@@ -64,7 +64,7 @@ type Cmd struct {
 // in internal/schema (RunSchemaPush).
 type GenerateCmd struct {
 	Protos     []string `name:"proto" short:"p" placeholder:"PROTO" help:"Path to a .proto schema. Repeatable. Empty = every .proto under the project's proto root, the same tree codegen compiles."`
-	Imports    []string `name:"import" short:"I" placeholder:"DIR" help:"Additional proto import path. Repeatable. Each --proto's directory is always included; this flag points at the w17/*.proto vocabulary + project-shared trees."`
+	Imports    []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
 	ProjectID  string   `name:"project" placeholder:"ID" help:"Project identifier. Empty = project_id from w17/lock.yaml, which is where it already is."`
 	Console    string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console MigrationRegistry. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
 	LockPath   string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file. Created/updated with target_migration_id pinned to each connection's latest stored migration after a successful push."`
@@ -197,7 +197,7 @@ type ResetCmd struct {
 	ProjectID string   `name:"project" placeholder:"ID" help:"Project whose migration history is discarded. Empty = read project_id from the lock."`
 	Console   string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console ProjectRegistry. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
 	Protos    []string `name:"proto" short:"p" placeholder:"PROTO" help:"Path to a .proto schema. Repeatable. Supplied = the fresh baseline is pushed for you (step 4); omitted = the command stops after the reset and tells you to run 'migrate generate --initial'."`
-	Imports   []string `name:"import" short:"I" placeholder:"DIR" help:"Additional proto import path for the baseline push. Repeatable. Only read when --proto is given."`
+	Imports   []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
 	LockPath  string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file, re-pinned by the baseline push. Only read when --proto is given."`
 	NoLock    bool     `name:"no-lock" help:"Skip the lock-file write on the baseline push. Only read when --proto is given."`
 	LocalOnly bool     `name:"local-only" help:"Tear the local stack + DB volume down WITHOUT touching the console's migration history. The dev-loop escape from before the reset RPC existed — the project keeps its history, so the next apply replays it onto the empty DB."`

@@ -52,7 +52,7 @@ type SquashCmd struct {
 	ProjectID  string   `name:"project" placeholder:"ID" help:"Project whose history is collapsed. Empty = read project_id from the lock."`
 	Console    string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console ProjectRegistry. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
 	Protos     []string `name:"proto" short:"p" placeholder:"PROTO" help:"Path to a .proto schema. Repeatable. Supplied = the baseline is derived for you; omitted = the command stops after the collapse and the project stays without one until you run 'migrate generate'."`
-	Imports    []string `name:"import" short:"I" placeholder:"DIR" help:"Additional proto import path for the baseline push. Repeatable. Only read when --proto is given."`
+	Imports    []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
 	LockPath   string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file, re-pinned by the baseline push. Only read when --proto is given."`
 	NoLock     bool     `name:"no-lock" help:"Skip the lock-file write on the baseline push. Only read when --proto is given."`
 }

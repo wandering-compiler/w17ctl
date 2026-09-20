@@ -12,7 +12,6 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/protoscan"
 	"github.com/wandering-compiler/w17ctl/internal/schema"
-	"github.com/wandering-compiler/w17ctl/internal/vocab"
 	applyfetchpb "github.com/wandering-compiler/sdk/go/pb/applyfetch"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate"
 )
@@ -39,7 +38,7 @@ import (
 // there.
 type RenderCmd struct {
 	Protos      []string `name:"proto" short:"p" placeholder:"PROTO" help:"Path to a .proto schema. Repeatable. Optional — omitted, the model protos are discovered under the lock's proto dir, the same way 'stack build' finds them, so a pipeline needs no per-project knowledge."`
-	Imports     []string `name:"import" short:"I" placeholder:"DIR" help:"Additional proto import path. Repeatable."`
+	Imports     []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
 	Domain      string   `name:"domain" placeholder:"DOMAIN" help:"Only render this domain's fixtures; empty = every domain."`
 	Group       string   `name:"group" placeholder:"GROUP" help:"Only render this group; empty = EVERY group. Unlike apply, rendering is not the moment to choose what a database gets — the binary picks a group at seed time, from what is here."`
 	FixturesDir string   `name:"fixtures-dir" placeholder:"DIR" default:"fixtures" help:"Root of the authoring fixtures tree: <dir>/<domain>/<name>.json, or <dir>/<domain>/<group>/<name>.json."`
@@ -151,11 +150,10 @@ func (c *RenderCmd) resolveProtos() (protos, imports []string, cleanup func(), e
 	// looking undeclared to the IR build. Appended AFTER the emptiness check
 	// so they can never make a table-less project look non-empty.
 	models = append(models, modules...)
-	vocabDir, vcleanup, err := vocab.ExtractW17Vocab()
-	if err != nil {
-		return nil, nil, cleanup, fmt.Errorf("fixtures render: stage w17 vocab: %w", err)
-	}
-	return models, append([]string{base, vocabDir}, c.Imports...), vcleanup, nil
+	// No vocabulary staging, no import roots — the console resolves both. See
+	// the twin in `stack build` for what this used to do and why it stopped
+	// meaning anything.
+	return models, nil, cleanup, nil
 }
 
 // protoDir is the project's proto root, from the console's lock projection
