@@ -101,8 +101,24 @@ func GenerateClientViaConsole(root, console, protoDir, lockPath string) error {
 	poFiles := readExistingPo(root, view.GetLanguagesDir())
 	ctx, cancel := core.ClientCtx()
 	defer cancel()
-	stream, err := cl.GenerateClient(ctx, &codegenpb.GenerateClientRequest{Files: files, Lock: lockBytes, GoModule: goModule, PoFiles: poFiles})
+	stream, err := cl.GenerateClient(ctx)
 	if err != nil {
+		return err
+	}
+	// Header alone, then the tree in chunks: one message cannot hold it past
+	// ~95k lines of proto (see core.SendProtoChunks).
+	if err := stream.Send(&codegenpb.GenerateClientRequest{
+		Lock: lockBytes, GoModule: goModule, PoFiles: poFiles,
+	}); err != nil {
+		return err
+	}
+	if err := core.SendProtoChunks(files,
+		func(b []*codegenpb.ProtoFile) *codegenpb.GenerateClientRequest {
+			return &codegenpb.GenerateClientRequest{Files: b}
+		}, stream.Send); err != nil {
+		return err
+	}
+	if err := stream.CloseSend(); err != nil {
 		return err
 	}
 	_, err = core.RecvGeneratedFiles(stream, generatedFileWriter(root, true))

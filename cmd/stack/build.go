@@ -486,8 +486,20 @@ func runDevDiffApplyLossy(sc *storageclient.StorageClients, project, actor, init
 	if err != nil {
 		return fmt.Errorf("read checkpoint: %w", err)
 	}
-	// The checkpoint IR is the diff BASE — passed through as opaque bytes
-	// (nil/empty for a brand-new initiative → full create), never decoded.
+	// The checkpoint IR is NOT the diff base. That has been the LIVE
+	// DATABASE since rc.40 — `DevPlanAndApplyLossy` reads what the stores
+	// hold and the console plans against that reading.
+	//
+	// What these bytes feed is `ClassifyCompat`: the destructive-change
+	// warning, "this sync would drop a column that was here last time".
+	// So advancing the checkpoint changes what a LATER run of the same
+	// (project, user, initiative) WARNS about — never what SQL runs.
+	//
+	// The comment here used to say "the diff BASE", left over from when
+	// it was, and a consumer reading it reasonably concluded that a CI
+	// run advancing a checkpoint against a throwaway database was moving
+	// something load-bearing. It is not. Passed through as opaque bytes
+	// (nil/empty for a brand-new initiative), never decoded.
 	var baseBytes []byte
 	if ckpt != nil {
 		baseBytes = ckpt.GetIrSchema()

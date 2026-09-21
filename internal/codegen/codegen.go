@@ -303,8 +303,15 @@ func Run(console string, force bool, adoptGitignore bool) error {
 	// result into i18n.ts. The .po merge thus runs server-side now.
 	existingPo := readExistingPo(root, languagesDir)
 
-	stream, err := cl.GenerateProject(ctx, &codegenpb.GenerateProjectRequest{
-		Files:       files,
+	stream, err := cl.GenerateProject(ctx)
+	if err != nil {
+		return formatCodegenError(err)
+	}
+	// The header goes first and ALONE carries the non-file fields; the tree
+	// follows in chunks. One message cannot hold it: gRPC's default receive
+	// cap is 4 MiB and a project's protos reach that around 95k lines, where
+	// the call is refused outright rather than slowing down.
+	if err := stream.Send(&codegenpb.GenerateProjectRequest{
 		Lock:        lockYaml,
 		GoModule:    goModule,
 		GenDir:      genDir,
@@ -312,13 +319,17 @@ func Run(console string, force bool, adoptGitignore bool) error {
 		DepVersions: depVersions,
 		W17Path:     strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/"),
 		Force:       force,
-		GenFiles:    readGenGoFiles(root, genDir),
 		LockYaml:    lockYaml,
 		GenGoMod:    string(genGoMod),
 		ExistingPo:  existingPo,
 		E2EInputs:   readE2eInputs(root, view.GetE2EDir()),
-	})
-	if err != nil {
+	}); err != nil {
+		return formatCodegenError(err)
+	}
+	if err := sendProtoChunks(stream, files, readGenGoFiles(root, genDir)); err != nil {
+		return formatCodegenError(err)
+	}
+	if err := stream.CloseSend(); err != nil {
 		return formatCodegenError(err)
 	}
 
@@ -1543,4 +1554,55 @@ func orphanedDBInitWarnings(root string) []string {
 		}
 	}
 	return out
+}
+
+// chunkBudget is how many bytes of files one request message carries.
+//
+// Well under gRPC's 4 MiB default so the cap is never the thing that decides,
+// and large enough that a big tree is tens of messages rather than thousands
+// — each message costs a round of framing, and the point of chunking is the
+// ceiling, not throughput.
+const chunkBudget = 1 << 20
+
+// sendProtoChunks streams the proto tree and the generated-Go tree in
+// budget-sized messages.
+//
+// A single file larger than the budget still goes in a message of its own:
+// splitting a FILE would mean the server had to reassemble it, which is a
+// second protocol for no gain — the cap is 4 MiB and no proto file
+// approaches it.
+func sendProtoChunks(stream codegenpb.CodegenService_GenerateProjectClient, files, genFiles []*codegenpb.ProtoFile) error {
+	send := func(batch []*codegenpb.ProtoFile, gen bool) error {
+		if len(batch) == 0 {
+			return nil
+		}
+		msg := &codegenpb.GenerateProjectRequest{}
+		if gen {
+			msg.GenFiles = batch
+		} else {
+			msg.Files = batch
+		}
+		return stream.Send(msg)
+	}
+	for _, set := range []struct {
+		files []*codegenpb.ProtoFile
+		gen   bool
+	}{{files, false}, {genFiles, true}} {
+		var batch []*codegenpb.ProtoFile
+		var budget int
+		for _, f := range set.files {
+			if len(batch) > 0 && budget+len(f.GetContents()) > chunkBudget {
+				if err := send(batch, set.gen); err != nil {
+					return err
+				}
+				batch, budget = nil, 0
+			}
+			batch = append(batch, f)
+			budget += len(f.GetContents())
+		}
+		if err := send(batch, set.gen); err != nil {
+			return err
+		}
+	}
+	return nil
 }

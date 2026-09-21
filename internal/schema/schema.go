@@ -178,9 +178,26 @@ func compileIRBytesViaConsole(ctx context.Context, paths, imports []string, cons
 	// The ACL permission catalogue is resolved server-side from the
 	// uploaded committed ACL lock proto (the client just ships the proto
 	// tree — no acllock parsing client-side).
-	resp, err := cl.CompileIR(ctx, req)
-	if err != nil {
+	stream, serr := cl.CompileIR(ctx)
+	if serr != nil {
+		return nil, fmt.Errorf("compile IR: %w", serr)
+	}
+	// Header first and alone, then the tree in chunks — one message cannot
+	// hold it past ~95k lines of proto (see core.SendProtoChunks).
+	tree := req.GetFiles()
+	req.Files = nil
+	if err := stream.Send(req); err != nil {
 		return nil, fmt.Errorf("compile IR: %w", err)
+	}
+	if err := core.SendProtoChunks(tree,
+		func(b []*codegenpb.ProtoFile) *codegenpb.CompileIRRequest {
+			return &codegenpb.CompileIRRequest{Files: b}
+		}, stream.Send); err != nil {
+		return nil, fmt.Errorf("compile IR: %w", err)
+	}
+	resp, rerr := stream.CloseAndRecv()
+	if rerr != nil {
+		return nil, fmt.Errorf("compile IR: %w", rerr)
 	}
 	return resp.GetSchema(), nil
 }
