@@ -20,9 +20,73 @@ plumbing by hand.
 > which ships with the client). Do that before designing.
 >
 > If that fetch is refused, **read the error rather than repeating the step**.
-> `w17ctl whoami --verify` answers whether the credential is the problem; a
-> refusal that survives a verified login is telling you something else, and
-> running `login` again will not change it.
+> `w17ctl whoami` answers whether the credential is the problem — for a person
+> add `--verify` to spend a round-trip on it; for a machine account it always
+> asks the console, because nothing about one is stored locally. A refusal that
+> survives a credential the console accepts is telling you something else, and
+> repeating the step will not change it.
+>
+> **If you are a CI job or a deployment, do not run `login`.** You act as a
+> machine account (see below); `login` is a person's act and the console
+> refuses it for a bot outright.
+
+## Where `push` belongs
+
+`w17ctl push` turns the schema you have generated into a **stored migration** —
+a permanent row in the console's history. It is the one command whose effect
+outlives your working copy, so where you run it is a decision, not a habit.
+
+**The default is CI, on merge to the default branch, after the tests pass.**
+`w17ctl init --ci <provider>` generates that job already wired: depending on
+the e2e job, restricted to a push event on the default branch, authenticating
+with `W17_TOKEN`. A migration minted by hand from a branch that then changes —
+or never merges — describes code that does not exist, and nothing removes it
+afterwards. On a team, that history is shared, so this is not negotiable by one
+person's preference.
+
+**The exception is a one-person project that has not earned CI yet.** A solo
+owner prototyping a POC or an MVP, iterating fast, can run `push` from their
+machine — they are the only author, the history has one writer, and standing up
+a pipeline to publish to yourself is ceremony. The rights are already there:
+ownership of the organization carries them, so nothing extra is configured.
+
+Know which one you are in. The exception stops being an exception the moment a
+second person can push, and moving to CI later costs one `init --ci` run.
+
+Either way, **your own loop needs none of this.** `w17ctl stack build` applies
+the diff straight to your local stores and stores NO migration, however many
+times you iterate. The migration is created once, for the tree that shipped.
+
+**And a project can enforce the default.** The console's project setting
+`ci_only` refuses a push from anything but a machine account — including the
+organization's owner, whose rights no role catalogue restrains. Turn it on for
+a project whose history matters; leave it off for the prototype.
+
+## Credentials: a person, or a machine
+
+A **person** runs `w17ctl login <console>` once; the bearer and the chosen
+organization live in `~/.w17/auth.yaml` and every later command reads them.
+
+A **CI job or a deployment has no terminal to do that on**, so it presents a
+token instead. Two variables, and both are required:
+
+| | |
+|---|---|
+| `W17_TOKEN` | an API token minted for a MACHINE account — not a person's password. The console issues it: Organizations → *your org* → Machine accounts. |
+| `W17_CONSOLE_ADDR` | the console that token was minted for. |
+
+The second is what makes the first safe: a token is presented only to the
+console it is bound to, never to a host a `--console` flag names. Set it and
+forget `login` — with `W17_TOKEN` in the environment the client never reads
+the credential store at all.
+
+The same pair drives the generated binary's `migrate apply --fetch`, so a
+deployment sets one name whichever program runs.
+
+A machine account **cannot sign in with a password** — it has none — and it
+holds only the roles it was given, which are deliberately narrow: the CI role
+publishes a schema, the deploy role fetches migrations. If a call is refused,
+the role is the first place to look, not the token.
 
 ## The golden rules
 

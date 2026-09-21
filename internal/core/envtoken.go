@@ -24,6 +24,10 @@ const EnvTokenVar = "W17_TOKEN"
 // (W17_CONSOLE_ADDR, W17_TOKEN) — the console and the credential for it.
 const envConsoleAddrVar = "W17_CONSOLE_ADDR"
 
+// EnvConsoleAddrVar is the binding variable's name, for messages that have to
+// tell an operator which one to set.
+const EnvConsoleAddrVar = envConsoleAddrVar
+
 // envTokenFor returns the environment-supplied bearer for the console being
 // DIALED, or "" when there is none to present.
 //
@@ -105,6 +109,13 @@ func EnvTokenBinding(addr string) (bound string, presented bool) {
 	}
 	return bound, normalizeConsoleAddr(addr) == normalizeConsoleAddr(bound)
 }
+
+// EnvToken returns the raw environment-supplied token, or "".
+//
+// For the ONE caller that must report on the token itself rather than present
+// it — `whoami`. Everything that dials goes through envTokenFor, which will
+// not hand it out unless the console matches.
+func EnvToken() string { return os.Getenv(EnvTokenVar) }
 
 // EnvTokenIsSet reports whether an env-supplied token is present at all,
 // regardless of which console it is bound to. It exists so `whoami` can say

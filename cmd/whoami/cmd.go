@@ -39,13 +39,18 @@ func (c *Cmd) Run() error {
 	if err != nil {
 		return err
 	}
-	// A machine account leaves no trace in the store, so report it before
-	// reading the store at all — otherwise a CI job debugging its own
-	// credential is told "Not logged in" by the very command it ran to find
-	// out who it is, while every call it makes is authenticated.
+	// A machine account leaves no trace in the store, so this branch RETURNS
+	// rather than falling through to it.
+	//
+	// It used to print the two lines below and then continue into the store
+	// read, which ended at "Not logged in. Run `w17ctl login <console-url>`"
+	// — advice a CI runner must not take. `login` is the wrong act for a
+	// machine account and would not even work: it is `kind = BOT`, and the
+	// plugin refuses a password sign-in for one. Reported from a real CI run
+	// where the token was valid (deinvo, 2026-09-21), and AGENTS.md points at
+	// this very command as the arbiter of "is the credential the problem".
 	if core.EnvTokenIsSet() {
-		fmt.Fprintf(core.Stdout, "Acting as a machine account: %s is set in this environment.\n", core.EnvTokenVar)
-		fmt.Fprintln(core.Stdout, "  The token carries the identity; nothing below comes from it.")
+		return c.reportMachineAccount()
 	}
 
 	if len(st.Instances) == 0 {
@@ -157,4 +162,53 @@ func printInstance(active bool, inst *authstore.Instance) {
 		}
 		fmt.Fprintf(core.Stdout, "      - %s — %s%s\n", o.Slug, o.Role, def)
 	}
+}
+
+// reportMachineAccount answers "who am I" for a token-bearing caller.
+//
+// The store cannot answer it — nothing about a machine account is written
+// there — so the console is asked instead, which is also the only source that
+// can say whether the token still works. No `login` is offered on any path
+// here: for this caller it is not a fix, it is a wrong turn.
+func (c *Cmd) reportMachineAccount() error {
+	addr, aerr := core.ResolveConsoleAddr("")
+	fmt.Fprintf(core.Stdout, "Acting as a machine account: %s is set in this environment.\n", core.EnvTokenVar)
+	if aerr != nil || addr == "" {
+		fmt.Fprintln(core.Stdout, "  but no console is configured, so the token is bound to nothing and is sent nowhere.")
+		fmt.Fprintf(core.Stdout, "  fix: set %s to the console the token was minted for.\n", core.EnvConsoleAddrVar)
+		return nil
+	}
+	bound, presented := core.EnvTokenBinding(addr)
+	fmt.Fprintf(core.Stdout, "  console: %s\n", addr)
+	if !presented {
+		// Bound elsewhere is NOT "refused": nothing was sent. Saying so here
+		// stops the reader debugging a credential that never left the process.
+		fmt.Fprintf(core.Stdout, "  ⚠ the token is bound to %s, so it is NOT sent to this console.\n", bound)
+		fmt.Fprintf(core.Stdout, "  fix: point %s at the console being dialed, or dial the one it names.\n", core.EnvConsoleAddrVar)
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	orgs, err := core.ListMyOrgs(ctx, addr, core.EnvToken())
+	if err != nil {
+		// Returned, not printed: the top-level handler decorates an auth
+		// refusal with the causes only this machine can see — including
+		// whether the token was presented at all.
+		return err
+	}
+	fmt.Fprintln(core.Stdout, "  verified: the console accepts this token")
+	if len(orgs) == 0 {
+		// A bot with no membership resolves no org-scoped grant, which is the
+		// difference between "the token works" and "the token can do
+		// anything". Worth saying, because the two look identical until the
+		// first real call.
+		fmt.Fprintln(core.Stdout, "  organizations: none — an org-scoped role grants this token nothing")
+		return nil
+	}
+	fmt.Fprintf(core.Stdout, "  organizations (%d):\n", len(orgs))
+	for _, o := range orgs {
+		fmt.Fprintf(core.Stdout, "    - %s\n", o.Slug)
+	}
+	return nil
 }

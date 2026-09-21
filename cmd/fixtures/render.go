@@ -2,6 +2,7 @@ package fixtures
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,6 +108,26 @@ func (c *RenderCmd) Run() error {
 			return fmt.Errorf("fixtures render: write %s/%s: %w", s.domain, s.name(), err)
 		}
 		written[s.domain+"/"+s.name()] = true
+		// A fixture that HAS rows and renders NOTHING is a failure, not a
+		// result. It means every model in it resolved to nothing under this
+		// domain — almost always because the file is in the wrong directory:
+		// the domain comes from the PATH, so `fixtures/<connection>/live.json`
+		// renders zero while the identical file under `fixtures/<domain>/`
+		// renders every row. `fixtures dump` defaults its directory to the
+		// CONNECTION name, so it writes that wrong path itself.
+		//
+		// Reported with 642 rows in and 0 statements out, exit 0, no word
+		// said (deinvo, 2026-09-21). Refusing costs nothing: a genuinely
+		// empty fixture has no rows to lose.
+		if len(resp.GetStatements()) == 0 && fixtureHasRows(body) {
+			return fmt.Errorf(
+				"fixtures render: %s/%s — the file has rows and rendered 0 statement(s)\n"+
+					"  why: none of its models resolve under domain %q, which is taken from the\n"+
+					"       DIRECTORY the file sits in, not from the file\n"+
+					"  fix: move it under the domain that declares those models, or pass\n"+
+					"       `fixtures dump --domain <domain>` so it is written there to begin with",
+				s.domain, s.name(), s.domain)
+		}
 		fmt.Fprintf(core.Stdout, "fixtures render: %s/%s — %d statement(s)\n",
 			s.domain, s.name(), len(resp.GetStatements()))
 	}
@@ -271,4 +292,21 @@ func pruneRenderedSeeds(root, domain, group string, keep map[string]bool) ([]str
 		removed = append(removed, s.Domain+"/"+s.Name)
 	}
 	return removed, nil
+}
+
+// fixtureHasRows reports whether a fixture document carries any row at all.
+//
+// The distinction the refusal above rests on: zero statements from zero rows
+// is an empty file, which is fine; zero statements from rows is a seed that
+// silently does nothing.
+func fixtureHasRows(body []byte) bool {
+	var doc struct {
+		Rows []json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		// Unreadable is not this check's to report — the render call above
+		// already failed on it, or the server will.
+		return false
+	}
+	return len(doc.Rows) > 0
 }

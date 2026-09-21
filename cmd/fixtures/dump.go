@@ -27,7 +27,7 @@ import (
 // client release every consumer has to take.
 type DumpCmd struct {
 	Connection  string   `name:"connection" placeholder:"CONN" required:"" help:"Connection to read. Its tables are dumped; others are left alone."`
-	Domain      string   `name:"domain" placeholder:"DOMAIN" help:"Write under this domain's directory. Defaults to the connection name."`
+	Domain      string   `name:"domain" placeholder:"DOMAIN" help:"Write under this domain's directory. REQUIRED: the domain decides whether the fixture renders at all, and it cannot be derived from the connection."`
 	Out         string   `name:"out" placeholder:"DIR" default:"fixtures" help:"Authorable fixtures root to write into."`
 	Name        string   `name:"name" placeholder:"NAME" default:"dump" help:"File name (without .json) to write."`
 	Limit       int64    `name:"limit" placeholder:"N" default:"1000" help:"Rows per table. A table with more is REFUSED rather than truncated; pass 0 for no cap."`
@@ -165,9 +165,30 @@ func fixtureDoc(rows []json.RawMessage) ([]byte, error) {
 
 // write puts the document where `fixtures render` will find it.
 func (c *DumpCmd) write(rows []json.RawMessage) error {
+	// No default, and no guess.
+	//
+	// It used to fall back to the CONNECTION name, which is right only when
+	// the two happen to be spelled alike. `--connection core-postgres` wrote
+	// `fixtures/core-postgres/`, `render` read the domain from that directory,
+	// resolved none of the models under it, and reported 0 statement(s) with
+	// exit 0 — 642 rows dumped, nothing seeded, no word said (deinvo,
+	// 2026-09-21).
+	//
+	// Deriving it is not available: the dumped rows carry `<module>.<Message>`
+	// and a module is a PLUGIN ACTIVATION as often as a domain (a fixture
+	// under `fixtures/app/` legitimately holds `auth.Role`), and one dump of
+	// one database mixes both. The lock view the client can see carries a
+	// connection's name and whether it is the default — not its domain. So
+	// the honest answer is to ask rather than to pick, and `render` now
+	// refuses the silent-zero case as well.
 	domain := c.Domain
 	if domain == "" {
-		domain = c.Connection
+		return fmt.Errorf(
+			"fixtures dump: --domain is required\n" +
+				"  why: `fixtures render` takes a fixture's domain from the DIRECTORY it sits\n" +
+				"       in, so the wrong one renders zero statements and reports success\n" +
+				"  fix: pass the domain that declares these models, e.g. `--domain core`\n" +
+				"       (it is NOT the connection name unless the two are spelled alike)")
 	}
 	dir := filepath.Join(c.Out, domain)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
