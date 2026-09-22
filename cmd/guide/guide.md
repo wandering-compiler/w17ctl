@@ -74,6 +74,7 @@ token instead. Two variables, and both are required:
 |---|---|
 | `W17_TOKEN` | an API token minted for a MACHINE account — not a person's password. The console issues it: Organizations → *your org* → Machine accounts. |
 | `W17_CONSOLE_ADDR` | the console that token was minted for. |
+| `W17_INITIATIVE` | the branch this run is building. Needed only where there is no git branch to read — see below. |
 
 The second is what makes the first safe: a token is presented only to the
 console it is bound to, never to a host a `--console` flag names. Set it and
@@ -82,6 +83,19 @@ the credential store at all.
 
 The same pair drives the generated binary's `migrate apply --fetch`, so a
 deployment sets one name whichever program runs.
+
+`W17_INITIATIVE` answers a different question: **which** line of work this run
+belongs to. Normally that comes from the git branch, and on a developer's
+machine it always does. A CI runner is the exception — most providers check
+out a commit rather than a branch (GitLab on every job, Azure and Jenkins too,
+GitHub for `pull_request`), so `git branch --show-current` is empty there and
+the branch lives in a provider variable instead. Set `W17_INITIATIVE` from it
+and the commands behave as they do locally. The generated CI configs already
+do; `w17/ci/README.md` lists the variable for each provider.
+
+It is a fallback, not an override: a checkout that HAS a branch is still
+answered from git, so an exported value cannot displace the branch you are
+standing on.
 
 A machine account **cannot sign in with a password** — it has none — and it
 holds only the roles it was given, which are deliberately narrow: the CI role

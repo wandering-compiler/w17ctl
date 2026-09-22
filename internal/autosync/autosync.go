@@ -43,7 +43,13 @@ func ResolveActiveInitiative(root string) (initiative string, branchFn func() st
 			if b := storageclient.GitUnbornBranchFn(); b != "" {
 				return "", nil, fmt.Errorf("autosync is on and branch %q has no commits yet — the initiative is derived from the branch, and a branch with no HEAD cannot be resolved. Make the first commit (`git commit`), or set autosync:false and use 'w17ctl initiative activate <name>'", b)
 			}
-			return "", nil, fmt.Errorf("autosync is on but there's no current git branch (detached HEAD or not a git repo) — checkout a branch, or set autosync:false and use 'w17ctl initiative activate <name>'")
+			// On a CI runner neither way out below can be taken: the
+			// checkout is a commit by construction (GitLab detaches every
+			// job, Azure too, GitHub on pull_request), and `initiative
+			// activate` writes developer state that is not in the repo.
+			// The branch is not lost there, it is in a provider variable —
+			// so name the one thing the reader can actually set.
+			return "", nil, fmt.Errorf("autosync is on but there's no current git branch (detached HEAD or not a git repo) — checkout a branch, or set %s to the branch being built (that is the CI case: a runner's checkout has no branch, and your provider exposes it as CI_COMMIT_REF_NAME, github.head_ref, BITBUCKET_BRANCH or similar), or set autosync:false and use 'w17ctl initiative activate <name>'", storageclient.InitiativeEnv)
 		}
 		return name, func() string { return name }, nil
 	}

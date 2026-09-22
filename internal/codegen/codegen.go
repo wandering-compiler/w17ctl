@@ -24,6 +24,7 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/adminruntime"
 	"github.com/wandering-compiler/w17ctl/internal/core"
+	"github.com/wandering-compiler/w17ctl/internal/gofmtc"
 	"github.com/wandering-compiler/w17ctl/internal/scaffold"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
@@ -206,7 +207,11 @@ const w17StubsDir = "w17/stubs"
 // derivation: write / write-if-missing / delete, plus the two LOCAL-disk
 // merges it still owns (generated-go.mod replace preservation; the .po merge
 // moved server-side) and go.work sync.
-func Run(console string, force bool, adoptGitignore bool) error {
+func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
+	gofmtMode, modeErr := gofmtc.ParseMode(gofmt)
+	if modeErr != nil {
+		return modeErr
+	}
 	// One window now covers the WHOLE server-side pipeline (pre-gen + main
 	// Generate + every declared generator + scaffold + sweep), where the
 	// former client gave each of those its own RPC deadline (60s main + 30s
@@ -323,6 +328,12 @@ func Run(console string, force bool, adoptGitignore bool) error {
 		GenGoMod:    string(genGoMod),
 		ExistingPo:  existingPo,
 		E2EInputs:   readE2eInputs(root, view.GetE2EDir()),
+		// This binary's own version, for the CI render. The console cannot
+		// know it — it is an ldflag on this binary — so a pipeline that
+		// pins "the version the developer ran" can only be built from here.
+		// Empty on a local build, and the render treats that as a real
+		// answer rather than inventing a number.
+		W17CtlVersion: core.Version,
 	}); err != nil {
 		return formatCodegenError(err)
 	}
@@ -362,6 +373,20 @@ func Run(console string, force bool, adoptGitignore bool) error {
 		}
 	}
 
+	// Format what the console generated, and drop the files this project
+	// already holds in exactly that form.
+	//
+	// This runs BEFORE the pre-scan and before applyWriteOps: the scan
+	// compares arrivals against disk, and unformatted-vs-formatted would mark
+	// every file changed. See internal/gofmtc for why the work is here at all.
+	unchanged, fmtRes, fmtErr := formatIncoming(root, writes, gofmtMode)
+	if fmtErr != nil {
+		return fmtErr
+	}
+	if fmtRes.Skipped > 0 {
+		fmt.Fprintf(os.Stderr, "w17ctl codegen: %d file(s) already held in this exact form — not rewritten\n", fmtRes.Skipped)
+	}
+
 	// Snapshot the sdk/go pins BEFORE the write: the generator emits its
 	// placeholder marker unconditionally, so once applyWriteOps lands, the
 	// version the project had committed exists nowhere on disk. Without this,
@@ -371,7 +396,7 @@ func Run(console string, force bool, adoptGitignore bool) error {
 		sdkGoModuleDirs(root, servicesDir, w17StubsDir, genDir),
 		core.SdkModuleBase+"/sdk/go")
 
-	if err := applyWriteOps(root, languagesDir, writes, force); err != nil {
+	if err := applyWriteOps(root, languagesDir, writes, force, unchanged); err != nil {
 		return err
 	}
 
@@ -970,7 +995,10 @@ func envKeys(b []byte) map[string]bool {
 // ZERO side effects on conflict), and per-bundle go.mod replace preservation
 // (the .po merge moved server-side). Two-pass (plan then write) so a collision
 // aborts with the full conflict list and never a half-regenerated tree.
-func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile, force bool) error {
+// unchanged names files the project already holds in the exact form this run
+// would write. They stay in `writes` for the orphan prune's sake and are
+// skipped HERE, at the write itself.
+func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile, force bool, unchanged map[string]bool) error {
 	type plannedWrite struct {
 		target   string
 		contents []byte
@@ -980,6 +1008,9 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 	langPrefix := strings.TrimSuffix(languagesDir, "/") + "/"
 	for _, f := range writes {
 		rel := filepath.ToSlash(f.GetRelativePath())
+		if unchanged[rel] {
+			continue
+		}
 		target, err := containedJoin(root, rel)
 		if err != nil {
 			return fmt.Errorf("refusing write: %w", err)
@@ -1605,4 +1636,48 @@ func sendProtoChunks(stream codegenpb.CodegenService_GenerateProjectClient, file
 		}
 	}
 	return nil
+}
+
+// formatIncoming formats the Go the console generated and reports which files
+// this project already holds in exactly that form.
+//
+// ⚠️ It returns a SKIP SET rather than a shorter write set, and that
+// distinction is load-bearing. `writes` is also what the orphan prune reads to
+// decide what this run emitted — "codegen emits the COMPLETE generated set
+// every run", so a generated file missing from it is a leftover and is
+// deleted. Dropping the unchanged files from `writes` pruned 167 pb files on
+// the second run of an unchanged project. Observed, not reasoned about.
+func formatIncoming(root string, writes []*codegenpb.GeneratedFile, mode gofmtc.Mode) (map[string]bool, gofmtc.Result, error) {
+	staged := make([]*gofmtc.File, len(writes))
+	for i, w := range writes {
+		staged[i] = &gofmtc.File{Path: w.GetRelativePath(), Contents: w.GetContents()}
+	}
+	res, err := gofmtc.ApplyMode(root, staged, mode)
+	if err != nil {
+		return nil, res, err
+	}
+	unchanged := make(map[string]bool, res.Skipped)
+	for i, f := range staged {
+		if f.Skip {
+			unchanged[filepath.ToSlash(f.Path)] = true
+			continue
+		}
+		writes[i].Contents = f.Contents
+	}
+	return unchanged, res, nil
+}
+
+// PinFingerprintOf exposes the go.mod stamp reader to the verify package,
+// which runs the release gate. Same file read, same "" for a pre-stamp
+// bundle; exported rather than duplicated so the two readers cannot drift on
+// what the stamp looks like.
+func PinFingerprintOf(path string) string { return pinFingerprintOf(path) }
+
+// ReadDepVersions exposes the project's own go.mod pins. The release gate
+// sends them so the console can compute the fingerprint a render WOULD
+// produce: a bundle's pin set is a merge of these and the compiler's, and an
+// expectation built from the compiler's alone would refuse every project that
+// pins anything itself.
+func ReadDepVersions(root, genDir string) (*codegenpb.DepVersions, error) {
+	return readDepVersions(root, genDir)
 }

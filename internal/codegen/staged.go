@@ -9,6 +9,8 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
+
+	"github.com/wandering-compiler/w17ctl/internal/gofmtc"
 )
 
 // generatedFileWriter returns the per-file sink for a generator RPC's server
@@ -35,6 +37,16 @@ func generatedFileWriter(root string, announce bool) func(*codegenpb.GeneratedFi
 		if err != nil {
 			return fmt.Errorf("server file path %q escapes the project root: %w", f.GetRelativePath(), err)
 		}
+		// The console stopped formatting, so every path that writes what it
+		// sent has to. This is NOT the codegen op stream — it serves the
+		// standalone RPCs (`target client add`, `guide`) — and each of them
+		// writes Go the same way, which is how the op stream's formatter
+		// being the only one would have shipped unformatted clients.
+		body, ferr := gofmtc.SourceIfGo(f.GetRelativePath(), f.GetContents())
+		if ferr != nil {
+			return ferr
+		}
+		f.Contents = body
 		// Same rule as the codegen write pass: a body whose only difference
 		// from the file on disk is its own generation timestamp is not a
 		// change, and writing it produces a diff every run and a conflict in

@@ -25,6 +25,7 @@ set -eu
 REPO="wandering-compiler/w17ctl"
 VERSION="latest"
 PRE=0
+PRINT_VERSION=0
 DIR="${W17CTL_INSTALL_DIR:-/usr/local/bin}"
 
 while [ $# -gt 0 ]; do
@@ -32,6 +33,15 @@ while [ $# -gt 0 ]; do
 		--version) VERSION="$2"; shift 2 ;;
 		--pre)     PRE=1; shift ;;
 		--dir)     DIR="$2"; shift 2 ;;
+		# --print-version resolves and prints the tag, installing nothing.
+		#
+		# It exists so `w17ctl update` and `w17ctl version --check` can ask
+		# "what is newest?" without a SECOND implementation of the answer.
+		# The resolve below is not obvious code — it is the fix for an
+		# installer that handed out an older rc than the one available, and
+		# a Go copy of it would be a second place for that to come back,
+		# drifting silently from this one.
+		--print-version) PRINT_VERSION=1; shift ;;
 		# Printed from a here-doc, not read back from "$0". The documented
 		# invocation is `curl … | sh`, where "$0" is `sh` and the file is
 		# stdin — so the version that re-read its own source printed either
@@ -45,10 +55,12 @@ Install w17ctl.
   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre
   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version v0.1.0-rc.1 --dir ~/bin
 
-  --version <tag>  install this release (default: newest stable)
-  --pre            allow prereleases (needed while the project is in rc)
-  --dir <path>     install into this directory (default: /usr/local/bin,
-                   or $W17CTL_INSTALL_DIR)
+  --version <tag>   install this release (default: newest stable)
+  --pre             allow prereleases (needed while the project is in rc)
+  --dir <path>      install into this directory (default: /usr/local/bin,
+                    or $W17CTL_INSTALL_DIR)
+  --print-version   resolve the release and print its tag on stdout, then
+                    exit without installing anything
 
 The download is always verified against the release's SHA256SUMS.
 USAGE
@@ -138,6 +150,15 @@ elif [ "$VERSION" = "latest" ]; then
 		| sort -r | head -1 | cut -f2)
 	[ -n "$VERSION" ] || { echo "install.sh: no releases found at all" >&2; exit 1; }
 	echo "install.sh: --pre selected $VERSION" >&2
+fi
+
+# Nothing below this point runs for --print-version: the caller wanted the
+# answer to "which release is newest", and that answer is now resolved.
+# Printed on STDOUT (the progress notes above all go to stderr) so a caller
+# can read it with a plain command substitution.
+if [ "$PRINT_VERSION" = 1 ]; then
+	echo "$VERSION"
+	exit 0
 fi
 
 asset="w17ctl_${VERSION}_${os}_${arch}.tar.gz"

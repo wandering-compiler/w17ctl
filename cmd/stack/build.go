@@ -24,6 +24,8 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/remotecompose"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate/factory"
+
+	"github.com/wandering-compiler/w17ctl/internal/gofmtc"
 )
 
 // BuildCmd is `w17ctl stack build` — compile + build images, then **dev
@@ -68,7 +70,7 @@ type BuildCmd struct {
 // tests can stub it. Force overwrites the existing git-ignored generated
 // tree; CodegenCmd resolves its own console address from the lock/env.
 var runCodegenFn = func() error {
-	return codegen.Run("", true, false)
+	return codegen.Run("", true, false, string(gofmtc.ModeEmbedded))
 }
 
 func (c *BuildCmd) Run() error {

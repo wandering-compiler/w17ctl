@@ -11,6 +11,8 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
+
+	"github.com/wandering-compiler/w17ctl/internal/gofmtc"
 )
 
 // GenPbCmd implements `w17ctl plugin gen-pb [dir]`.
@@ -98,6 +100,16 @@ func (c *GenPbCmd) Run() error {
 		if err != nil {
 			return fmt.Errorf("plugin gen-pb: server file path %q escapes the plugin dir: %w", f.GetRelativePath(), err)
 		}
+		// Belt and braces: these come from protoc-gen-go, whose output is
+		// already gofmt-clean, so this is a no-op today. It is here because
+		// "the console does not format" is now a property of every path, and
+		// a writer that assumes its source is tidy is how the next one gets
+		// missed.
+		body, ferr := gofmtc.SourceIfGo(f.GetRelativePath(), f.GetContents())
+		if ferr != nil {
+			return ferr
+		}
+		f.Contents = body
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("plugin gen-pb: mkdir %s: %w", filepath.Dir(dst), err)
 		}

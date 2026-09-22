@@ -29,9 +29,30 @@ Or take a `.tar.gz` straight from [Releases](https://github.com/wandering-compil
 unpacking: `w17ctl` is a single static binary and keeps its state in `~/.w17/`.
 
 ```sh
-w17ctl version     # what you have, and which console it defaults to
-w17ctl login       # point it at a console
+w17ctl version           # what you have, and which console it defaults to
+w17ctl version --check   # …and whether a newer release exists
+w17ctl update            # upgrade in place, no install command to paste
+w17ctl login             # point it at a console
 ```
+
+### Upgrading
+
+`w17ctl update` replaces this binary with the newest release, into the
+directory it is already running from. You do not have to remember the install
+line, and you do not have to know which tag is newest.
+
+It **invokes the installer above** rather than resolving the release itself,
+which is the point rather than an implementation detail: one place knows which
+release is newest, and that place already verifies the download against
+`SHA256SUMS`. Prereleases are included automatically while your binary is
+itself a prerelease — which is every binary today, since `latest` means the
+newest stable release and there is not one yet. `--stable` opts out,
+`--version <tag>` pins, `--dry-run` only reports what would be installed.
+
+`w17ctl version --check` asks the same question without changing anything. It
+is a flag rather than part of `version` because it costs a network call, and
+`version` has to keep working with no network — it is what you run when
+something is already wrong.
 
 `w17ctl version` prints the console address compiled into the binary. That is
 only the LAST resort in the resolution order — `--console`, then the console
@@ -117,6 +138,16 @@ w17ctl finds your project by walking parent directories to the nearest
 | `~/.w17/config.yaml` | dev-machine project registry + per-project host-port assignments + presets | written by `init` / `project` |
 | `w17/certs/`, `w17/snapshots/` | local dev PKI + branch schema snapshots | `certs` / `db` / `initiative` |
 
+### The certificate committed in this repo
+
+`internal/core/devca.crt` is a **dev CA certificate**, and it is meant to be
+here. Only the public half ships — the private key is dev-only and never
+leaves the monorepo — and the client trusts it for **loopback dials only**, so
+that `w17ctl login localhost:…` can verify your local dev terminator with no
+environment set up. It grants nothing against a remote console: a dial to
+anything but loopback goes through the system trust store like any other TLS
+client.
+
 ---
 
 ## Command reference
@@ -126,6 +157,9 @@ w17ctl finds your project by walking parent directories to the nearest
 | Command | What it does · under the hood |
 |---|---|
 | `guide` | Write `AGENTS.md` (how to DRIVE w17ctl — golden rules + workflow + task→command cheat-sheet; client-embedded, works offline) **and** fetch `w17/specs/` (how the w17 TECHNOLOGY works — the annotation catalog + architecture primer, generated server-side so it always matches the compiler). This is how a coding agent is onboarded: it reads `AGENTS.md` automatically, which points it at `w17/specs/`. `--stdout` prints the usage guide; `--force` refreshes `AGENTS.md`; `--no-specs` skips the server fetch. The `w17/specs/` fetch needs a reachable console and a logged-in identity; it is NOT scoped to an organization, so it works before you pick one (and before `init`). |
+
+| `version [--check]` | Print this binary's version, commit, build date and compiled-in console address. `--check` also asks the installer which release is newest and says whether you are behind — one network call, and it reports rather than fails when there is none. |
+| `update` | Upgrade this binary in place, into the directory it runs from. Invokes `install.sh` rather than resolving the release itself, so the download is verified against `SHA256SUMS` and there is only one implementation of "which release is newest". `--stable` refuses prereleases, `--version <tag>` pins, `--dir` targets elsewhere, `--dry-run` reports without installing. |
 
 ### Auth & organizations
 Talk to a console and pick your org scope. Login is a single gRPC call to the

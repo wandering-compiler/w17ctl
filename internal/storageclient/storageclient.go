@@ -16,6 +16,7 @@ package storageclient
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"os/user"
 	"strings"
@@ -233,11 +234,54 @@ func IsTrunkBranch(name string) bool {
 	return name == "main" || name == "master" || name == "trunk"
 }
 
+// InitiativeEnv names the branch a CI job is building when its checkout has
+// no branch to derive one from.
+//
+// Most CI providers check out a commit, not a branch: GitLab does it on every
+// job (GIT_CHECKOUT_STRATEGY defaults to DETACHED), Azure does it too, and
+// GitHub does it for pull_request events while giving a real branch on push.
+// The branch is not lost, it just lives in an environment variable instead of
+// in git — CI_COMMIT_REF_NAME, github.head_ref, BITBUCKET_BRANCH, and so on.
+// This variable is where a generated pipeline puts it.
+//
+// It is a FALLBACK, not an override: a checkout that has a branch is still
+// the answer. That keeps one rule intact — the value always describes what
+// the developer pushed, and CI never invents an initiative of its own. It
+// also means an exported value cannot silently displace the branch somebody
+// is standing on.
+const InitiativeEnv = "W17_INITIATIVE"
+
+// initiativeFromEnv returns the branch named by InitiativeEnv.
+//
+// A full `refs/heads/x` ref is accepted and trimmed, because some providers
+// only expose the whole ref (Azure's Build.SourceBranch). Any OTHER refs/
+// value is refused rather than trimmed: `refs/pull/12/merge` would otherwise
+// resolve to the initiative "merge" and quietly pool every pull request in
+// the repo into one.
+func initiativeFromEnv() (string, error) {
+	v := strings.TrimSpace(os.Getenv(InitiativeEnv))
+	if v == "" {
+		return "", nil
+	}
+	if rest, ok := strings.CutPrefix(v, "refs/heads/"); ok {
+		v = rest
+	}
+	if strings.HasPrefix(v, "refs/") {
+		return "", fmt.Errorf("%s is %q, which is not a branch — an initiative is named after the branch a developer pushed, and a ref like this one is the same for every change (set it from your provider's branch variable instead)", InitiativeEnv, v)
+	}
+	if v == "" {
+		return "", fmt.Errorf("%s is set but names no branch", InitiativeEnv)
+	}
+	return v, nil
+}
+
 // ResolveInitiativeTarget applies git-sync: explicit --name wins; otherwise
-// derive from the current branch. Any reserved name (main/master/trunk, per
-// IsTrunkBranch) resolves to the canonical ("trunk", true) on BOTH paths — so
-// `--name main` and a literal `trunk` branch both map to the one canonical
-// trunk, never a divergent initiative named "main" or a non-trunk named "trunk".
+// derive from the current branch, and from InitiativeEnv when the checkout
+// has no branch at all. Any reserved name (main/master/trunk, per
+// IsTrunkBranch) resolves to the canonical ("trunk", true) on ALL paths — so
+// `--name main`, a literal `trunk` branch and W17_INITIATIVE=main all map to
+// the one canonical trunk, never a divergent initiative named "main" or a
+// non-trunk named "trunk".
 func ResolveInitiativeTarget(explicit string) (name string, isTrunk bool, err error) {
 	if explicit != "" {
 		if IsTrunkBranch(explicit) {
@@ -247,7 +291,14 @@ func ResolveInitiativeTarget(explicit string) (name string, isTrunk bool, err er
 	}
 	branch := GitCurrentBranchFn()
 	if branch == "" {
-		return "", false, fmt.Errorf("not on a git branch (detached HEAD or no repo) — pass --name")
+		env, eerr := initiativeFromEnv()
+		if eerr != nil {
+			return "", false, eerr
+		}
+		branch = env
+	}
+	if branch == "" {
+		return "", false, fmt.Errorf("not on a git branch (detached HEAD or no repo) — pass --name, or set %s to the branch being built (a CI checkout is usually detached; your provider exposes the branch as CI_COMMIT_REF_NAME, github.head_ref, BITBUCKET_BRANCH or similar)", InitiativeEnv)
 	}
 	if IsTrunkBranch(branch) {
 		return "trunk", true, nil

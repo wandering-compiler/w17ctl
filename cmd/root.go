@@ -43,6 +43,7 @@ import (
 	templatecmd "github.com/wandering-compiler/w17ctl/cmd/template"
 	testcmd "github.com/wandering-compiler/w17ctl/cmd/test"
 	uicmd "github.com/wandering-compiler/w17ctl/cmd/ui"
+	updatecmd "github.com/wandering-compiler/w17ctl/cmd/update"
 	verify "github.com/wandering-compiler/w17ctl/cmd/verify"
 	versioncmd "github.com/wandering-compiler/w17ctl/cmd/version"
 	whoamicmd "github.com/wandering-compiler/w17ctl/cmd/whoami"
@@ -64,7 +65,8 @@ import (
 var root struct {
 	// --- Getting started (read me first — no project state; safe before init) ---
 	Guide   guidecmd.Cmd   `cmd:"" help:"Write AGENTS.md — the AI-agent usage guide for driving w17ctl (golden rules + canonical workflow + task→command cheat-sheet). Coding agents read AGENTS.md into context automatically. Runs in an empty dir before 'init'; --stdout to print, --force to refresh."`
-	Version versioncmd.Cmd `cmd:"" help:"Print this binary's version, commit and build date, plus the console address compiled into it. A released binary reports its release; a locally built one reports \"dev\" rather than inventing a number."`
+	Version versioncmd.Cmd `cmd:"" help:"Print this binary's version, commit and build date, plus the console address compiled into it. A released binary reports its release; a locally built one reports \"dev\" rather than inventing a number. --check also asks which release is newest."`
+	Update  updatecmd.Cmd  `cmd:"" help:"Upgrade this binary in place. Invokes the canonical installer rather than resolving the release itself — one place knows which release is newest, and it verifies the download against the release's SHA256SUMS. Prereleases are included while this binary is itself one; --stable opts out, --dry-run only reports."`
 
 	// --- Authentication (console identity, machine-local ~/.w17/auth.yaml) ---
 	// ⚠️ This help describes SignIn — email + password over gRPC, no browser.

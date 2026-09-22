@@ -16,11 +16,12 @@ import (
 // asserting nobody changed a .proto without regenerating + committing
 // the locks.
 type Cmd struct {
-	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console CodegenService. Optional — falls back to console_addr in w17/lock.yaml, then the binary's compile-time default."`
+	Console        string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console CodegenService. Optional — falls back to console_addr in w17/lock.yaml, then the binary's compile-time default."`
+	AllowStalePins bool   `name:"allow-stale-pins" help:"Ship a bundle whose ecosystem pins are older than the ones this compiler stamps. The pins land in the bundle's go.mod and are linked into the deployed binary, so a stale set can carry a CVE the compiler has already moved off — this is the deliberate override, not a convenience."`
 }
 
 // Run delegates to the implementation, rendering progress to the shared
 // output writer.
 func (c *Cmd) Run() error {
-	return verifyimpl.Run(core.Stdout, c.Console)
+	return verifyimpl.Run(core.Stdout, c.Console, c.AllowStalePins)
 }

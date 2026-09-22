@@ -18,6 +18,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/wandering-compiler/w17ctl/internal/gofmtc"
 )
 
 //go:embed all:embed/admin-runtime
@@ -47,6 +49,12 @@ func WriteTo(dstDir string) error {
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
+		}
+		// The runtime is EMBEDDED, so it only changes when w17ctl itself
+		// does — every regen in between was rewriting ~75 identical files,
+		// waking file watchers and re-indexing the SPA for nothing.
+		if gofmtc.SameOnDisk(target, data) {
+			return nil
 		}
 		return os.WriteFile(target, data, 0o644)
 	})
