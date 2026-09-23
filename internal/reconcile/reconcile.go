@@ -49,6 +49,15 @@ type Deps struct {
 
 	// Quiesce stops every container except the stateful stores.
 	Quiesce func(ctx context.Context) error
+
+	// Resume starts back exactly what Quiesce stopped. It runs on EVERY
+	// path out of the reconcile, the failing ones included: the services
+	// are down because this function stopped them, so leaving them down
+	// after a failed snapshot or a failed apply hands the operator a second
+	// problem on top of the one they already have. `restart: unless-stopped`
+	// does not cover it — a compose `stop` is explicit and that policy is
+	// defined not to undo one.
+	Resume func(ctx context.Context) error
 	// Dump snapshots the given (outgoing) branch's stores to disk.
 	Dump func(ctx context.Context, branch string) error
 	// Restore loads the given (incoming) branch's stores from disk.
@@ -122,6 +131,14 @@ func Run(ctx context.Context, d Deps) (Outcome, error) {
 
 	if err := d.Quiesce(ctx); err != nil {
 		return out, fmt.Errorf("reconcile: quiesce: %w", err)
+	}
+	if d.Resume != nil {
+		defer func() {
+			if err := d.Resume(ctx); err != nil {
+				logf("reconcile: could not restart the services it stopped: %v", err)
+				logf("  run `w17ctl stack up` to bring them back")
+			}
+		}()
 	}
 	logf("snapshotting outgoing branch %q", last)
 	if err := d.Dump(ctx, last); err != nil {

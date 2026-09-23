@@ -16,10 +16,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"regexp"
 
 	"golang.org/x/mod/semver"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
@@ -170,11 +173,59 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 	}
 
 	if len(errs) > 0 {
+		// A refusal is not a finding. Every one of these checks reaches the
+		// console, so "the console would not answer" and "the answer was no"
+		// arrive at the same place — and a headline that names the second is
+		// a wrong diagnosis printed above a correct detail. A consumer read
+		// "drift detected — re-run codegen and commit the locks", did that,
+		// and only then read to the end of the line: the locks were fine,
+		// the role was missing three permissions (deinvo, 2026-09-23).
+		//
+		// Advice that cannot apply to the case it is printed for is worse
+		// than no advice: it is the part people act on first.
+		if denied := permissionDenials(errs); len(denied) > 0 {
+			return fmt.Errorf("verify: refused — this credential may not run the checks, so nothing was verified "+
+				"(the locks were not read, let alone found to disagree). Missing: %s. "+
+				"A CI token needs the `ci-push` role; if it holds one, the role predates these checks and "+
+				"the console needs redeploying: %w",
+				strings.Join(denied, ", "), errors.Join(errs...))
+		}
 		return fmt.Errorf("verify: drift detected — re-run `w17ctl codegen` and commit the locks: %w", errors.Join(errs...))
 	}
 	fmt.Fprintf(out, "verify: ok (%d lock(s) in sync with proto)\n", checked)
 	return nil
 }
+
+// permissionDenials names the permissions the console refused, across every
+// check in the run. It reports nothing unless EVERY error is a denial: a run
+// that found real drift AND lacked a permission has drift to report, and
+// burying that under an access message would repeat the mistake in the other
+// direction.
+func permissionDenials(errs []error) []string {
+	var out []string
+	for _, e := range errs {
+		st, ok := status.FromError(errors.Unwrap(e))
+		if !ok || st.Code() != codes.PermissionDenied {
+			// Not every error carries a wrapped status — the pin check
+			// builds plain errors — so try the error itself too.
+			st, ok = status.FromError(e)
+			if !ok || st.Code() != codes.PermissionDenied {
+				return nil
+			}
+		}
+		if m := permissionName.FindStringSubmatch(st.Message()); m != nil {
+			out = append(out, m[1])
+			continue
+		}
+		out = append(out, st.Message())
+	}
+	return out
+}
+
+// permissionName pulls the permission out of the console's refusal. Falls
+// back to the whole message when the shape changes, because a message naming
+// the wrong thing is worse than one naming less.
+var permissionName = regexp.MustCompile(`missing permission ([A-Za-z0-9_.]+)`)
 
 // verifyErr turns a Verify* RPC outcome into an error: a transport
 // error surfaces as-is; an ok=false result becomes the drift message.

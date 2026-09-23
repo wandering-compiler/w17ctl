@@ -165,6 +165,35 @@ func containerPublishing(ctx context.Context, port string) string {
 	return ""
 }
 
+// ComposeServiceFor names the compose SERVICE of the container that publishes
+// the DSN's port, or "" when there is none.
+//
+// It exists because a store has two names that are not required to agree: the
+// connection name an author picks in their targets, and the compose service
+// name in their stack file. `stack build` quiesced by excluding CONNECTION
+// names from a list of SERVICE names, so where the two differed the store was
+// stopped like anything else — and the snapshot arranged to run inside that
+// container then failed with "pg_dump: executable file not found", which reads
+// like a missing tool rather than a container that is no longer running (marb
+// #57). Crossing the namespaces through the container is the one comparison
+// that does not depend on the two names matching.
+func ComposeServiceFor(ctx context.Context, dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Port() == "" {
+		return ""
+	}
+	cid := containerPublishing(ctx, u.Port())
+	if cid == "" {
+		return ""
+	}
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format",
+		"{{index .Config.Labels \"com.docker.compose.service\"}}", cid).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // hasBinary asks the container whether it carries the client. A container that
 // publishes the port but is something else entirely (a proxy, a tunnel) fails
 // here rather than at dump time with an exec error.

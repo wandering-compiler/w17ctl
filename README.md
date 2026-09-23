@@ -179,7 +179,7 @@ into. They set two variables instead:
 
 | Variable | |
 |---|---|
-| `W17_TOKEN` | an API token minted for a **machine account** (console → Users → add bot), not a person's password. Takes precedence over a stored login. |
+| `W17_TOKEN` | an API token minted for a **machine account** (console → Organizations → your org → Machine accounts), not a person's password. Takes precedence over a stored login. |
 | `W17_CONSOLE_ADDR` | the console the token was minted for. **Not optional.** |
 
 The second is what makes the first safe: a token is presented only to the

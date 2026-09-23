@@ -2,6 +2,8 @@ package storageclient
 
 import (
 	"fmt"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // CurrentInitiative is what a push learned about the change request it
@@ -73,6 +75,18 @@ func ResolveCurrentInitiative(console, project, explicit string) CurrentInitiati
 
 	found, err := sc.FindInitiative(project, name)
 	if err != nil {
+		// A REFUSAL is called what it is. Folded into "initiative lookup
+		// failed", a missing permission read as a console hiccup, the push
+		// went ahead unstamped, and the run reported success — so a pipeline
+		// could produce unstampable migrations indefinitely with nothing to
+		// notice. Found while writing the role-coverage test, not reported:
+		// it is the only one of the five that never turned a build red.
+		if status.Code(err) == codes.PermissionDenied {
+			return CurrentInitiative{Why: fmt.Sprintf(
+				"this credential may not read the project's initiatives (%v) — the push below will NOT be "+
+					"stamped, and an unstamped migration is one no freeze can collapse. A CI token needs the "+
+					"`ci-push` role; if it holds one, the role predates this and the console needs redeploying", err)}
+		}
 		return CurrentInitiative{Why: fmt.Sprintf("initiative lookup failed: %v", err)}
 	}
 	if found == nil {

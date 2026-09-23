@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	plan "github.com/wandering-compiler/w17ctl/internal/plan"
 
 	codegen "github.com/wandering-compiler/w17ctl/internal/codegen"
+	"github.com/wandering-compiler/w17ctl/internal/containerdump"
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/docker"
 	"github.com/wandering-compiler/w17ctl/internal/remotecompose"
@@ -76,7 +78,13 @@ func nonStoreServices(all []string, storeNames map[string]bool) []string {
 type composeCtl struct {
 	listServices func() ([]string, error)
 	stop         func(services []string) error
+	start        func(services []string) error
 }
+
+// composeServiceForFn is the seam the tests substitute: resolving a store's
+// compose service goes through the docker daemon, and the thing worth pinning
+// is what the quiesce list does with the answer — not the daemon.
+var composeServiceForFn = containerdump.ComposeServiceFor
 
 // localComposeCtl is the default (local daemon) compose control.
 func localComposeCtl(root string) composeCtl {
@@ -84,6 +92,9 @@ func localComposeCtl(root string) composeCtl {
 		listServices: func() ([]string, error) { return composeServicesFn(root) },
 		stop: func(services []string) error {
 			return docker.RunComposeFn(root, append(append(docker.FileArgs(root), "stop"), services...)...)
+		},
+		start: func(services []string) error {
+			return docker.RunComposeFn(root, append(append(docker.FileArgs(root), "start"), services...)...)
 		},
 	}
 }
@@ -108,13 +119,17 @@ func remoteComposeCtl(r remotecompose.Runner) composeCtl {
 		stop: func(services []string) error {
 			return remotecompose.Run(r, nil, append([]string{"stop"}, services...)...)
 		},
+		start: func(services []string) error {
+			return remotecompose.Run(r, nil, append([]string{"start"}, services...)...)
+		},
 	}
 }
 
 func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string, currentBytes []byte, applierFor migrate.ApplierFor, specs []factory.TargetSpec, console string) (reconcile.Deps, error) {
-	if cc.listServices == nil || cc.stop == nil {
+	if cc.listServices == nil || cc.stop == nil || cc.start == nil {
 		cc = localComposeCtl(root)
 	}
+	quiesced := &[]string{}
 	st := snapstore.New(root)
 	conns, skipped, err := SnapshotConns(specs)
 	if err != nil {
@@ -124,11 +139,23 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 		fmt.Fprintf(core.Stdout, "stack build: reconcile skipping store %s\n", s)
 	}
 
+	// Two names per store, and nothing makes them agree: the CONNECTION name
+	// the author chose in their targets, and the compose SERVICE name in
+	// their stack file. Excluding only the first stopped the store wherever
+	// they differed, and the snapshot then failed inside a container that was
+	// no longer running (marb #57). Both are excluded now; the service is
+	// resolved through the container that publishes the store's port, which
+	// is the one comparison that does not assume the names match.
 	storeNames := map[string]bool{}
 	connNames := make([]string, 0, len(specs))
+	svcCtx, svcCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer svcCancel()
 	for _, s := range specs {
 		storeNames[s.Connection] = true
 		connNames = append(connNames, s.Connection)
+		if svc := composeServiceForFn(svcCtx, s.DSN); svc != "" {
+			storeNames[svc] = true
+		}
 	}
 
 	logf := func(format string, args ...any) { fmt.Fprintf(core.Stdout, format+"\n", args...) }
@@ -138,6 +165,8 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 		LastLive:      st.LastLive,
 		SetLastLive:   st.SetLastLive,
 		HasSnapshot:   st.Has,
+		// quiesced records what Quiesce actually stopped, so Resume can put
+		// back exactly that and nothing else.
 		Quiesce: func(context.Context) error {
 			all, err := cc.listServices()
 			if err != nil {
@@ -147,7 +176,25 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 			if len(stop) == 0 {
 				return nil
 			}
-			return cc.stop(stop)
+			if err := cc.stop(stop); err != nil {
+				return err
+			}
+			*quiesced = append((*quiesced)[:0], stop...)
+			return nil
+		},
+		// A compose `stop` is EXPLICIT, and `restart: unless-stopped` is
+		// defined not to undo one — so before this existed, every branch
+		// switch left the project's gateway and business services down until
+		// someone noticed and ran `stack up`. It read as an infrastructure
+		// outage with no cause, because the command that caused it had
+		// already reported success (marb #57).
+		Resume: func(context.Context) error {
+			if len(*quiesced) == 0 {
+				return nil
+			}
+			svcs := append([]string(nil), *quiesced...)
+			*quiesced = (*quiesced)[:0]
+			return cc.start(svcs)
 		},
 		Dump:    func(ctx context.Context, branch string) error { return st.Save(ctx, branch, conns) },
 		Restore: func(ctx context.Context, branch string) error { return st.Load(ctx, branch, conns) },
