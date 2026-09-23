@@ -53,6 +53,20 @@ type Conn struct {
 	Name        string
 	Ext         string
 	Snapshotter migrate.Snapshotter
+
+	// FallbackNote explains why a SECOND route to a dump was not available,
+	// for the case where the one being used fails. A postgres store whose
+	// host has no pg_dump can be dumped inside its own container instead;
+	// where that route declined too, the only error a person saw named the
+	// host's missing binary — true of every store in the project and an
+	// explanation of none, so they could not tell a failed fallback from an
+	// absent one (marb #62/3).
+	//
+	// Carried on the Conn rather than printed when the route is chosen,
+	// because the conns are built on EVERY build and the dump happens on a
+	// branch switch. A line printed where nothing is dumped is one people
+	// learn to skip.
+	FallbackNote string
 }
 
 func (c Conn) file() string { return c.Name + "." + c.Ext }
@@ -215,6 +229,9 @@ func (s *Store) saveOneTo(ctx context.Context, dbDir string, c Conn) error {
 	if err := c.Snapshotter.Dump(ctx, tmp); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
+		if c.FallbackNote != "" {
+			return fmt.Errorf("snapstore Save %s: dump: %w (%s)", c.Name, err, c.FallbackNote)
+		}
 		return fmt.Errorf("snapstore Save %s: dump: %w", c.Name, err)
 	}
 	if err := tmp.Close(); err != nil {

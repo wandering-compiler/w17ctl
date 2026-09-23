@@ -40,6 +40,15 @@ type Deps struct {
 	// CurrentBranch returns the current git branch ("" = detached HEAD /
 	// no repo → reconcile is skipped, the caller falls back to --name).
 	CurrentBranch func() string
+	// SkipSnapshot switches WITHOUT snapshotting the outgoing branch.
+	//
+	// It is not a shortcut, it is a choice with a price: the outgoing
+	// branch's dev data stops being recoverable, so switching back to it
+	// later finds no snapshot and builds fresh. The default refuses, because
+	// the alternative is a command that silently destroys the database of
+	// the branch you just left (marb #62).
+	SkipSnapshot bool
+
 	// LastLive / SetLastLive read + persist the branch w17 last built
 	// live (snapstore).
 	LastLive    func() (string, error)
@@ -86,6 +95,36 @@ type Outcome struct {
 	// Fresh is true when the incoming branch had no snapshot and was
 	// built fresh + fixture-seeded (only meaningful when Switched).
 	Fresh bool
+	// Unsnapshotted names the outgoing branch that was left WITHOUT a
+	// snapshot because --no-snapshot was given. Empty on every ordinary
+	// run. The caller reports it in the line that announces success, so
+	// the hatch leaves a trace where the result is read.
+	Unsnapshotted string
+}
+
+// snapshotRefusal explains a failed outgoing snapshot.
+//
+// The bare wrapped error named a missing `pg_dump` and stopped, which left
+// three things unsaid that a person standing in front of it needs: what state
+// their project is in, that EVERY later build will stop in the same place
+// (last-live still names the outgoing branch, correctly — the stores do hold
+// its data), and that there is a way on at all. marb ran it twice to find out
+// the second one.
+func snapshotRefusal(last string, err error) error {
+	return fmt.Errorf(`reconcile: snapshot %q: %w
+
+  Nothing was changed: the stores still hold %[1]q's data, and the services
+  this stopped have been restarted. Every `+"`stack build`"+` in this checkout will
+  stop here until the snapshot can be taken — the switch is not reconciled,
+  and recording it as if it were would leave the database and the tree
+  describing different branches.
+
+  Two ways on:
+    - give this machine the store's client (pg_dump / mysqldump), or leave the
+      store's container running so the dump can be taken inside it; or
+    - `+"`w17ctl stack build --no-snapshot`"+` to switch WITHOUT snapshotting %[1]q.
+      Its dev data stops being recoverable: coming back to that branch later
+      finds no snapshot and builds fresh.`, last, err)
 }
 
 // Run detects a branch switch and, if any, reconciles the local stores.
@@ -140,9 +179,17 @@ func Run(ctx context.Context, d Deps) (Outcome, error) {
 			}
 		}()
 	}
-	logf("snapshotting outgoing branch %q", last)
-	if err := d.Dump(ctx, last); err != nil {
-		return out, fmt.Errorf("reconcile: snapshot %q: %w", last, err)
+	if d.SkipSnapshot {
+		// Said on the line that reports the switch, not buried: an escape
+		// hatch whose output looks like a clean run is how people take one
+		// without knowing they did.
+		out.Unsnapshotted = last
+		logf("NOT snapshotting %q (--no-snapshot) — switching back to it will find no snapshot and build fresh, losing its dev data", last)
+	} else {
+		logf("snapshotting outgoing branch %q", last)
+		if err := d.Dump(ctx, last); err != nil {
+			return out, snapshotRefusal(last, err)
+		}
 	}
 
 	if d.HasSnapshot != nil && d.HasSnapshot(current) {

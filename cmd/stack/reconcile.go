@@ -265,9 +265,59 @@ func wipeStores(ctx context.Context, applierFor migrate.ApplierFor, conns []stri
 // parameterized upserts against its local postgres store. So the client holds
 // no fixtures package / irpb. No fixtures dir / no postgres store ⇒ a logged
 // no-op.
+// declaredRolesFixture is the file codegen writes from `(w17.acl_roles)`. It
+// is a DECLARATION, not data: the author wrote it beside their models, and it
+// is regenerated from them on every codegen.
+const declaredRolesFixture = "acl-roles.json"
+
+// seedDeclaredRoles applies ONLY the generated role fixtures, and is called on
+// every `stack build` — the way the schema is.
+//
+// Roles used to reach a local database by exactly one route: a fixture seed
+// inside the reconcile's FRESH arm, which runs only when a branch switch finds
+// no snapshot. A first build, and every same-branch build, returns from
+// reconcile before that. So a project that declared a bootstrap role and ran
+// `codegen && stack build` got a schema with `select count(*) from auth_role`
+// = 0, and nothing said so.
+//
+// What that costs is not "a missing row". `first_user` has nothing to grant,
+// so the first account registers with NO roles — and the flag is spent, so the
+// one chance is gone. The result is a sign-in that cannot invite anybody and a
+// database effectively closed, reached through a SignUp that returned 200 and
+// a token (marb, 2026-09-23).
+//
+// Only the generated role file, deliberately. Hand-authored data fixtures keep
+// the behaviour they have: their seeds are upserts, and re-applying them on
+// every build would reset rows a developer had edited between builds. Roles
+// carry no such expectation — they are regenerated from the proto anyway.
+func seedDeclaredRoles(ctx context.Context, root string, schemaBytes []byte, specs []factory.TargetSpec, console string, logf func(string, ...any)) error {
+	return seedFixturesFiltered(ctx, root, schemaBytes, specs, console, logf, isDeclaredRolesSeed)
+}
+
+// isDeclaredRolesSeed is THE predicate — named so the test can call it rather
+// than restate it. A test that re-implements a filter agrees with its own copy
+// and goes on passing while the real one changes underneath (the first version
+// of the test here did exactly that, and let a break through).
+func isDeclaredRolesSeed(s fixtureSeed) bool {
+	return filepath.Base(s.path) == declaredRolesFixture
+}
+
 func seedFixtures(ctx context.Context, root string, schemaBytes []byte, specs []factory.TargetSpec, console string, logf func(string, ...any)) error {
+	return seedFixturesFiltered(ctx, root, schemaBytes, specs, console, logf, nil)
+}
+
+func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, specs []factory.TargetSpec, console string, logf func(string, ...any), keep func(fixtureSeed) bool) error {
 	fixturesDir := filepath.Join(root, "fixtures")
 	seeds, err := collectFixtureSeeds(fixturesDir)
+	if keep != nil && err == nil {
+		var filtered []fixtureSeed
+		for _, s := range seeds {
+			if keep(s) {
+				filtered = append(filtered, s)
+			}
+		}
+		seeds = filtered
+	}
 	if err != nil {
 		return fmt.Errorf("seed fixtures: %w", err)
 	}

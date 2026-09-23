@@ -79,8 +79,15 @@ func (c *AddCmd) Run() error {
 	// embed the loader, so the check moved fully to codegen-time (the real
 	// gate) per the thin-client refactor (Step 3a).
 
+	// The prefix the DOMAIN already uses wins over the one derived from the
+	// project name. Deriving it here put a hand-shortened domain's new module
+	// in a second namespace beside its siblings — see PackagePrefixOfDomain.
+	prefix := scaffold.PackagePrefixOfDomain(filepath.Join(protoDir, "domains", domain), domain)
+	if prefix == "" {
+		prefix = scaffold.ProtoSafePackagePrefix(view.GetProject())
+	}
 	ctx := scaffold.Ctx{
-		Project: scaffold.ProtoSafePackagePrefix(view.GetProject()),
+		Project: prefix,
 		Domain:  domain,
 		Module:  module,
 	}

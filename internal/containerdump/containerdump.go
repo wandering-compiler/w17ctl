@@ -54,9 +54,27 @@ var _ migrate.Snapshotter = (*Snapshotter)(nil)
 // the host's own client, and "no container either" has to read as "this route
 // is unavailable" so the caller can say something true about both.
 func For(ctx context.Context, dsn string) *Snapshotter {
+	s, _ := ForReason(ctx, dsn)
+	return s
+}
+
+// ForReason is For plus the reason it declined, in a phrase that completes
+// "the dump could not run inside a container: …".
+//
+// The reason exists because declining used to be SILENT. With two stores in a
+// project the fallback engaged for one and not the other, and the only thing
+// the person saw was the host error — `pg_dump: executable file not found in
+// $PATH` — which names the host and says nothing about the route that was
+// tried and refused. marb could not tell whether the fallback had failed or
+// simply did not exist (#62/3). A fallback that declines without a word is
+// indistinguishable from one that is not there.
+func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 	u, err := url.Parse(dsn)
-	if err != nil || u.Port() == "" {
-		return nil
+	if err != nil {
+		return nil, "its DSN could not be parsed"
+	}
+	if u.Port() == "" {
+		return nil, "its DSN names no port, so there is nothing to match a container against"
 	}
 	var (
 		dumpBin    string
@@ -69,11 +87,14 @@ func For(ctx context.Context, dsn string) *Snapshotter {
 	case "mysql":
 		dumpBin, restoreBin, inner = "mysqldump", "mysql", 3306
 	default:
-		return nil
+		return nil, fmt.Sprintf("%q has no in-container dump route", u.Scheme)
 	}
 	cid := containerPublishing(ctx, u.Port())
-	if cid == "" || !hasBinary(ctx, cid, dumpBin) {
-		return nil
+	if cid == "" {
+		return nil, fmt.Sprintf("no running container publishes port %s", u.Port())
+	}
+	if !hasBinary(ctx, cid, dumpBin) {
+		return nil, fmt.Sprintf("container %s publishes port %s but has no %s", cid, u.Port(), dumpBin)
 	}
 	return &Snapshotter{
 		container:  cid,
@@ -81,7 +102,7 @@ func For(ctx context.Context, dsn string) *Snapshotter {
 		dumpBin:    dumpBin,
 		restoreBin: restoreBin,
 		dialect:    u.Scheme,
-	}
+	}, ""
 }
 
 // Container is the container the snapshot would run in, for a message that

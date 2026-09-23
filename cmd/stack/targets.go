@@ -39,15 +39,27 @@ func SnapshotConns(specs []factory.TargetSpec) (conns []snapstore.Conn, skipped 
 		//
 		// Only as a FALLBACK: where the host has the client, it is used, so a
 		// snapshot does not silently depend on a container still running.
+		var note string
 		if !hostHasClientFor(s.DSN) {
-			if in := containerdump.For(ctx, s.DSN); in != nil {
+			in, why := containerdump.ForReason(ctx, s.DSN)
+			if in != nil {
 				snap = in
+			} else if why != "" {
+				// The container route declined too. Carried, not printed:
+				// the host dumper is about to fail with a message naming a
+				// missing binary, which is true of every store in the
+				// project and explains none of them — marb could not tell a
+				// failed fallback from an absent one, because the route that
+				// refused said nothing (#62/3).
+				note = fmt.Sprintf("no %s on this machine either, and the dump cannot run inside a container: %s",
+					clientBinFor(s.DSN), why)
 			}
 		}
 		conns = append(conns, snapstore.Conn{
-			Name:        s.Connection,
-			Ext:         factory.SnapshotExt(s.DSN),
-			Snapshotter: snap,
+			Name:         s.Connection,
+			Ext:          factory.SnapshotExt(s.DSN),
+			Snapshotter:  snap,
+			FallbackNote: note,
 		})
 	}
 	return conns, skipped, nil
@@ -60,19 +72,29 @@ func SnapshotConns(specs []factory.TargetSpec) (conns []snapstore.Conn, skipped 
 // error naming a binary, which reads like a bug in w17 rather than a missing
 // package — and it arrives at the moment somebody chose the careful option.
 func hostHasClientFor(dsn string) bool {
-	var bin string
-	switch {
-	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"):
-		bin = "pg_dump"
-	case strings.HasPrefix(dsn, "mysql://"):
-		bin = "mysqldump"
-	default:
+	bin := clientBinFor(dsn)
+	if bin == "" {
 		// Every other store dumps through its own protocol, with no external
 		// client to miss.
 		return true
 	}
 	_, err := exec.LookPath(bin)
 	return err == nil
+}
+
+// clientBinFor names the external client a DSN's dialect dumps through, or ""
+// when it needs none. Shared with the message that explains a declined
+// container fallback, so the tool the message names is the tool the check
+// looked for.
+func clientBinFor(dsn string) string {
+	switch {
+	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"):
+		return "pg_dump"
+	case strings.HasPrefix(dsn, "mysql://"):
+		return "mysqldump"
+	default:
+		return ""
+	}
 }
 
 // resolveLocalTargets derives the local-store dev-diff-apply targets for

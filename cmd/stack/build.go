@@ -51,6 +51,7 @@ type BuildCmd struct {
 	Reconcile       bool     `name:"reconcile" help:"Force the branch-switch reconcile even when the project's autosync mode is off. (When on — the default — reconcile already runs on an initiative change.)"`
 	NoCodegen       bool     `name:"no-codegen" help:"Skip the codegen step (assume the generated code is already current). By default 'stack build' runs codegen first so the images compile against fresh generated code."`
 	Lossy           string   `name:"lossy" default:"refuse" help:"What to do when the sync would DESTROY data (drop a table or column, retype one): refuse | apply | snapshot. snapshot takes one of the affected stores first."`
+	NoSnapshot      bool     `name:"no-snapshot" help:"On a branch switch, do NOT snapshot the outgoing branch. Its dev data stops being recoverable — coming back to that branch builds fresh. Use it when the machine has no pg_dump/mysqldump and you do not need the outgoing branch's data."`
 	NoBuild         bool     `name:"no-build" help:"Skip building images and sync the local database only. The schema sync and the image build are independent steps that happen to share this command; with this flag the sync needs no Docker daemon, no build context and no compose file at all. Use it when you changed a proto and want the database to match."`
 	modeFlags
 
@@ -430,8 +431,18 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 		if derr != nil {
 			return fmt.Errorf("stack build: reconcile setup: %w", derr)
 		}
-		if _, rerr := reconcile.Run(ctx, deps); rerr != nil {
+		deps.SkipSnapshot = c.NoSnapshot
+		outcome, rerr := reconcile.Run(ctx, deps)
+		if rerr != nil {
 			return fmt.Errorf("stack build: reconcile: %w", rerr)
+		}
+		// The hatch leaves its trace in the line that reports the result,
+		// not only in the line that took it — the pattern deinvo named on
+		// --allow-stale-pins ("3 lock(s)" instead of 4): output that looks
+		// like a clean run is how a person keeps taking a hatch they have
+		// forgotten they opted into.
+		if outcome.Unsnapshotted != "" {
+			fmt.Fprintf(core.Stdout, "stack build: reconciled WITHOUT a snapshot of %q — its dev data is no longer recoverable\n", outcome.Unsnapshotted)
 		}
 	}
 
@@ -453,6 +464,18 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 		return fmt.Errorf("stack build: dev diff-apply: %w", err)
 	}
 	fmt.Fprintf(core.Stdout, "stack build: dev diff-apply complete (%s/%s, checkpoint advanced)\n", initiative, actor)
+
+	// Declared roles are applied with the schema, not with the data. They
+	// only ever reached a local database through the reconcile's fresh arm,
+	// which a first build never takes — so a declared bootstrap role simply
+	// did not exist locally, and `first_user` spent its one chance on an
+	// account it could not grant. See seedDeclaredRoles.
+	//
+	// After the diff-apply, because that is what creates the tables the seed
+	// writes into: reconcile runs BEFORE it.
+	if err := seedDeclaredRoles(ctx, root, currentBytes, specs, c.Console, logf); err != nil {
+		return fmt.Errorf("stack build: seed declared roles: %w", err)
+	}
 	return nil
 }
 

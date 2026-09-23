@@ -120,6 +120,22 @@ type Plugin struct {
 	Name    string `yaml:"name"`
 	Version string `yaml:"version"`
 	Source  string `yaml:"source"`
+
+	// Git carries a git-sourced plugin's provenance. Nil for `internal`
+	// plugins and for locks written before the field existed — absent means
+	// "this lock predates the question", not "no provenance required", so a
+	// reader skips the check rather than failing it.
+	Git *GitPin `yaml:"git"`
+}
+
+// GitPin mirrors the lock's git coordinates for one plugin. The client reads
+// them to know what to re-fetch and what the tree on disk is supposed to be;
+// it does not decide anything with them — the console owns that.
+type GitPin struct {
+	Repo   string `yaml:"repo"`
+	Ref    string `yaml:"ref"`
+	Commit string `yaml:"commit"`
+	Digest string `yaml:"digest"`
 }
 
 // Connection mirrors the lock's connection entry's routing fields. Dialect /

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/alecthomas/kong"
 
@@ -149,6 +150,21 @@ var root struct {
 	Clean   stackcmd.CleanCmd `cmd:"" help:"Remove codegen output (pb stubs / FE clients / languages / generated bundle files) while preserving hand-written packages."`
 }
 
+// explainsNothingHere reports whether the credential explanation would be
+// noise for the command that just failed.
+//
+// The list is the commands that ESTABLISH a credential. For them an
+// Unauthenticated means the email, the password or the account — never "you
+// have no token", which is the state they exist to leave.
+func explainsNothingHere(ctx *kong.Context) bool {
+	switch strings.Fields(ctx.Command())[0] {
+	case "login", "logout":
+		return true
+	default:
+		return false
+	}
+}
+
 // exitFn is the process-exit hook kong calls. Production uses the os.Exit
 // default; tests override it to drive Run without killing the test runner.
 var exitFn = os.Exit
@@ -189,6 +205,19 @@ func Run(args []string) {
 		// forgets. It adds only what the CLIENT can see — which credential it
 		// attached, which organization it named — and stays silent when the
 		// server's own wording is already the whole story.
+		//
+		// Except for the commands that MAKE a credential rather than use one.
+		// Every line of that explanation is about a credential that is missing,
+		// stale, or bound to the wrong console — and `login` is what a reader
+		// runs to fix all three. Printed under a failed `login` it answers a
+		// question nobody asked and hides the one they did: a colleague being
+		// onboarded was told "no stored credential for this console" and
+		// "interactive: w17ctl login …" by the login they had just run
+		// (2026-09-23).
+		if explainsNothingHere(ctx) {
+			ctx.FatalIfErrorf(err)
+			return
+		}
 		ctx.FatalIfErrorf(core.ExplainAuthFailure(consoleAddrForDiagnostics(), err))
 		return
 	}

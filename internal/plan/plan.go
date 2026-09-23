@@ -3,6 +3,7 @@ package plan
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -184,26 +185,63 @@ func isAlreadyExists(err error) bool {
 // observeStores reads each connection's live schema — the BASE the server
 // plans from.
 //
-// A store that CANNOT be introspected is skipped in silence — the schemaless
-// ones have nothing to report, and the server leaves a connection it heard
-// nothing about alone.
+// Only a SCHEMALESS store (one whose applier says so — KV / queue / object)
+// is skipped in silence: it has nothing to report, and the server leaves a
+// connection it heard nothing about alone.
 //
-// A store that CAN be introspected and fails to be is an ERROR, and the
-// difference matters now in a way it did not before. This reading used to be
-// evidence for a drift check, where absent evidence refused nothing. It is now
-// the BASE: a store that goes unreported is planned as "already at the desired
-// schema", so a database nobody could reach would be quietly skipped and the
-// build would report a converged store it never touched.
+// Everything else that goes unreported is an ERROR, and the difference
+// matters now in a way it did not before. This reading used to be evidence
+// for a drift check, where absent evidence refused nothing. It is now the
+// BASE: a store that goes unreported is planned as "already at the desired
+// schema", so it would be quietly skipped and the build would report a
+// converged store it never touched. Three ways that used to happen, none of
+// them silent now — two refuse, one warns:
+//
+//   - the applier cannot be CONSTRUCTED (pgx.Connect is eager, so an
+//     unreachable database errors right there — the `continue` this
+//     replaced reported an unreachable store as converged);
+//   - the dialect is schema-ful but has no observer (only Postgres
+//     implements Observe) — a WARNING rather than a refusal: the store is
+//     still planned, just blind, and `examples/pg-native` ships exactly that
+//     pairing. Refusing it made every mixed-dialect project unbuildable;
+//   - the observation itself fails.
+//
+// warnf writes an operator-facing warning. A variable so a test can prove the
+// message is actually EMITTED: the property F13 cares about is loudness, and a
+// warning nobody can observe in a test is the same silence under a new name.
+var warnf = func(format string, a ...any) { fmt.Fprintf(os.Stderr, format, a...) }
+
 func observeStores(ctx context.Context, conns []string, applierFor migrate.ApplierFor) ([]*codegenpb.ObservedStore, error) {
 	var out []*codegenpb.ObservedStore
 	for _, conn := range conns {
 		ap, err := applierFor(conn)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("devapply: connecting to connection %q: %w\n\n"+
+				"  why: the sync is planned against what each database HOLDS, so an unreachable\n"+
+				"       one cannot be planned for at all — skipped, it would be reported as\n"+
+				"       already converged without ever being touched", conn, err)
 		}
 		obs, ok := ap.(migrate.ObserveCapable)
 		if !ok {
+			_, schemaless := ap.(migrate.Schemaless)
 			_ = ap.Close()
+			if schemaless {
+				continue
+			}
+			// F13, corrected after `make ci`: this was a hard refusal, and it
+			// made every mixed-dialect project unbuildable — `examples/pg-native`
+			// ships a MySQL store beside its Postgres one and stopped dead.
+			//
+			// The finding's complaint is the SILENCE, not the skip: a store
+			// nobody can read is planned against no observation at all, so the
+			// plan for it is made blind. Saying so leaves the behaviour that
+			// works and removes the part that was a defect. Refusing instead
+			// is the "right about the defect, wrong about the remedy" shape
+			// this dimension recorded in round 1 (pass #40 XF4, where the
+			// proposed reject broke a shipped feature).
+			warnf("⚠ connection %q holds a schema this client cannot read (its dialect has no "+
+				"live-schema observer), so its plan is made WITHOUT knowing what the database "+
+				"already holds — review it before applying to a store that is not empty\n", conn)
 			continue
 		}
 		live, oerr := obs.Observe(ctx)
@@ -221,10 +259,27 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 				Name:       t.Name,
 				PrimaryKey: t.PrimaryKey,
 				Checks:     t.Checks,
+				CheckDefs:  t.CheckDefs,
+			}
+			// The live MEMBER SETS ride the wire next to the check names.
+			// Without them the server-side member comparison is inert for
+			// every RPC consumer — the client read the sets and threw them
+			// away, which is how the 2026-09-20 choices-drift fix stayed
+			// live only for the console's own in-process reader.
+			if len(t.CheckMembers) > 0 {
+				ot.CheckMembers = map[string]*codegenpb.CheckMemberSet{}
+				for name, members := range t.CheckMembers {
+					ot.CheckMembers[name] = &codegenpb.CheckMemberSet{Members: members}
+				}
 			}
 			for _, c := range t.Columns {
 				ot.Columns = append(ot.Columns, &codegenpb.ObservedColumn{
 					Name: c.Name, Type: c.DataType, Nullable: c.Nullable, DefaultExpr: c.Default,
+					// The observation already reads attgenerated/attidentity;
+					// dropping them here would leave the server unable to tell
+					// a generation expression from a default, because both
+					// arrive through the same slot (F35).
+					Generated: c.Generated, Identity: c.Identity,
 				})
 			}
 			for _, idx := range t.Indexes {
@@ -236,6 +291,7 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 				ot.ForeignKeys = append(ot.ForeignKeys, &codegenpb.ObservedForeignKey{
 					Name: fk.Name, Columns: fk.Columns,
 					TargetTable: fk.TargetTable, TargetColumn: fk.TargetColumn,
+					OnDelete: fk.OnDelete,
 				})
 			}
 			store.Tables = append(store.Tables, ot)

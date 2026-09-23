@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
+	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 )
 
@@ -141,6 +142,20 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 		cancel()
 		if e := verifyErr(res, verr); e != nil {
 			errs = append(errs, fmt.Errorf("eventbus: %w", e))
+		}
+	}
+
+	// Plugin trees. The lock pins the digest of what was fetched; the tree is
+	// committed, so the only thing that can tell an edited one from the one the
+	// version promised is re-hashing it here. Purely local — no console round
+	// trip — and skipped entirely by a project with no git-sourced plugins.
+	if lk, lerr := lockfile.Load(filepath.Join(root, "w17", "lock.yaml")); lerr == nil {
+		if pluginErrs := verifyPluginTrees(root, protoDir, lk.Plugins); len(pluginErrs) > 0 {
+			checked++
+			errs = append(errs, pluginErrs...)
+		} else if hasPinnedPlugins(lk.Plugins) {
+			checked++
+			fmt.Fprintln(out, "verify: plugin trees match their pinned digests")
 		}
 	}
 

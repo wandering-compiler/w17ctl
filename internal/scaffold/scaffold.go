@@ -3,6 +3,7 @@ package scaffold
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -905,3 +906,50 @@ func RelFromProject(abs string) string {
 	}
 	return abs
 }
+
+// PackagePrefixOfDomain reads the package prefix a domain ALREADY declares,
+// from any proto under its directory, and returns "" when there is none.
+//
+// The prefix is derived from the project name — and the doc on
+// ProtoSafePackagePrefix tells operators to shorten it by hand when the
+// derived one is ugly (`e2e` for `e2e_project`). Both halves of that advice
+// are fine; together they are a trap. A project called `marb-finplatform`
+// derives `marb_finplatform`, an operator trims their domain protos to
+// `marb.finplatform.<module>`, and the next `module add` re-derives from the
+// project and scaffolds `marb_finplatform.finplatform.<module>` — a SECOND
+// namespace beside the domain's. Codegen accepts it, so it surfaces in review,
+// or later when somebody adds an event to that module and cannot find the
+// types (marb, 2026-09-23).
+//
+// A scaffolder's job is to match the tree it writes into. What the domain says
+// wins; the project name is the fallback for a domain that says nothing yet.
+func PackagePrefixOfDomain(domainDir, domain string) string {
+	var found string
+	_ = filepath.WalkDir(domainDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".proto") || found != "" {
+			return nil
+		}
+		body, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		m := packageDecl.FindSubmatch(body)
+		if m == nil {
+			return nil
+		}
+		// `<prefix>.<domain>` or `<prefix>.<domain>.<module>` — take
+		// everything before the domain segment. A package that does not
+		// contain the domain at all is somebody else's convention; leave it.
+		parts := strings.Split(string(m[1]), ".")
+		for i, p := range parts {
+			if p == domain && i > 0 {
+				found = strings.Join(parts[:i], ".")
+				return nil
+			}
+		}
+		return nil
+	})
+	return found
+}
+
+var packageDecl = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z0-9_.]+)\s*;`)

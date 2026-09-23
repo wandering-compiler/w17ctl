@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
+	"github.com/wandering-compiler/w17ctl/internal/pluginfetch"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
 )
@@ -76,17 +79,35 @@ func dialCodegen(console string) (codegenpb.CodegenServiceClient, *grpc.ClientCo
 	return cl, conn, nil
 }
 
-// catalogue asks the console what plugins it can serve. Each entry carries the
-// version read from that plugin's OWN manifest, parsed server-side — the client
-// is TOLD the version rather than fetching a manifest to discover it.
-func catalogue(cl codegenpb.CodegenServiceClient) ([]*codegenpb.CataloguePlugin, error) {
-	ctx, cancel := core.ClientCtx()
-	defer cancel()
-	cat, err := cl.ListPluginCatalog(ctx, &codegenpb.ListPluginCatalogRequest{})
+// catalogue reports what the organisation's registry publishes, by reading its
+// tags — one entry per plugin, at its highest release.
+//
+// It used to ask the console, which carried a catalogue compiled into it and
+// answered from that. The console stopped serving plugin trees when a version
+// became a git tag, so the question moved to where the answer now lives. The
+// client does the listing for the same reason it does the fetching: the
+// registry may be a repository only this machine's credentials can reach.
+//
+// Best effort by design. A registry that cannot be reached must not stop
+// `plugin list` from reporting what the LOCK says is installed — that half is
+// local, always available, and usually the half being asked about.
+func catalogue(_ codegenpb.CodegenServiceClient) ([]*codegenpb.CataloguePlugin, error) {
+	repo := pluginsRepo()
+	names, err := pluginfetch.PublishedPlugins(context.Background(), repo)
 	if err != nil {
 		return nil, err
 	}
-	return cat.GetPlugins(), nil
+	out := make([]*codegenpb.CataloguePlugin, 0, len(names))
+	for _, n := range names {
+		v, verr := pluginfetch.LatestVersion(context.Background(), repo, n)
+		if verr != nil {
+			continue
+		}
+		out = append(out, &codegenpb.CataloguePlugin{
+			Name: n, Version: strings.TrimPrefix(v, "v"), Description: repo,
+		})
+	}
+	return out, nil
 }
 
 // catalogueError turns the two refusals a catalogue RPC has that the operator
@@ -116,9 +137,11 @@ func catalogueError(op string, err error) error {
 		return fmt.Errorf("%s: %s\n  fix: `w17ctl plugin list` names what this console serves", op, st.Message())
 	case codes.Unimplemented:
 		return fmt.Errorf(
-			"%s: this console does not serve the plugin catalogue — it is older than this client.\n"+
-				"  why: the catalogue moved out of w17ctl and into the console, so a plugin change\n"+
-				"       reaches you through a console deploy rather than a client release.\n"+
+			"%s: this console is older than this client.\n"+
+				"  why: the client fetches a plugin from its registry and asks the console to\n"+
+				"       validate the manifest before anything is written. That method is missing\n"+
+				"       here, so the console cannot vouch for what was fetched — and installing\n"+
+				"       without it would put an unchecked tree in the project.\n"+
 				"  fix: deploy a console built from this version (or pin an older w17ctl).\n"+
 				"  raw: %s", op, st.Message(),
 		)
@@ -227,18 +250,48 @@ func (c *ListCmd) Run() error {
 //     via EditLock (the server appends + re-signs).
 //  6. Only then rename the staged tree into place.
 type InstallCmd struct {
-	Source  string `arg:"" name:"name|url" help:"Plugin name (the console's catalogue) or URL (v2 — not yet supported)."`
+	Source  string `arg:"" name:"name|repo#tag" help:"Plugin name (the console's catalogue), or a release in a repository: <repo>#<plugin>/<version>."`
 	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default. Serves the plugin catalogue + validates the manifest."`
 }
 
 func (c *InstallCmd) Run() error {
-	if isPluginURL(c.Source) {
+	var git *gitSpec
+	if looksLikeGitSpec(c.Source) {
+		spec, err := parseGitSpec(c.Source)
+		if err != nil {
+			return fmt.Errorf("plugin install: %w", err)
+		}
+		git = &spec
+	} else if name := strings.TrimSpace(c.Source); name != "" && !isPluginURL(name) {
+		// A bare name is the organisation's own registry with the URL filled
+		// in, resolved to its highest published release. Same mechanism, same
+		// pin recorded — the only difference is who typed the repository.
+		repo := pluginsRepo()
+		version, verr := pluginfetch.LatestVersion(context.Background(), repo, name)
+		if verr != nil {
+			// The hint belongs ONLY to a registry that answered. Telling
+			// someone whose remote is unreachable to go and read a list they
+			// also cannot fetch sends them at the wrong problem.
+			if errors.Is(verr, pluginfetch.ErrNoReleases) {
+				return fmt.Errorf("plugin install: %w\n  fix: `w17ctl plugin list` names what this registry publishes", verr)
+			}
+			return fmt.Errorf("plugin install: %w", verr)
+		}
+		git = &gitSpec{Repo: repo, Plugin: name, Version: version}
+	} else if isPluginURL(c.Source) {
 		return fmt.Errorf(
-			"plugin install: URL plugins are a v2 feature; install by name from the console's catalogue (see `w17ctl plugin list`).\n"+
-				"  got: %s", c.Source,
+			"plugin install: a repository install names the RELEASE too — `<repo>#<plugin>/<version>`.\n"+
+				"  got:  %s\n"+
+				"  want: %s#auth/v0.1.0-rc.1\n"+
+				"  why:  a plugin version is a git tag, so the thing to install is a tag and not a repository",
+			c.Source, strings.TrimSuffix(strings.TrimSpace(c.Source), "/"),
 		)
 	}
+
 	name := strings.TrimSpace(c.Source)
+	if git != nil {
+		name = git.Plugin
+	}
 	if name == "" {
 		return fmt.Errorf("plugin install: name argument is required")
 	}
@@ -282,17 +335,41 @@ func (c *InstallCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	manifestData, err := fetchPluginInto(cl, name, staging)
-	if err != nil {
-		_ = os.RemoveAll(staging)
-		return catalogueError("plugin install", err)
+	var (
+		manifestData []byte
+		fetched      pluginfetch.Fetched
+		manifestFrom = "console:" + name + "/plugin.yaml"
+	)
+	if git != nil {
+		// The client fetches; the console still decides. Cloning is transport,
+		// the same class of work as dialling or writing files — what stays
+		// server-side is every judgement about the tree, starting with the
+		// manifest check two statements below.
+		fetched, err = pluginfetch.Fetch(context.Background(),
+			pluginfetch.Source{Repo: git.Repo, Plugin: git.Plugin, Version: git.Version}, staging)
+		if err != nil {
+			_ = os.RemoveAll(staging)
+			return fmt.Errorf("plugin install: %w", err)
+		}
+		manifestData, err = os.ReadFile(filepath.Join(staging, "plugin.yaml"))
+		if err != nil {
+			_ = os.RemoveAll(staging)
+			return fmt.Errorf("plugin install: read fetched manifest: %w", err)
+		}
+		manifestFrom = git.Repo + "#" + git.Tag() + "/plugin.yaml"
+	} else {
+		manifestData, err = fetchPluginInto(cl, name, staging)
+		if err != nil {
+			_ = os.RemoveAll(staging)
+			return catalogueError("plugin install", err)
+		}
 	}
 
 	// Parse + validate the manifest + run the requirement check server-side.
-	manifest, err := inspectManifest(cl, manifestData, "console:"+name+"/plugin.yaml", installed)
+	manifest, err := inspectManifest(cl, manifestData, manifestFrom, installed)
 	if err != nil {
 		_ = os.RemoveAll(staging)
-		return err
+		return catalogueError("plugin install", err)
 	}
 	if manifest.GetName() != name {
 		_ = os.RemoveAll(staging)
@@ -315,9 +392,7 @@ func (c *InstallCmd) Run() error {
 	}
 	newBytes, err := core.EditLock(c.Console, lockBytes, &codegenpb.LockEditIntent{
 		Intent: &codegenpb.LockEditIntent_InstallPlugin{
-			InstallPlugin: &codegenpb.InstallPluginIntent{
-				Name: manifest.GetName(), Version: manifest.GetVersion(), Source: "internal",
-			},
+			InstallPlugin: installIntent(manifest.GetName(), manifest.GetVersion(), git, fetched),
 		},
 	})
 	if err != nil {
@@ -334,7 +409,12 @@ func (c *InstallCmd) Run() error {
 		_ = os.RemoveAll(staging)
 		return fmt.Errorf("plugin install: install staged tree for %s: %w", name, err)
 	}
-	fmt.Fprintf(core.Stdout, "plugin install: %s@%s → %s (lock re-signed)\n", manifest.GetName(), manifest.GetVersion(), targetDir)
+	if git != nil {
+		fmt.Fprintf(core.Stdout, "plugin install: %s@%s → %s (from %s at %s, lock re-signed)\n",
+			manifest.GetName(), manifest.GetVersion(), targetDir, git.Tag(), shortSHA(fetched.SHA))
+	} else {
+		fmt.Fprintf(core.Stdout, "plugin install: %s@%s → %s (lock re-signed)\n", manifest.GetName(), manifest.GetVersion(), targetDir)
+	}
 	printActivationHint(manifest.GetName())
 	return nil
 }
@@ -404,6 +484,7 @@ func firstSentence(s string) string {
 type UpdateCmd struct {
 	Name    string `arg:"" optional:"" name:"name" help:"Installed plugin to refresh. Mutually exclusive with --all."`
 	All     bool   `name:"all" help:"Update every plugin recorded in lock.plugins[]."`
+	To      string `name:"to" placeholder:"vX.Y.Z" help:"For a git-sourced plugin: the release to move to. Omitted, the highest published one is used (release candidates included). Refused with --all, which spans plugins whose version lines are independent."`
 	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default. Serves the plugin catalogue + validates the manifest."`
 }
 
@@ -413,6 +494,11 @@ func (c *UpdateCmd) Run() error {
 	}
 	if !c.All && c.Name == "" {
 		return fmt.Errorf("plugin update: pass a plugin name or --all")
+	}
+	if c.To != "" && c.All {
+		return fmt.Errorf(
+			"plugin update: --to names ONE release, and --all spans plugins whose version lines are independent\n"+
+				"  fix: `w17ctl plugin update <name> --to %s`", c.To)
 	}
 
 	root, err := core.FindProjectRoot()
@@ -463,11 +549,17 @@ func (c *UpdateCmd) Run() error {
 			removeStaging()
 			return fmt.Errorf("plugin update: %q is not installed (run `w17ctl plugin install %s` first)", name, name)
 		}
-		if existing.Source != "internal" && existing.Source != "" {
-			// URL plugins land in v2; the console's catalogue can't
-			// refresh them. Skip with a warning rather than abort
-			// so --all still updates everything it can.
-			fmt.Fprintf(core.Stdout, "plugin update: skipping %s (source=%s; only catalogue plugins can be refreshed through the console)\n", name, existing.Source)
+		// `internal` and `git` are now the same road. `internal` always meant
+		// "the organisation's own catalogue", and that catalogue became the
+		// organisation's own REGISTRY — so an update refreshes it by name from
+		// there and records the pin it did not have before. Every plugin
+		// installed before the registry existed migrates on its first update,
+		// which is the only moment the information needed to pin it is in hand.
+		isGit := existing.Source == "git" || existing.Source == "internal" || existing.Source == ""
+		if !isGit {
+			// A source nothing here can refresh (a `url:` entry). Skip with a
+			// warning rather than abort, so --all still updates what it can.
+			fmt.Fprintf(core.Stdout, "plugin update: skipping %s (source=%s; only catalogue and git plugins can be refreshed)\n", name, existing.Source)
 			continue
 		}
 
@@ -476,21 +568,39 @@ func (c *UpdateCmd) Run() error {
 		if err != nil {
 			return err
 		}
-		manifestData, err := fetchPluginInto(cl, name, staging)
-		if err != nil {
-			_ = os.RemoveAll(staging)
-			removeStaging()
-			return catalogueError("plugin update", err)
+		var (
+			manifestData []byte
+			fetched      pluginfetch.Fetched
+			manifestFrom = "console:" + name + "/plugin.yaml"
+		)
+		if isGit {
+			manifestData, fetched, err = updateFromGit(c.To, name, existing, staging)
+			if err != nil {
+				_ = os.RemoveAll(staging)
+				removeStaging()
+				return err
+			}
+			// fetched.Repo, not existing.Git.Repo: a plugin migrating from
+			// `internal` has no pin yet, so the lock's is nil and reaching
+			// through it panics. What was actually fetched always knows.
+			manifestFrom = fetched.Repo + "#" + fetched.Ref + "/plugin.yaml"
+		} else {
+			manifestData, err = fetchPluginInto(cl, name, staging)
+			if err != nil {
+				_ = os.RemoveAll(staging)
+				removeStaging()
+				return catalogueError("plugin update", err)
+			}
 		}
 		// Registered for cleanup only once the fetch has produced a tree, so
 		// the failure arms above don't have to distinguish "staged" from
 		// "about to be staged".
 		swaps = append(swaps, stagedSwap{target: target, staging: staging})
 
-		manifest, err := inspectManifest(cl, manifestData, "console:"+name+"/plugin.yaml", installed)
+		manifest, err := inspectManifest(cl, manifestData, manifestFrom, installed)
 		if err != nil {
 			removeStaging()
-			return err
+			return catalogueError("plugin update", err)
 		}
 		if manifest.GetName() != name {
 			removeStaging()
@@ -501,10 +611,13 @@ func (c *UpdateCmd) Run() error {
 		}
 
 		// Queue the version bump for the batched EditLock.
-		pending = append(pending, &codegenpb.PluginVersion{
-			Name: name, Version: manifest.GetVersion(), Source: "internal",
-		})
-		fmt.Fprintf(core.Stdout, "plugin update: %s → %s\n", name, manifest.GetVersion())
+		pending = append(pending, updateIntent(name, manifest.GetVersion(), isGit, existing, fetched))
+		if isGit {
+			fmt.Fprintf(core.Stdout, "plugin update: %s → %s (%s at %s)\n",
+				name, manifest.GetVersion(), fetched.Ref, shortSHA(fetched.SHA))
+		} else {
+			fmt.Fprintf(core.Stdout, "plugin update: %s → %s\n", name, manifest.GetVersion())
+		}
 	}
 
 	if len(pending) == 0 {

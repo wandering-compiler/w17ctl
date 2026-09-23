@@ -135,6 +135,22 @@ func (p *stdinPrompter) Select(question string, options []string, defaultValue s
 // the trailing Enter without printing a newline, so we emit one. When stdin
 // is not a terminal (piped input / tests), it falls back to a buffered line
 // read so scripted/test input still works.
+//
+// ⚠️ The value is returned VERBATIM. A password is an opaque byte string: the
+// only thing anyone may remove is the line terminator the reader itself added.
+//
+// It used to run strings.TrimSpace, which also strips leading and trailing
+// whitespace from the PASSWORD — and every other way of setting one keeps it.
+// So an account registered through a web form with a leading or trailing space
+// could never be signed into from this CLI: the form stored a hash of what was
+// typed, the terminal sent something shorter, and the console answered
+// `invalid credentials` with no way for anybody to see why. Found onboarding a
+// colleague who had registered on the web and could not log in from w17ctl
+// (2026-09-23).
+//
+// Trimming a password can only ever turn a correct one into a wrong one; it
+// cannot turn a wrong one into a correct one. There was nothing on the other
+// side of that trade.
 func (p *stdinPrompter) Password(question string) (string, error) {
 	fmt.Fprintf(p.out, "%s: ", question)
 	if p.file != nil && term.IsTerminal(int(p.file.Fd())) {
@@ -143,11 +159,13 @@ func (p *stdinPrompter) Password(question string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read password: %w", err)
 		}
-		return strings.TrimSpace(string(b)), nil
+		// ReadPassword stops at the Enter and does not include it.
+		return string(b), nil
 	}
 	line, err := p.in.ReadString('\n')
 	if err != nil && err != io.EOF {
 		return "", fmt.Errorf("read password: %w", err)
 	}
-	return strings.TrimSpace(line), nil
+	// Only the line terminator this read added — not the password's own edges.
+	return strings.TrimRight(line, "\r\n"), nil
 }
