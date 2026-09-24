@@ -1,9 +1,11 @@
 package verify
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	"github.com/wandering-compiler/sdk/go/tooling/plugindigest"
@@ -36,6 +38,41 @@ import (
 // an edit someone forgot. The value it compares against is signed — the
 // console signs the lock — so the pin itself cannot be quietly rewritten to
 // match a doctored tree without breaking the signature this same gate checks.
+// pluginTreeError marks a refusal about the plugin TREE on disk rather than
+// about a lock that drifted. The distinction is not cosmetic: the headline
+// above these errors used to advise `w17ctl codegen`, which cannot fix any of
+// them — the fix is a `plugin update`, four lines further down, and advice
+// people act on first is advice that has to apply (deinvo, 2026-09-23).
+//
+// A TYPE rather than a match on the message text: a classifier keyed on a
+// phrase goes quietly generic the day somebody rewords the error, which looks
+// exactly like no classifier at all.
+type pluginTreeError struct {
+	plugin string
+	cause  error
+}
+
+func (e *pluginTreeError) Error() string { return e.cause.Error() }
+func (e *pluginTreeError) Unwrap() error { return e.cause }
+
+// PluginTreeDrift returns the plugins whose TREES are at fault, and true only
+// when EVERY error is one of those — a mixed batch keeps the general headline,
+// because advice that fits half the list is the problem being fixed.
+func PluginTreeDrift(errs []error) ([]string, bool) {
+	if len(errs) == 0 {
+		return nil, false
+	}
+	var names []string
+	for _, err := range errs {
+		var pe *pluginTreeError
+		if !errors.As(err, &pe) {
+			return nil, false
+		}
+		names = append(names, pe.plugin)
+	}
+	return names, true
+}
+
 func verifyPluginTrees(root, protoDir string, plugins []lockfile.Plugin) []error {
 	var errs []error
 	for _, p := range plugins {
@@ -47,19 +84,19 @@ func verifyPluginTrees(root, protoDir string, plugins []lockfile.Plugin) []error
 		}
 		dir := filepath.Join(root, protoDir, "plugins", p.Name)
 		if _, err := os.Stat(dir); err != nil {
-			errs = append(errs, fmt.Errorf(
+			errs = append(errs, &pluginTreeError{plugin: p.Name, cause: fmt.Errorf(
 				"plugin %s: the lock records it installed at %s (%s) but the tree is not there\n"+
 					"  fix: `w17ctl plugin install %s`, or remove the lock entry if it should not be installed",
-				p.Name, p.Git.Ref, shortRef(p.Git.Commit), p.Name))
+				p.Name, p.Git.Ref, shortRef(p.Git.Commit), p.Name)})
 			continue
 		}
 		got, err := plugindigest.Of(dir)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("plugin %s: %w", p.Name, err))
+			errs = append(errs, &pluginTreeError{plugin: p.Name, cause: fmt.Errorf("plugin %s: %w", p.Name, err)})
 			continue
 		}
 		if got != p.Git.Digest {
-			errs = append(errs, fmt.Errorf(
+			errs = append(errs, &pluginTreeError{plugin: p.Name, cause: fmt.Errorf(
 				"plugin %s: the committed tree is not the one %s publishes\n"+
 					"  pinned:  %s\n"+
 					"  on disk: %s\n"+
@@ -68,7 +105,7 @@ func verifyPluginTrees(root, protoDir string, plugins []lockfile.Plugin) []error
 					"       another version — a plugin is generated output and is not edited here\n"+
 					"  fix: `w17ctl plugin update %s --to %s` to restore it, or publish the change\n"+
 					"       as a release and pin that",
-				p.Name, p.Git.Ref, p.Git.Digest, got, p.Name, versionOf(p.Git.Ref)))
+				p.Name, p.Git.Ref, p.Git.Digest, got, p.Name, versionOf(p.Git.Ref))})
 		}
 	}
 	return errs
@@ -105,4 +142,14 @@ func hasPinnedPlugins(plugins []lockfile.Plugin) bool {
 		}
 	}
 	return false
+}
+
+// pluginList renders the plugin names for a headline: "plugin auth" for one,
+// "plugins auth, payment" for several. The count is the first thing a reader
+// needs and a bare join does not carry it.
+func pluginList(names []string) string {
+	if len(names) == 1 {
+		return "plugin " + names[0]
+	}
+	return "plugins " + strings.Join(names, ", ")
 }

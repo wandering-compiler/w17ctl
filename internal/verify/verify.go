@@ -205,6 +205,17 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 				"the console needs redeploying: %w",
 				strings.Join(denied, ", "), errors.Join(errs...))
 		}
+		// Same shape one floor further out: a plugin TREE that disagrees with
+		// its pin is not lock drift, and `codegen` will not touch it. The fix
+		// is a `plugin update`, which the detail already names — the headline
+		// used to send people at the wrong one first (deinvo, 2026-09-23).
+		if names, only := PluginTreeDrift(errs); only {
+			return fmt.Errorf("verify: %s — the committed plugin tree is not the one the lock pins, "+
+				"so this is not lock drift and `codegen` will not repair it. "+
+				"Restore the tree with `w17ctl plugin update` (each line below names its own version), "+
+				"or publish the change as a release and pin that: %w",
+				pluginList(names), errors.Join(errs...))
+		}
 		return fmt.Errorf("verify: drift detected — re-run `w17ctl codegen` and commit the locks: %w", errors.Join(errs...))
 	}
 	fmt.Fprintf(out, "verify: ok (%d lock(s) in sync with proto)\n", checked)
