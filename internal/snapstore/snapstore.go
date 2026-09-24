@@ -11,6 +11,16 @@
 // Snapshotter + file extension via Conn; snapstore knows nothing about
 // SQL vs gob.
 //
+// ONE exception, added 2026-09-24 and kept narrow: a Conn may ask for its
+// dump to be REFUSED when nothing in it creates an object (Conn.RequireObjects
+// → dumpcheck.go). The markers are SQL, so this file's "knows nothing about
+// SQL vs gob" is no longer quite true — but the DECISION stays with the caller,
+// which is the half that matters: snapstore never infers from a DSN or an
+// extension which rule applies. It was allowed in because the alternative is
+// worse. A dump that succeeds and contains nothing was written out as a valid
+// snapshot, and reconcile then wiped the store on the strength of it; marb lost
+// six dev databases to eleven silently-empty snapshots (#68).
+//
 // Snapshots are disposable dev scratch, never a backup/DR mechanism —
 // the whole `w17/tmp/` tree is git-ignored and freely evictable.
 package snapstore
@@ -18,6 +28,7 @@ package snapstore
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -67,6 +78,20 @@ type Conn struct {
 	// branch switch. A line printed where nothing is dumped is one people
 	// learn to skip.
 	FallbackNote string
+
+	// RequireObjects makes an object-less dump a REFUSAL rather than a file.
+	//
+	// True for a store whose snapshot is SQL, where a dump that creates
+	// nothing means the dump did not reach the store it names. False for the
+	// gob-carried dialects (redis, nats, s3) and for sqlite's file copy, where
+	// "no CREATE TABLE" says nothing at all — a check applied to those would
+	// reject every healthy snapshot they take.
+	//
+	// A field rather than something derived from Ext inside this package,
+	// because the mapping from a DSN to its snapshot carrier belongs to the
+	// factory that built the Snapshotter, and a second copy of it here would
+	// be free to disagree. [SnapshotConns] sets it.
+	RequireObjects bool
 }
 
 func (c Conn) file() string { return c.Name + "." + c.Ext }
@@ -226,7 +251,18 @@ func (s *Store) saveOneTo(ctx context.Context, dbDir string, c Conn) error {
 		return fmt.Errorf("snapstore Save %s: temp: %w", c.Name, err)
 	}
 	tmpPath := tmp.Name()
-	if err := c.Snapshotter.Dump(ctx, tmp); err != nil {
+	// Interposed only where the answer is read. A Snapshotter that needs the
+	// concrete destination (sqlite copies a file) keeps getting it, and a
+	// scanner whose result nothing consults is a wrapper for its own sake.
+	var (
+		watch *objectWatch
+		sink  io.Writer = tmp
+	)
+	if c.RequireObjects {
+		watch = newObjectWatch(tmp)
+		sink = watch
+	}
+	if err := c.Snapshotter.Dump(ctx, sink); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
 		if c.FallbackNote != "" {
@@ -237,6 +273,24 @@ func (s *Store) saveOneTo(ctx context.Context, dbDir string, c Conn) error {
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("snapstore Save %s: close: %w", c.Name, err)
+	}
+	// A dump that SUCCEEDED and created nothing is not a snapshot of a store
+	// that holds anything, and accepting one is how reconcile came to wipe a
+	// database on the strength of a 722-byte file (marb #68).
+	//
+	// Refused rather than warned: the caller's next act is to overwrite this
+	// store, licensed by this file existing. A warning in that position is a
+	// line in a build log somebody reads afterwards.
+	//
+	// A genuinely EMPTY store hits this too, and takes `--no-snapshot` — which
+	// says out loud that the branch's data stops being recoverable, and for an
+	// empty store costs nothing. That is the right way round: the price of the
+	// check falls on the case with nothing to lose.
+	if watch != nil && !watch.sawObject() {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("snapstore Save %s: the dump came back with no tables, sequences or views in it — "+
+			"that is not a snapshot of a store holding a schema, and the switch would overwrite this store on the strength of it. "+
+			"Either the store really is empty (then `--no-snapshot` is the honest way past), or the dump reached a DIFFERENT database than the one this store names", c.Name)
 	}
 	if err := os.Rename(tmpPath, final); err != nil {
 		_ = os.Remove(tmpPath)

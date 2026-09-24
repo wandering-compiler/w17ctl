@@ -110,6 +110,25 @@ func catalogue(_ codegenpb.CodegenServiceClient) ([]*codegenpb.CataloguePlugin, 
 	return out, nil
 }
 
+// pluginVersionIsBehind reports whether `installed` is strictly older than the
+// version the registry serves. Both are OUR tag format, so the ordering is
+// [pluginfetch.CompareVersions] — which selects prereleases, the only kind of
+// release a plugin has today.
+//
+// It answers false whenever there is nothing to compare — an empty served
+// version (the registry does not carry this plugin), an empty installed
+// version, or two equal ones. An unparseable version sorts BELOW every real
+// one in that ordering, so an installed copy whose version is not a version
+// reads as behind; that is the right advice and not a guess. A listing that
+// cries wolf is not read, which is the failure mode this row exists to fix, so
+// the only thing it must never do is call a current copy outdated.
+func pluginVersionIsBehind(installed, served string) bool {
+	if installed == "" || served == "" || installed == served {
+		return false
+	}
+	return pluginfetch.CompareVersions(installed, served) < 0
+}
+
 // catalogueError turns the two refusals a catalogue RPC has that the operator
 // can act on into CLI sentences.
 //
@@ -176,11 +195,20 @@ func (c *ListCmd) Run() error {
 		return nil
 	}
 
-	// Everything the console serves — always listed, so the catalogue version
-	// (which install would record) is visible next to what is installed.
+	// Everything the registry serves — always listed, so the version install
+	// would record is visible next to what is installed.
+	//
+	// Both versions are kept, because an installed plugin's own version is not
+	// the answer to "am I current". This listing used to OVERWRITE the served
+	// version with the installed one, so the only row that could ever reveal a
+	// newer release was a row for a plugin nobody had installed yet — and the
+	// comment above it claimed the opposite. That is the defect #57 was made
+	// of: a fix released six weeks earlier, reported as live, by a consumer
+	// whose tooling had no way to say their copy was behind.
 	type row struct {
 		name      string
-		version   string
+		version   string // what is installed, or what the registry serves when nothing is
+		served    string // what the registry serves; "" when it does not carry this plugin
 		source    string
 		desc      string
 		installed bool
@@ -188,7 +216,7 @@ func (c *ListCmd) Run() error {
 	rows := []row{}
 	seen := map[string]bool{}
 	for _, p := range served {
-		r := row{name: p.GetName(), version: p.GetVersion(), source: "console", desc: p.GetDescription()}
+		r := row{name: p.GetName(), version: p.GetVersion(), served: p.GetVersion(), source: "console", desc: p.GetDescription()}
 		if inst, ok := installed[p.GetName()]; ok {
 			r.installed = true
 			r.version = inst.Version
@@ -218,8 +246,18 @@ func (c *ListCmd) Run() error {
 		state := "available"
 		if r.installed {
 			state = "installed"
+			if pluginVersionIsBehind(r.version, r.served) {
+				state = "outdated"
+			}
 		}
 		fmt.Fprintf(core.Stdout, "%-20s %-12s %-9s (%s)\n", r.name, r.version, state, r.source)
+		// Name the release `plugin update` would bring, and only when it is
+		// genuinely ahead. A registry BEHIND the installed copy is a local or
+		// vendored tree, not a problem, and calling that "outdated" would send
+		// someone to downgrade.
+		if state == "outdated" {
+			fmt.Fprintf(core.Stdout, "  registry serves %s — `w17ctl plugin update %s`\n", r.served, r.name)
+		}
 		// The description answers "what is this for", which is otherwise only
 		// discoverable by installing the plugin and reading its manifest.
 		if d := firstSentence(r.desc); d != "" {

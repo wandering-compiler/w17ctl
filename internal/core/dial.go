@@ -60,6 +60,10 @@ func realDialCodegen(addr string) (codegenpb.CodegenServiceClient, *grpc.ClientC
 		// Always TLS (dev console is fronted by a TLS-terminating proxy).
 		// See ConsoleTransportCreds.
 		ConsoleTransportCreds(addr),
+		// Records every console call when W17_RECORD_CONSOLE_CALLS is set; a
+		// no-op otherwise. See callrecord.go for why the role needs this.
+		recordUnaryCalls(),
+		recordStreamCalls(),
 		// Attach the logged-in bearer (no-op when not logged in). See auth.go.
 		grpc.WithPerRPCCredentials(bearerPerRPC{addr: addr}),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(codegenMaxRecvMsgSize)),
@@ -94,6 +98,10 @@ func realDialMigrationFetch(addr string) (applyfetchpb.MigrationFetchClient, *gr
 		// Always TLS (dev console is fronted by a TLS-terminating proxy).
 		// See ConsoleTransportCreds.
 		ConsoleTransportCreds(addr),
+		// Records every console call when W17_RECORD_CONSOLE_CALLS is set; a
+		// no-op otherwise. See callrecord.go for why the role needs this.
+		recordUnaryCalls(),
+		recordStreamCalls(),
 		// Attach the logged-in bearer (no-op when not logged in). See auth.go.
 		grpc.WithPerRPCCredentials(bearerPerRPC{addr: addr}),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(codegenMaxRecvMsgSize)),
@@ -127,6 +135,10 @@ func realDialFixtureFetch(addr string) (applyfetchpb.FixtureFetchClient, *grpc.C
 		// Always TLS (dev console is fronted by a TLS-terminating proxy).
 		// See ConsoleTransportCreds.
 		ConsoleTransportCreds(addr),
+		// Records every console call when W17_RECORD_CONSOLE_CALLS is set; a
+		// no-op otherwise. See callrecord.go for why the role needs this.
+		recordUnaryCalls(),
+		recordStreamCalls(),
 		// Attach the logged-in bearer (no-op when not logged in). See auth.go.
 		grpc.WithPerRPCCredentials(bearerPerRPC{addr: addr}),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(codegenMaxRecvMsgSize)),
@@ -160,6 +172,10 @@ func realDialProjectRegistry(addr string) (w17registrypb.ProjectRegistryClient, 
 		// Always TLS (dev console is fronted by a TLS-terminating proxy).
 		// See ConsoleTransportCreds.
 		ConsoleTransportCreds(addr),
+		// Records every console call when W17_RECORD_CONSOLE_CALLS is set; a
+		// no-op otherwise. See callrecord.go for why the role needs this.
+		recordUnaryCalls(),
+		recordStreamCalls(),
 		// Attach the logged-in bearer (no-op when not logged in). See auth.go.
 		grpc.WithPerRPCCredentials(bearerPerRPC{addr: addr}),
 		grpc.WithDefaultCallOptions(
@@ -193,6 +209,10 @@ func realDialAuthService(addr string) (consolerpcpb.AuthServiceClient, *grpc.Cli
 		// Always TLS (dev console is fronted by a TLS-terminating proxy). See
 		// ConsoleTransportCreds. NO bearerPerRPC — see the doc above.
 		ConsoleTransportCreds(addr),
+		// Records every console call when W17_RECORD_CONSOLE_CALLS is set; a
+		// no-op otherwise. See callrecord.go for why the role needs this.
+		recordUnaryCalls(),
+		recordStreamCalls(),
 	)
 	if err != nil {
 		return nil, nil, err

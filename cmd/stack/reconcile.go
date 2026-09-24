@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -196,7 +197,29 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 			*quiesced = (*quiesced)[:0]
 			return cc.start(svcs)
 		},
-		Dump:    func(ctx context.Context, branch string) error { return st.Save(ctx, branch, conns) },
+		// A snapshot that does not cover every store is not a snapshot of this
+		// project, and until 2026-09-24 a skipped store only printed a line
+		// (above) before the switch went ahead anyway.
+		//
+		// What that produced: a branch directory holding one of two stores,
+		// which `Has` — it stats the DIRECTORY — reports as a snapshot. The
+		// switch proceeds, the uncovered store is overwritten with nothing
+		// standing behind it, and coming back to that branch fails at restore
+		// with `open …/authplatform-postgres.sql: no such file or directory`.
+		// marb had six of those directories (#68).
+		//
+		// Refused HERE rather than inside snapstore because this is the only
+		// place that knows a store was left out — snapstore is handed the conns
+		// that survived and cannot tell a two-store project from a one-store
+		// one. The refusal reaches the caller as a failed Dump, which stops the
+		// switch before anything changes and prints the two ways on.
+		Dump: func(ctx context.Context, branch string) error {
+			if len(skipped) > 0 {
+				return fmt.Errorf("%d of this project's stores could not be snapshotted (%s), so the snapshot would cover only %d of them — a partial snapshot is not one, and switching on it loses whatever the uncovered store holds",
+					len(skipped), strings.Join(skipped, "; "), len(conns))
+			}
+			return st.Save(ctx, branch, conns)
+		},
 		Restore: func(ctx context.Context, branch string) error { return st.Load(ctx, branch, conns) },
 		BuildFresh: func(ctx context.Context) error {
 			// Fresh build: wipe each store IN PLACE (narrow — only the
@@ -330,13 +353,42 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 		return nil
 	}
 
-	// Connect the local store first (the dev-side thing most likely
-	// misconfigured), then the console renderer.
+	// Connect the FIRST local store first (the dev-side thing most likely
+	// misconfigured), then the console renderer. The others are opened on
+	// demand below — a project whose second store is only used by a domain
+	// with no fixtures should not need it reachable.
 	conn, err := pgx.Connect(ctx, pgDSN)
 	if err != nil {
 		return fmt.Errorf("seed fixtures: dial postgres: %w", err)
 	}
 	defer func() { _ = conn.Close(ctx) }()
+
+	// One connection per store, and the store is named by the RENDERER.
+	//
+	// Every domain's fixtures used to go through `pgDSN` — whichever postgres
+	// target came first. With two postgres stores that seeded the second
+	// domain's rows into the first domain's database: `relation "auth_role"
+	// does not exist` where the table was absent, and a silent write into the
+	// wrong store where a same-named table was there (marb #67, marbai-04 §3).
+	//
+	// The client cannot work out the mapping — it uploads the IR as opaque
+	// bytes and never decodes it — so the console returns the connection name
+	// alongside the statements, read from the domain-filtered schema.
+	dsnByConn := map[string]string{}
+	for _, sp := range specs {
+		if d, ok := codegen.DialectFromConnectionName(sp.Connection); ok && d == "postgres" {
+			dsnByConn[sp.Connection] = sp.DSN
+		}
+	}
+	open := map[string]*pgx.Conn{pgDSN: conn}
+	defer func() {
+		for dsn, c := range open {
+			if dsn != pgDSN {
+				_ = c.Close(ctx)
+			}
+		}
+	}()
+	warnedUnnamed := false
 
 	addr, err := core.ResolveConsoleAddr(console)
 	if err != nil {
@@ -378,7 +430,35 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 		if len(stmts) == 0 {
 			continue
 		}
-		if err := applySeedStmts(ctx, conn, stmts); err != nil {
+		// Where these rows go. An empty name is an OLD console: keep today's
+		// behaviour rather than change what it does under the operator, but
+		// say so — on a multi-store project that silence is the defect.
+		target := resp.GetConnection()
+		dsn := pgDSN
+		switch target {
+		case "":
+			if !warnedUnnamed && len(dsnByConn) > 1 {
+				warnedUnnamed = true
+				logf("reconcile: this console does not say which store a fixture belongs to, so all %d domains are seeded through %q — "+
+					"on a project with more than one postgres store that is how a domain's rows land in another domain's database. Deploy a console built from this version.",
+					len(dsnByConn), firstPostgresConnName(specs))
+			}
+		default:
+			d, rerr := seedTargetDSN(target, dsnByConn)
+			if rerr != nil {
+				return fmt.Errorf("seed fixtures %s/%s: %w", s.domain, disp, rerr)
+			}
+			dsn = d
+		}
+		c, ok := open[dsn]
+		if !ok {
+			c, err = pgx.Connect(ctx, dsn)
+			if err != nil {
+				return fmt.Errorf("seed fixtures %s/%s: dial %s: %w", s.domain, disp, target, err)
+			}
+			open[dsn] = c
+		}
+		if err := applySeedStmts(ctx, c, stmts); err != nil {
 			return fmt.Errorf("seed fixtures %s/%s: apply: %w", s.domain, disp, err)
 		}
 		rows += len(stmts)
@@ -480,4 +560,45 @@ func firstPostgresDSN(specs []factory.TargetSpec) string {
 		}
 	}
 	return ""
+}
+
+// firstPostgresConnName is firstPostgresDSN's companion, for a message that
+// names the store rather than printing a DSN (which carries a password).
+func firstPostgresConnName(specs []factory.TargetSpec) string {
+	for _, s := range specs {
+		if d, ok := codegen.DialectFromConnectionName(s.Connection); ok && d == "postgres" {
+			return s.Connection
+		}
+	}
+	return ""
+}
+
+// sortedKeys renders a map's keys in a stable order, so a refusal naming the
+// available targets does not shuffle between runs.
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// seedTargetDSN resolves the store a rendered fixture belongs to.
+//
+// Separated from the loop so the decision can be driven without a live
+// postgres: it is the whole of marb #67, and a fix nothing exercises is the
+// shape that let the defect ship.
+//
+// A named connection with no matching target is a REFUSAL, not a fallback to
+// the default store. Falling back is what the old code did implicitly, and it
+// is how a domain's rows reached another domain's database — silently, where a
+// table of the same name happened to exist.
+func seedTargetDSN(target string, dsnByConn map[string]string) (string, error) {
+	if dsn, ok := dsnByConn[target]; ok {
+		return dsn, nil
+	}
+	return "", fmt.Errorf("the schema puts this domain on connection %q, and no postgres target names it (targets: %s) — "+
+		"pass it with `--target %s=<dsn>`, or the rows would go to a store that is not this domain's",
+		target, strings.Join(sortedKeys(dsnByConn), ", "), target)
 }

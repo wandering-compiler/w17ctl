@@ -89,6 +89,34 @@ func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 	default:
 		return nil, fmt.Sprintf("%q has no in-container dump route", u.Scheme)
 	}
+	// ⛔ The DSN must address THIS machine, and nothing checked that until
+	// 2026-09-24.
+	//
+	// This route matches a container by the PORT the caller is dialling, on the
+	// premise that the port is one the host publishes. The host half of the DSN
+	// was never consulted — so a DSN naming a docker-network service
+	// (`finplatform-postgres:5432`) or any other address matched whatever
+	// happened to publish those digits locally, and the dump then ran inside
+	// THAT container against ITS OWN server (the DSN's host is rewritten to
+	// 127.0.0.1 below). When both servers hold a database of the same name,
+	// `pg_dump` connects, succeeds, and returns the wrong database.
+	//
+	// Measured on two throwaway stores: a DSN for `10.9.9.9:17004` — an address
+	// that exists nowhere on the machine — produced a 724-byte dump with zero
+	// CREATE TABLE and no error, while the correct DSN produced 1277 bytes with
+	// the table in it. marb's silently-empty branch snapshots are 722 bytes
+	// (#68), and this is how a snapshot of a populated store becomes a dump of
+	// somebody else's empty one.
+	//
+	// So: refuse a non-local host rather than guess. The caller falls back to
+	// the host client and fails LOUDLY if it has none, which is a person who
+	// knows their snapshot did not happen — the outcome this route exists to
+	// improve on, and still better than one that silently is not theirs.
+	if !isLocalHost(u.Hostname()) {
+		return nil, fmt.Sprintf(
+			"its DSN names host %q, which is not this machine — the in-container route matches a container by the PUBLISHED port, so it can only be trusted for a local DSN (a remote host with the same port digits would dump a different server's database of the same name)",
+			u.Hostname())
+	}
 	cid := containerPublishing(ctx, u.Port())
 	if cid == "" {
 		return nil, fmt.Sprintf("no running container publishes port %s", u.Port())
@@ -154,6 +182,25 @@ func (s *Snapshotter) Restore(ctx context.Context, r io.Reader) error {
 		return fmt.Errorf("%s Restore (in container %s): %w: %s", s.dialect, s.container, err, stderr.String())
 	}
 	return nil
+}
+
+// isLocalHost reports whether a DSN's host names THIS machine.
+//
+// Only these spellings: the check is what makes "the port is a published host
+// port" safe to assume, so it has to be the set a person can publish onto, not
+// every name that might resolve here. A hostname that resolves to a local
+// address is deliberately NOT accepted — resolution can change under the same
+// DSN, and a snapshot route that is sometimes right is the shape this guard
+// exists to remove.
+//
+// An empty host (a DSN like `postgres:///db?host=/var/run`) is a unix socket,
+// which publishes no port and therefore never reaches here.
+func isLocalHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+		return true
+	}
+	return false
 }
 
 // containerPublishing is the id of the running container that publishes a host

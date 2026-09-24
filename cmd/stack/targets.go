@@ -55,11 +55,19 @@ func SnapshotConns(specs []factory.TargetSpec) (conns []snapstore.Conn, skipped 
 					clientBinFor(s.DSN), why)
 			}
 		}
+		ext := factory.SnapshotExt(s.DSN)
 		conns = append(conns, snapstore.Conn{
-			Name:         s.Connection,
-			Ext:          factory.SnapshotExt(s.DSN),
-			Snapshotter:  snap,
-			FallbackNote: note,
+			Name:        s.Connection,
+			Ext:         ext,
+			Snapshotter: snap,
+			// A SQL dump that creates nothing did not reach the store it
+			// names, and accepting one is how a branch switch came to wipe a
+			// database on the strength of a 722-byte file (marb #68). The
+			// gob-carried stores (redis, nats, s3) and sqlite's file copy
+			// carry no CREATE statements at all, so the question is not
+			// asked of them.
+			RequireObjects: ext == "sql",
+			FallbackNote:   note,
 		})
 	}
 	return conns, skipped, nil
