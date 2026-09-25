@@ -9,6 +9,7 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/containerdump"
 
+	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/devconfig"
 	"github.com/wandering-compiler/w17ctl/internal/localtarget"
 	"github.com/wandering-compiler/w17ctl/internal/snapstore"
@@ -123,9 +124,14 @@ func clientBinFor(dsn string) string {
 // SQLite/NATS/S3 and any connection without an allocated port are
 // skipped and reported in `skipped` so the caller can tell the dev why a
 // store wasn't touched.
-func resolveLocalTargets(connNames []string, p *devconfig.Project) (specs []factory.TargetSpec, skipped []string) {
+func resolveLocalTargetsWith(connNames []string, p *devconfig.Project, published map[string]map[int]int, asked bool) (specs []factory.TargetSpec, skipped []string) {
 	for _, name := range connNames {
-		dsn, skip := localtarget.ResolveDSN(name, p)
+		dsn, skip, note := localtarget.ResolveLive(name, p, published, asked)
+		if note != "" {
+			// Said, never silent: a corrected port that nobody mentions leaves
+			// the stale config in place for the next command to read.
+			fmt.Fprintf(core.Stdout, "stack build: %s\n", note)
+		}
 		if dsn == "" {
 			skipped = append(skipped, skip)
 			continue

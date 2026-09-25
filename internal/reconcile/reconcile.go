@@ -123,8 +123,12 @@ func snapshotRefusal(last string, err error) error {
     - give this machine the store's client (pg_dump / mysqldump), or leave the
       store's container running so the dump can be taken inside it; or
     - `+"`w17ctl stack build --no-snapshot`"+` to switch WITHOUT snapshotting %[1]q.
-      Its dev data stops being recoverable: coming back to that branch later
-      finds no snapshot and builds fresh.`, last, err)
+      ⛔ READ THIS FIRST: it does not only skip the snapshot. With no snapshot to
+      restore, the incoming branch is built FRESH — which WIPES the store you
+      are standing on right now, with everything currently in it. Coming back to
+      %[1]q later finds no snapshot either.
+      It is the right flag when the store is genuinely empty, or when you do not
+      want what is in it. It is not a way to "just get past this".`, last, err)
 }
 
 // Run detects a branch switch and, if any, reconciles the local stores.
@@ -184,7 +188,8 @@ func Run(ctx context.Context, d Deps) (Outcome, error) {
 		// hatch whose output looks like a clean run is how people take one
 		// without knowing they did.
 		out.Unsnapshotted = last
-		logf("NOT snapshotting %q (--no-snapshot) — switching back to it will find no snapshot and build fresh, losing its dev data", last)
+		logf("NOT snapshotting %q (--no-snapshot) — the stores are WIPED and rebuilt from empty, "+
+			"so everything in them right now is lost, and switching back to %q will find no snapshot either", last, last)
 	} else {
 		logf("snapshotting outgoing branch %q", last)
 		if err := d.Dump(ctx, last); err != nil {

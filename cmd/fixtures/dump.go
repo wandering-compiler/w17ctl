@@ -221,8 +221,22 @@ func (c *DumpCmd) resolveDSN() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fixtures dump: load dev config: %w", err)
 	}
-	_, p := cfg.FindByPath(root)
-	dsn, skip := localtarget.ResolveDSN(c.Connection, p)
+	// By the lock's `project:`, like `stack build`. This reads and writes a
+	// STORE, so a duplicate registry entry picked silently is a dump of — or
+	// into — another project's database (marb #75).
+	_, p, rerr := cfg.ResolveProject(lockProjectName(root), root)
+	if rerr != nil {
+		return "", fmt.Errorf("fixtures dump: %w", rerr)
+	}
+	// What compose publishes NOW, not what this machine's config remembers: this
+	// reads and writes a STORE, and a remembered port for a store that is not
+	// running names whatever else took it (marb #75, the half the lock-based
+	// project resolution did not cover).
+	published, asked := localtarget.PublishedPorts(root)
+	dsn, skip, note := localtarget.ResolveLive(c.Connection, p, published, asked)
+	if note != "" {
+		fmt.Fprintf(core.Stdout, "%s: %s\n", "fixtures dump", note)
+	}
 	if dsn == "" {
 		return "", fmt.Errorf("fixtures dump: no DSN for connection %q — %s (or set %s for a remote target)",
 			c.Connection, skip, envVarName(c.Connection))

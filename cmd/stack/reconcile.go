@@ -38,6 +38,32 @@ import (
 // The rule is worth stating because the bypass is so easy to write: nothing
 // in this client runs `docker compose` except through internal/docker, and
 // the reason is that the file selection lives there and nowhere else.
+// composeRunningFn lists the compose services that are RUNNING right now.
+//
+// Separate from composeServicesFn because the two answer different questions and
+// the difference is load-bearing: `config --services` is every service the file
+// DECLARES, and a one-shot seed is declared, ran once and exited. Resuming it
+// would run it again — against the database the switch has just restored, which
+// is how a reconcile could reapply fixture data over a branch's own.
+var composeRunningFn = func(root string) ([]string, error) {
+	out, err := docker.CaptureComposeFn(root, append(docker.FileArgs(root), "ps", "--services", "--status", "running")...)
+	if err != nil {
+		return nil, err
+	}
+	return splitComposeLines(string(out)), nil
+}
+
+// splitComposeLines turns compose's newline-separated service list into names.
+func splitComposeLines(out string) []string {
+	var svcs []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			svcs = append(svcs, s)
+		}
+	}
+	return svcs
+}
+
 var composeServicesFn = func(root string) ([]string, error) {
 	out, err := docker.CaptureComposeFn(root, append(docker.FileArgs(root), "config", "--services")...)
 	if err != nil {
@@ -66,6 +92,62 @@ func nonStoreServices(all []string, storeNames map[string]bool) []string {
 	return out
 }
 
+// runningAmong narrows a list to the services that are running right now.
+//
+// A ctl with no listRunning (a test's hand-built one) falls back to the whole
+// list, which is the pre-existing behaviour: this narrowing removes a resume
+// that should not happen, and failing to narrow is the old bug rather than a new
+// one. An ERROR is different — the daemon answered something unexpected, and
+// resuming a set we could not verify is how a seed gets re-run — so it
+// propagates and the switch stops before anything is stopped.
+func (c composeCtl) runningAmong(services []string) ([]string, error) {
+	if c.listRunning == nil {
+		return services, nil
+	}
+	running, err := c.listRunning()
+	if err != nil {
+		return nil, fmt.Errorf("list running services: %w", err)
+	}
+	live := make(map[string]bool, len(running))
+	for _, r := range running {
+		live[r] = true
+	}
+	var out []string
+	for _, s := range services {
+		if live[s] {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// startArgs is the compose incantation that brings quiesced services back.
+//
+// NOT `compose start`, which is the symmetric counterpart to the `stop` that
+// quiesced them and was the obvious choice. `start` resolves `depends_on` and
+// refuses when a dependency has no container — and a one-shot seed service is
+// exactly that: it ran, exited, and in an ephemeral stack was never created at
+// all. Every example in this repo has one, so the symmetric command failed on
+// the common case:
+//
+//	catalog-storage is missing dependency catalog-storage-seed
+//	reconcile: could not restart the services it stopped: exit status 1
+//
+// `up -d --no-deps --no-recreate` starts the containers that exist and touches
+// nothing else: --no-deps because the dependencies were never stopped, so there
+// is nothing to bring back, and --no-recreate because recreating a store mid
+// reconcile would discard the state the snapshot was just taken from.
+// --no-build keeps a missing image a loud failure rather than a silent rebuild
+// in the middle of a branch switch.
+func startArgs(run func(args []string) error) func(services []string) error {
+	return func(services []string) error {
+		if len(services) == 0 {
+			return nil
+		}
+		return run(append([]string{"up", "-d", "--no-deps", "--no-recreate", "--no-build"}, services...))
+	}
+}
+
 // buildReconcileDeps assembles the branch-switch reconcile effects from
 // the resolved build inputs. Dump/Restore reuse the snapstore +
 // Snapshotters; Quiesce stops the non-store services; BuildFresh wipes
@@ -78,8 +160,10 @@ func nonStoreServices(all []string, storeNames map[string]bool) []string {
 // path), so callers that don't set it keep working.
 type composeCtl struct {
 	listServices func() ([]string, error)
-	stop         func(services []string) error
-	start        func(services []string) error
+	// listRunning is what Resume is built from — see composeRunningFn.
+	listRunning func() ([]string, error)
+	stop        func(services []string) error
+	start       func(services []string) error
 }
 
 // composeServiceForFn is the seam the tests substitute: resolving a store's
@@ -91,12 +175,13 @@ var composeServiceForFn = containerdump.ComposeServiceFor
 func localComposeCtl(root string) composeCtl {
 	return composeCtl{
 		listServices: func() ([]string, error) { return composeServicesFn(root) },
+		listRunning:  func() ([]string, error) { return composeRunningFn(root) },
 		stop: func(services []string) error {
 			return docker.RunComposeFn(root, append(append(docker.FileArgs(root), "stop"), services...)...)
 		},
-		start: func(services []string) error {
-			return docker.RunComposeFn(root, append(append(docker.FileArgs(root), "start"), services...)...)
-		},
+		start: startArgs(func(args []string) error {
+			return docker.RunComposeFn(root, append(docker.FileArgs(root), args...)...)
+		}),
 	}
 }
 
@@ -104,6 +189,13 @@ func localComposeCtl(root string) composeCtl {
 // `docker compose config --services` (parsed from stdout) + `stop`.
 func remoteComposeCtl(r remotecompose.Runner) composeCtl {
 	return composeCtl{
+		listRunning: func() ([]string, error) {
+			out, err := remotecompose.Capture(r, "ps", "--services", "--status", "running")
+			if err != nil {
+				return nil, err
+			}
+			return splitComposeLines(string(out)), nil
+		},
 		listServices: func() ([]string, error) {
 			out, err := remotecompose.Capture(r, "config", "--services")
 			if err != nil {
@@ -120,9 +212,9 @@ func remoteComposeCtl(r remotecompose.Runner) composeCtl {
 		stop: func(services []string) error {
 			return remotecompose.Run(r, nil, append([]string{"stop"}, services...)...)
 		},
-		start: func(services []string) error {
-			return remotecompose.Run(r, nil, append([]string{"start"}, services...)...)
-		},
+		start: startArgs(func(args []string) error {
+			return remotecompose.Run(r, nil, args...)
+		}),
 	}
 }
 
@@ -177,10 +269,22 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 			if len(stop) == 0 {
 				return nil
 			}
+			// What to bring back afterwards is decided BEFORE stopping
+			// anything, and it is what was actually RUNNING — not what the
+			// compose file declares. A one-shot seed service is declared,
+			// ran once and exited; resuming it runs it AGAIN, against the
+			// database this switch has just restored. `stop` still covers
+			// everything non-store, because stopping an already-stopped
+			// service costs nothing and a service that starts between the
+			// two calls must not keep writing during the dump.
+			resume, rerr := cc.runningAmong(stop)
+			if rerr != nil {
+				return rerr
+			}
 			if err := cc.stop(stop); err != nil {
 				return err
 			}
-			*quiesced = append((*quiesced)[:0], stop...)
+			*quiesced = append((*quiesced)[:0], resume...)
 			return nil
 		},
 		// A compose `stop` is EXPLICIT, and `restart: unless-stopped` is

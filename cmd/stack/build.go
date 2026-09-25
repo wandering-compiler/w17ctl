@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/wandering-compiler/w17ctl/internal/autosync"
+	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	plan "github.com/wandering-compiler/w17ctl/internal/plan"
 	"github.com/wandering-compiler/w17ctl/internal/schema"
 	"github.com/wandering-compiler/w17ctl/internal/snapstore"
@@ -19,6 +21,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/devconfig"
 	"github.com/wandering-compiler/w17ctl/internal/docker"
+	"github.com/wandering-compiler/w17ctl/internal/localtarget"
 	"github.com/wandering-compiler/w17ctl/internal/protoscan"
 	"github.com/wandering-compiler/w17ctl/internal/reconcile"
 	"github.com/wandering-compiler/w17ctl/internal/remotecompose"
@@ -51,7 +54,7 @@ type BuildCmd struct {
 	Reconcile       bool     `name:"reconcile" help:"Force the branch-switch reconcile even when the project's autosync mode is off. (When on — the default — reconcile already runs on an initiative change.)"`
 	NoCodegen       bool     `name:"no-codegen" help:"Skip the codegen step (assume the generated code is already current). By default 'stack build' runs codegen first so the images compile against fresh generated code."`
 	Lossy           string   `name:"lossy" default:"refuse" help:"What to do when the sync would DESTROY data (drop a table or column, retype one): refuse | apply | snapshot. snapshot takes one of the affected stores first."`
-	NoSnapshot      bool     `name:"no-snapshot" help:"On a branch switch, do NOT snapshot the outgoing branch. Its dev data stops being recoverable — coming back to that branch builds fresh. Use it when the machine has no pg_dump/mysqldump and you do not need the outgoing branch's data."`
+	NoSnapshot      bool     `name:"no-snapshot" help:"On a branch switch, do NOT snapshot the outgoing branch. ⛔ DESTRUCTIVE: with no snapshot to restore, the stores are WIPED and rebuilt from empty, so what is in them RIGHT NOW is lost too — not just the outgoing branch's history. Use it when the stores are empty or you do not want their contents."`
 	NoBuild         bool     `name:"no-build" help:"Skip building images and sync the local database only. The schema sync and the image build are independent steps that happen to share this command; with this flag the sync needs no Docker daemon, no build context and no compose file at all. Use it when you changed a proto and want the database to match."`
 	modeFlags
 
@@ -64,6 +67,11 @@ type BuildCmd struct {
 	// working directory. Set by SyncStores, whose caller already knows which
 	// project it is running and does not necessarily stand in it.
 	root string
+
+	// ephemeralStores marks a throwaway stack (see SyncStores): the stores live
+	// only as long as the command that made them, so the branch-switch
+	// reconcile has nothing to preserve and no business running.
+	ephemeralStores bool
 }
 
 // runCodegenFn regenerates all derived code (the codegen step `stack
@@ -120,8 +128,15 @@ func (c *BuildCmd) Run() error {
 		if err := remotecompose.Run(tgt.Runner, nil, append([]string{"build"}, c.Services...)...); err != nil {
 			return fmt.Errorf("stack build: remote compose build: %w", err)
 		}
+		// Same resolution as the local path below, and for the same reason: a
+		// duplicate registry entry would otherwise tunnel to ANOTHER project's
+		// stores here while the local path resolved correctly (marb #75).
 		var ports map[string]int
-		if _, p := cfg.FindByPath(root); p != nil {
+		_, p, perr := cfg.ResolveProject(lockProjectName(root), root)
+		if perr != nil {
+			return fmt.Errorf("stack build: %w", perr)
+		}
+		if p != nil {
 			ports = p.Ports
 		}
 		applyWrap = func(fn func() error) error { return withRemoteDB(name, tgt.Dest, ports, fn) }
@@ -347,13 +362,38 @@ func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiativ
 // allocates itself, so the addresses are known to the caller and to nobody
 // else. The reconcile is otherwise identical: compile the protos, ask the
 // console for the plan against what those databases HOLD, apply it.
+//
+// ⛔ Except for the BRANCH-switch reconcile, which is skipped here. These stores
+// were created by the suite seconds ago and are destroyed when it finishes:
+// there is no outgoing branch's data in them to snapshot, and no incoming
+// branch's to restore. Running it anyway did both against the developer's
+// LONG-LIVED stack — it snapshotted a store the suite had just created on
+// behalf of whatever branch the last real build recorded, and when no snapshot
+// for the current branch existed it "built fresh" through the repo's own
+// compose, reaching for `w17-01-app-gateway:latest` from inside an ephemeral
+// project. The snapshot guard caught the other half and said so:
+//
+//	snapstore Save catalog-postgres: the store holds N object(s) but its dump
+//	carries none — the dump reached a DIFFERENT database than the one this
+//	store names
+//
+// which was true, and the reason is here rather than there.
 func SyncStores(root, console string, targets []factory.TargetSpec) error {
-	cmd := &BuildCmd{NoBuild: true, NoCodegen: true, Console: console, root: root}
+	cmd := &BuildCmd{NoBuild: true, NoCodegen: true, Console: console, root: root, ephemeralStores: true}
 	for _, t := range targets {
 		cmd.Targets = append(cmd.Targets, t.Connection+"="+t.DSN)
 	}
-	return cmd.Run()
+	return syncStoresRunFn(cmd)
 }
+
+// syncStoresRunFn is the seam the test substitutes: what is worth pinning is the
+// command SyncStores constructs, and running it for real needs a console, a
+// compose stack and a git branch.
+var syncStoresRunFn = func(c *BuildCmd) error { return c.Run() }
+
+// publishedPortsFn is the seam the tests substitute: what is worth pinning is the
+// DECISION made with compose's answer, and producing a real one needs a stack.
+var publishedPortsFn = localtarget.PublishedPorts
 
 // ResolveTargets returns the dev-diff-apply targets: explicit --target
 // wins; otherwise they are auto-resolved from the lock's connections +
@@ -372,7 +412,15 @@ func (c *BuildCmd) ResolveTargets(root string) ([]factory.TargetSpec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stack build: load dev config: %w", err)
 	}
-	_, p := cfg.FindByPath(root)
+	// By the lock's own `project:` first, not by path. The registry is keyed by
+	// NAME and was being asked by PATH, so two entries on one directory gave a
+	// different answer per run (map iteration) — and each entry carries its own
+	// published store ports, so a dump reached another workspace's database on
+	// the same machine (marb #75).
+	projName, p, rerr := cfg.ResolveProject(lockProjectName(root), root)
+	if rerr != nil {
+		return nil, fmt.Errorf("stack build: %w", rerr)
+	}
 	// Connection names from the console's lock projection (best-effort: a
 	// lock-less / console-down project yields no auto-resolved targets).
 	var connNames []string
@@ -381,11 +429,43 @@ func (c *BuildCmd) ResolveTargets(root string) ([]factory.TargetSpec, error) {
 			connNames = append(connNames, conn.GetName())
 		}
 	}
-	specs, skipped := resolveLocalTargets(connNames, p)
+	// What compose publishes NOW beats what this machine's config remembers —
+	// see localtarget.ResolveLive for why the memory was the remaining half of
+	// marb #75.
+	published, asked := publishedPortsFn(root)
+	specs, skipped := resolveLocalTargetsWith(connNames, p, published, asked)
 	for _, s := range skipped {
 		fmt.Fprintf(core.Stdout, "stack build: skipping store %s\n", s)
 	}
+	// Say WHICH project and WHICH port each store resolved to. Half a day went
+	// into working out that three registry entries were answering differently,
+	// and the commands never said which answer they had taken (marb #75/3).
+	for _, sp := range specs {
+		fmt.Fprintf(core.Stdout, "stack build: store %s → %s (project %s)\n",
+			sp.Connection, redactDSN(sp.DSN), projName)
+	}
 	return specs, nil
+}
+
+// lockProjectName reads `project:` out of the checkout's lock, or "" when there
+// is no lock yet. Best-effort on purpose: a project that has not been init'd has
+// no name to prefer, and the path fallback still applies.
+func lockProjectName(root string) string {
+	lf, err := lockfile.Load(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil || lf == nil {
+		return ""
+	}
+	return lf.Project
+}
+
+// redactDSN keeps host and port — the two things the messages above exist to
+// name — and drops the credentials.
+func redactDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Host == "" {
+		return "(unparseable DSN)"
+	}
+	return u.Scheme + "://" + u.Host + u.Path
 }
 
 // devDiffApply runs the checkpoint→current dev diff against the local
@@ -422,7 +502,7 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 	// current proto. Runs when the mode resolved a branch source
 	// (branch-driven, or explicit --initiative) or --reconcile forces it.
 	// A no-op when the initiative is unchanged since the last build.
-	if branchFn != nil || c.Reconcile {
+	if (branchFn != nil || c.Reconcile) && !c.ephemeralStores {
 		bf := branchFn
 		if bf == nil {
 			bf = storageclient.GitCurrentBranchFn // --reconcile forced in manual no-flag mode

@@ -576,14 +576,22 @@ func workspace() string {
 // no store at all. The sync would do nothing, say nothing, and the bundles
 // would start against empty tables.
 func storePort(image string) int {
+	// The image NAME is this function's own question; the port that name implies
+	// is localtarget's one table (localtarget.EnginePort). Spelled here too, the
+	// two would be free to disagree — and a wrong container port is silent in a
+	// particular way: the lookup finds nothing, which reads as "no store at all".
 	image = strings.ToLower(image)
+	var dialect string
 	switch {
 	case strings.Contains(image, "postgres"), strings.Contains(image, "postgis"):
-		return 5432
+		dialect = "postgres"
 	case strings.Contains(image, "mysql"), strings.Contains(image, "mariadb"):
-		return 3306
+		dialect = "mysql"
+	default:
+		return 0
 	}
-	return 0
+	port, _ := localtarget.EnginePort(dialect)
+	return port
 }
 
 func (c *Config) analyzeCompose(composeFile, root string) (override string, hasBuild bool, err error) {
@@ -714,15 +722,19 @@ func (c *Config) syncStores(files []string, composeFile, project, root string) e
 	return nil
 }
 
-// storeDialect names the dialect a container port belongs to.
+// storeDialect names the dialect a container port belongs to — the inverse of
+// the same one table, not a second copy of it.
 func storeDialect(containerPort int) string {
-	switch containerPort {
-	case 5432:
-		return "postgres"
-	case 3306:
-		return "mysql"
+	dialect, ok := localtarget.DialectByEnginePort(containerPort)
+	if !ok {
+		return ""
 	}
-	return ""
+	// Redis has an engine port but no schema to reconcile, so the suite's store
+	// sync has nothing to do with it.
+	if dialect == "redis" {
+		return ""
+	}
+	return dialect
 }
 
 // storeServices lists the stack's relational stores as service → container

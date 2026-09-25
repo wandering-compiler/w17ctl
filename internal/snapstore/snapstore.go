@@ -274,29 +274,84 @@ func (s *Store) saveOneTo(ctx context.Context, dbDir string, c Conn) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("snapstore Save %s: close: %w", c.Name, err)
 	}
-	// A dump that SUCCEEDED and created nothing is not a snapshot of a store
-	// that holds anything, and accepting one is how reconcile came to wipe a
-	// database on the strength of a 722-byte file (marb #68).
+	// A dump that SUCCEEDED and created nothing has two causes, and accepting
+	// either is how reconcile came to restore a 722-byte file over a live
+	// database (marb #68): the store is EMPTY, or the dump reached a different
+	// database than the one this store names.
 	//
-	// Refused rather than warned: the caller's next act is to overwrite this
-	// store, licensed by this file existing. A warning in that position is a
-	// line in a build log somebody reads afterwards.
+	// This used to infer the second from the first and refuse both, telling the
+	// developer to reach for `--no-snapshot`. That was wrong in a way the flag's
+	// own warning says out loud — "it is not a way to just get past this", and
+	// it WIPES the store you are standing on. It also made a brand-new empty
+	// store unswitchable by any automated flow, which is how the e2e prover's
+	// own fresh Postgres came to fail a build.
 	//
-	// A genuinely EMPTY store hits this too, and takes `--no-snapshot` — which
-	// says out loud that the branch's data stops being recoverable, and for an
-	// empty store costs nothing. That is the right way round: the price of the
-	// check falls on the case with nothing to lose.
+	// So the premise gets MEASURED instead. The store is asked whether it holds
+	// anything; an empty dump of an empty store is a faithful snapshot of
+	// nothing and is kept. Only a store that holds objects whose dump carries
+	// none is #68's shape, and that still refuses — now naming the cause rather
+	// than offering two.
+	//
+	// A Snapshotter that cannot answer keeps the old refusal: an unanswerable
+	// question must not become a yes.
 	if watch != nil && !watch.sawObject() {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("snapstore Save %s: the dump came back with no tables, sequences or views in it — "+
-			"that is not a snapshot of a store holding a schema, and the switch would overwrite this store on the strength of it. "+
-			"Either the store really is empty (then `--no-snapshot` is the honest way past), or the dump reached a DIFFERENT database than the one this store names", c.Name)
+		objects, asked := storeObjects(ctx, c.Snapshotter)
+		switch {
+		case asked && len(objects) == 0:
+			// Kept: the store holds nothing, so there is nothing the dump
+			// could have carried and nothing a restore can destroy.
+		case asked && len(objects) > 0:
+			_ = os.Remove(tmpPath)
+			// The objects are NAMED. Without them this says two tools
+			// disagreed and leaves the reader to guess which was wrong —
+			// and the first thing it caught was not a misdirected dump at
+			// all but a store holding only extension-owned relations,
+			// which a dump deliberately does not carry.
+			return fmt.Errorf("snapstore Save %s: the store holds %d object(s) but its dump carries none (%s) — "+
+				"the dump reached a DIFFERENT database than the one this store names, and the switch would have "+
+				"overwritten this store on the strength of it", c.Name, len(objects), summarizeObjects(objects))
+		default:
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("snapstore Save %s: the dump came back with no tables, sequences or views in it, "+
+				"and this store cannot be asked whether it is empty — "+
+				"so either the store really is empty (then `--no-snapshot` is the honest way past), "+
+				"or the dump reached a DIFFERENT database than the one this store names", c.Name)
+		}
 	}
 	if err := os.Rename(tmpPath, final); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("snapstore Save %s: rename: %w", c.Name, err)
 	}
 	return nil
+}
+
+// storeObjects asks a Snapshotter what its store holds, reporting `asked=false`
+// when the question could not be put or could not be answered.
+//
+// `asked` is a separate return rather than folded into an empty slice, because
+// the caller's three branches are exactly "holds nothing", "holds these" and
+// "did not find out" — and a helper that collapsed the third into the first
+// would hand the permissive answer to the case with the least information.
+func storeObjects(ctx context.Context, snap migrate.Snapshotter) (objects []string, asked bool) {
+	counter, ok := snap.(migrate.ObjectCounter)
+	if !ok {
+		return nil, false
+	}
+	objects, err := counter.StoreObjects(ctx)
+	if err != nil {
+		return nil, false
+	}
+	return objects, true
+}
+
+// summarizeObjects renders at most a handful of names, so a refusal fits a
+// terminal and still says enough to place the disagreement.
+func summarizeObjects(names []string) string {
+	const max = 6
+	if len(names) <= max {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:max], ", ") + fmt.Sprintf(", … and %d more", len(names)-max)
 }
 
 // Load restores every connection's store from the branch's snapshot

@@ -16,6 +16,7 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/localtarget"
+	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	applyfetchpb "github.com/wandering-compiler/sdk/go/pb/applyfetch"
 )
 
@@ -347,8 +348,22 @@ func (c *ApplyCmd) resolveTargetDSN() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fixtures apply: load dev config: %w", err)
 	}
-	_, p := cfg.FindByPath(root)
-	dsn, skip := localtarget.ResolveDSN(c.Connection, p)
+	// By the lock's `project:`, like `stack build`. This reads and writes a
+	// STORE, so a duplicate registry entry picked silently is a dump of — or
+	// into — another project's database (marb #75).
+	_, p, rerr := cfg.ResolveProject(lockProjectName(root), root)
+	if rerr != nil {
+		return "", fmt.Errorf("fixtures apply: %w", rerr)
+	}
+	// What compose publishes NOW, not what this machine's config remembers: this
+	// reads and writes a STORE, and a remembered port for a store that is not
+	// running names whatever else took it (marb #75, the half the lock-based
+	// project resolution did not cover).
+	published, asked := localtarget.PublishedPorts(root)
+	dsn, skip, note := localtarget.ResolveLive(c.Connection, p, published, asked)
+	if note != "" {
+		fmt.Fprintf(core.Stdout, "%s: %s\n", "fixtures apply", note)
+	}
 	if dsn == "" {
 		return "", fmt.Errorf("fixtures apply: no DSN for connection %q — %s (or set %s for a remote target)",
 			c.Connection, skip, envVarName(c.Connection))
@@ -506,4 +521,14 @@ func sqlLiteral(v *structpb.Value) (string, error) {
 		// (array literal vs json) and no fixture emits one today.
 		return "", fmt.Errorf("argument of type %T cannot be rendered as a SQL literal", k)
 	}
+}
+
+// lockProjectName reads `project:` out of the checkout's lock, or "" when there
+// is none yet — the pre-init state, where the path fallback still applies.
+func lockProjectName(root string) string {
+	lk, err := lockfile.Load(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil || lk == nil {
+		return ""
+	}
+	return lk.Project
 }

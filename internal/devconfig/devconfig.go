@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -315,11 +317,109 @@ func (p *Project) ClearActivePreset() {
 
 // FindByPath returns the registered project (and its name) whose Path
 // matches the given absolute path, or "", nil if none.
+//
+// ⚠️ DETERMINISTIC BY NAME, and that is a fix rather than a detail. This used to
+// `range c.Projects` and return the first match — over a MAP, whose iteration
+// order Go randomises per run. With two registry entries sharing a path, the
+// answer to "which project am I in" therefore changed between invocations of
+// the same command.
+//
+// A consumer had three entries on one path. `stack up` published the ports of
+// one, `stack build` dialled another, and their lock named a third — so a dump
+// reached a database in a DIFFERENT WORKSPACE on the same machine, and the
+// empty snapshots that came back are what a branch switch then restored over
+// their live stores (marb #75, and the mechanism behind #68).
+//
+// Sorting makes the wrong answer at least a STABLE wrong answer, which is what
+// makes it findable. Duplicates themselves are refused by DuplicatePaths, and
+// ResolveProject prefers the lock's own name over any of this.
 func (c *Config) FindByPath(absPath string) (string, *Project) {
-	for name, p := range c.Projects {
-		if p.Path == absPath {
+	names := make([]string, 0, len(c.Projects))
+	for name := range c.Projects {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if p := c.Projects[name]; p.Path == absPath {
 			return name, p
 		}
 	}
 	return "", nil
+}
+
+// DuplicatePaths reports every path registered under more than one project
+// name, with those names, sorted.
+//
+// Two entries on one path is not a state any command can resolve correctly: the
+// registry is keyed by name and asked by path, so the question has more than one
+// true answer and every caller picks one. Reporting it is the only honest
+// handling — see marb #75, where the three answers differed by store PORT and
+// the dump went to another workspace's database.
+func (c *Config) DuplicatePaths() map[string][]string {
+	byPath := map[string][]string{}
+	for name, p := range c.Projects {
+		if p != nil && p.Path != "" {
+			byPath[p.Path] = append(byPath[p.Path], name)
+		}
+	}
+	out := map[string][]string{}
+	for path, names := range byPath {
+		if len(names) > 1 {
+			sort.Strings(names)
+			out[path] = names
+		}
+	}
+	return out
+}
+
+// ResolveProject answers "which registry entry is this checkout" the way the
+// checkout itself answers it: by the `project:` its lock names.
+//
+// The lock carries that name and was right the whole time; nothing asked it.
+// Falling back to the path is kept for a checkout with no lock yet, and then a
+// duplicate path is REFUSED rather than silently picked — a wrong store is a
+// dump of somebody else's database, or a wipe of it.
+//
+// Returns a nil project with no error when the checkout simply is not
+// registered: that is the ordinary pre-`stack up` state, not a fault.
+func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, error) {
+	if lockProject != "" {
+		p, ok := c.Projects[lockProject]
+		if !ok {
+			// A lock naming an entry the registry does not have is not a reason
+			// to fall back to the path: a mistyped or stale name would then
+			// silently select whatever is registered here instead. Say which
+			// name was not found.
+			return "", nil, fmt.Errorf(
+				"w17/lock.yaml names project %q, which is not in the project registry (~/.w17/config.yaml)\n"+
+					"fix: run `w17ctl stack up` in this checkout to register it, or correct `project:` in the lock",
+				lockProject)
+		}
+		// ⚠️ The registry entry must be THIS checkout. A lock copied from another
+		// tree — or left behind by one — names a project registered against a
+		// DIFFERENT directory, and trusting the name alone would hand back that
+		// checkout's store ports: the same wrong-database dump this function
+		// exists to prevent, arriving by the door built to stop it.
+		if p.Path != "" && absPath != "" && p.Path != absPath {
+			return "", nil, fmt.Errorf(
+				"w17/lock.yaml names project %q, but the registry has that project at %s — this checkout is %s\n"+
+					"its store ports belong to that other directory, so building here would reach its databases\n"+
+					"fix: correct `project:` in this lock, or re-register this checkout with `w17ctl stack up`",
+				lockProject, p.Path, absPath)
+		}
+		return lockProject, p, nil
+	}
+	if dup := c.DuplicatePaths()[absPath]; len(dup) > 1 {
+		return "", nil, fmt.Errorf(
+			"the project registry has %d entries for this directory (%s) and the lock does not name which:\n"+
+				"  %s\n"+
+				"every one of them carries its own published store ports, so commands disagree about where this "+
+				"project's databases are — and a dump or a wipe aimed at the wrong port reaches another project's "+
+				"database on this machine\n"+
+				"fix: set `project:` in w17/lock.yaml to the entry you mean, or remove the others from "+
+				"~/.w17/config.yaml",
+			len(dup), absPath, strings.Join(dup, ", "))
+	}
+	name, p := c.FindByPath(absPath)
+	return name, p, nil
 }

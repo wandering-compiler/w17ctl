@@ -1,13 +1,13 @@
 package stack
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/wandering-compiler/w17ctl/internal/devconfig"
 	"github.com/wandering-compiler/w17ctl/internal/docker"
+	"github.com/wandering-compiler/w17ctl/internal/localtarget"
 )
 
 // preflightPorts fails fast, with a readable error, when a host port the
@@ -96,42 +96,5 @@ func ownPublishedPorts(root string) map[int]bool {
 // both: it tries a whole-blob array first, then falls back to per-line
 // objects.
 func parsePublishedPorts(raw []byte) []int {
-	type publisher struct {
-		PublishedPort int `json:"PublishedPort"`
-	}
-	type psEntry struct {
-		Publishers []publisher `json:"Publishers"`
-	}
-	collect := func(entries []psEntry) []int {
-		var ports []int
-		for _, e := range entries {
-			for _, pub := range e.Publishers {
-				if pub.PublishedPort > 0 {
-					ports = append(ports, pub.PublishedPort)
-				}
-			}
-		}
-		return ports
-	}
-
-	// Whole-output JSON array form.
-	var arr []psEntry
-	if err := json.Unmarshal(raw, &arr); err == nil {
-		return collect(arr)
-	}
-
-	// NDJSON form — one object per line.
-	var entries []psEntry
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var e psEntry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			continue // tolerate a stray non-JSON line
-		}
-		entries = append(entries, e)
-	}
-	return collect(entries)
+	return localtarget.PublishedPortsFrom(raw)
 }

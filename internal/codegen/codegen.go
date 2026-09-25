@@ -1093,7 +1093,7 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 			// and said only "wrote". That is how a security bump reached one
 			// bundle and not another without anyone noticing — the finding this
 			// fingerprint exists for
-			// (docs/todos/grpc-pin-is-silent-at-the-consumer.md).
+			// (decisions/grpc-pin-is-silent-at-the-consumer.md).
 			//
 			// It does not close the case: a consumer who never re-runs codegen
 			// still gets no signal, and answering THAT needs the comparison to

@@ -8,9 +8,11 @@ package autosync
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/devconfig"
+	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	"github.com/wandering-compiler/w17ctl/internal/snapstore"
 	"github.com/wandering-compiler/w17ctl/internal/storageclient"
 )
@@ -65,13 +67,46 @@ func ResolveActiveInitiative(root string) (initiative string, branchFn func() st
 
 // DevProjectFor returns the devconfig project for a root, best-effort (nil
 // on any error — callers fall back to the lock / defaults).
+//
+// Resolved by the lock's `project:` where there is one, like every other caller
+// that ends up naming a store. Best-effort stays best-effort: an ambiguous or
+// mismatched registry yields nil here rather than an error, because this feeds a
+// MODE decision (is autosync on) and not a connection — the commands that open a
+// database surface the same refusal loudly at their own call sites.
 func DevProjectFor(root string) *devconfig.Project {
 	cfg, err := core.LoadDevConfigFn()
 	if err != nil {
 		return nil
 	}
-	_, p := cfg.FindByPath(root)
+	name, p, rerr := cfg.ResolveProject(lockProjectBestEffort(root), root)
+	if rerr == nil && p != nil {
+		return p
+	}
+	if rerr == nil {
+		_ = name
+		return nil
+	}
+	// ⚠️ The strict resolution refused — a lock naming a project this machine
+	// has not registered, or two entries on one path. Every OTHER caller stops
+	// there, and should: they are about to open a database.
+	//
+	// This one is not. It answers "is autosync on for this checkout", reading
+	// only the mode override; the entry's PORTS are never touched here. Refusing
+	// would silently flip the mode of any checkout whose lock names a project
+	// registered elsewhere — a behaviour change with none of the safety, since
+	// no store is reached either way. So fall back to the path, which is at
+	// least deterministic now.
+	_, p = cfg.FindByPath(root)
 	return p
+}
+
+// lockProjectBestEffort reads `project:` from the checkout's lock, or "".
+func lockProjectBestEffort(root string) string {
+	lk, err := lockfile.Load(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil || lk == nil {
+		return ""
+	}
+	return lk.Project
 }
 
 // On reports whether the project's autosync (branch-driven) mode is in

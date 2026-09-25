@@ -21,6 +21,12 @@ var objectMarkers = [][]byte{
 	[]byte("CREATE INDEX"),
 	[]byte("CREATE UNIQUE INDEX"),
 	[]byte("CREATE FUNCTION"),
+	// A store holding only FOREIGN tables counts as holding something on the
+	// counter's side (pg_class relkind 'f'), and pg_dump writes this for them.
+	// Without the marker the two sides disagreed about such a database and the
+	// caller reported a misdirected dump — a false "different database" refusal
+	// over a store that was answered correctly by both tools separately.
+	[]byte("CREATE FOREIGN TABLE"),
 }
 
 // longestMarker is how much tail has to be carried between writes so a marker
