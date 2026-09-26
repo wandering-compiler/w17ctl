@@ -351,7 +351,10 @@ func (c *ApplyCmd) resolveTargetDSN() (string, error) {
 	// By the lock's `project:`, like `stack build`. This reads and writes a
 	// STORE, so a duplicate registry entry picked silently is a dump of — or
 	// into — another project's database (marb #75).
-	_, p, rerr := cfg.ResolveProject(lockProjectName(root), root)
+	_, p, pnote, rerr := cfg.ResolveProject(lockProjectName(root), root)
+	if pnote != "" {
+		fmt.Fprintf(core.Stdout, "fixtures apply: %s\n", pnote)
+	}
 	if rerr != nil {
 		return "", fmt.Errorf("fixtures apply: %w", rerr)
 	}

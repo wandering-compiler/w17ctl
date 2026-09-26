@@ -78,7 +78,7 @@ func DevProjectFor(root string) *devconfig.Project {
 	if err != nil {
 		return nil
 	}
-	name, p, rerr := cfg.ResolveProject(lockProjectBestEffort(root), root)
+	name, p, _, rerr := cfg.ResolveProject(lockProjectBestEffort(root), root)
 	if rerr == nil && p != nil {
 		return p
 	}

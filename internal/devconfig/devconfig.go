@@ -382,18 +382,101 @@ func (c *Config) DuplicatePaths() map[string][]string {
 //
 // Returns a nil project with no error when the checkout simply is not
 // registered: that is the ordinary pre-`stack up` state, not a fault.
-func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, error) {
+// ValidateProjectName refuses a registry key that cannot safely be ONE path
+// component.
+//
+// The key is not only a label: `cmd/stack/mode.go` and `project ps` join it onto
+// the remote base directory (`path.Join(r.Path, project)`), so a name like
+// `../../other` puts `stack up` and `project ps` outside the base an operator
+// configured. It reaches that join from three places — `project rename`, `project
+// import` and EnsureRegistered — and two of those take the name from
+// `w17/lock.yaml`, a file that travels with a repository. So the check belongs
+// here, beside the registry, rather than at the one call site a reviewer happened
+// to be reading.
+func ValidateProjectName(name string) error {
+	if name == "" {
+		return fmt.Errorf("project name is empty")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("project name %q is a path component with a meaning, not a name", name)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("project name %q contains a path separator — it has to be a single directory component, "+
+			"because remote mode joins it onto the base dir", name)
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("project name %q contains a control character", name)
+		}
+	}
+	return nil
+}
+
+func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, string, error) {
 	if lockProject != "" {
 		p, ok := c.Projects[lockProject]
 		if !ok {
-			// A lock naming an entry the registry does not have is not a reason
-			// to fall back to the path: a mistyped or stale name would then
-			// silently select whatever is registered here instead. Say which
-			// name was not found.
-			return "", nil, fmt.Errorf(
-				"w17/lock.yaml names project %q, which is not in the project registry (~/.w17/config.yaml)\n"+
-					"fix: run `w17ctl stack up` in this checkout to register it, or correct `project:` in the lock",
-				lockProject)
+			// ⚠️ This used to REFUSE, and refusing was wrong in the ordinary
+			// case. Renaming a project in the console is a legitimate act an
+			// owner is allowed to perform — deinvo renamed theirs to match a
+			// GitHub branch — while the registry key was written at `init` from
+			// the org slug and nothing ever paired the two. Eight client
+			// releases did not care; rc.52 blocked `stack build` outright and
+			// took their dev stack down, so a rename was punished and the
+			// advice ("run stack up") repaired nothing: `stack up` resolves by
+			// PATH, so it kept working, and the two commands disagreed about
+			// one tree.
+			//
+			// What the name is FOR is disambiguating several entries on one
+			// path (marb #75). With exactly one entry here there is nothing to
+			// disambiguate, so the single entry is the answer — said out loud,
+			// with the command that aligns the two names and keeps the ports.
+			// DuplicatePaths only reports paths carrying MORE than one entry, so
+			// the single-entry case is FindByPath's to answer — asking
+			// DuplicatePaths for a count of one gets zero, which is how the
+			// first version of this fix refused the very case it was written for.
+			byPath := c.DuplicatePaths()[absPath]
+			name, only := c.FindByPath(absPath)
+			switch {
+			case len(byPath) <= 1 && only != nil:
+				return name, only, fmt.Sprintf(
+					"w17/lock.yaml names project %q; this machine's registry calls this directory %q — using %q.\n"+
+						"  Both names describe the same checkout, and renaming a project is allowed, so this is not an error.\n"+
+						"  To stop the mismatch: `w17ctl project rename %s` (keeps the ports this machine already assigned).",
+					lockProject, name, name, lockProject), nil
+			case len(byPath) > 1:
+				return "", nil, "", fmt.Errorf(
+					"w17/lock.yaml names project %q, which is not in the project registry (~/.w17/config.yaml), "+
+						"and this directory has %d entries under other names:\n"+
+						"  %s\n"+
+						"each carries its own published store ports, so there is no single honest answer here\n"+
+						"fix: rename one of them to %q (`w17ctl project rename %s`) and remove the rest",
+					lockProject, len(byPath), strings.Join(byPath, ", "), lockProject, lockProject)
+			}
+			// Nothing registered for this directory at all — and that is a FRESH
+			// CHECKOUT, not a mistake. marb's CI runner has no `~/.w17` by
+			// construction: their `w17-codegen` job passes `--no-build` exactly
+			// so nothing starts, and the refusal's advice (`stack up`) says to
+			// bring up a compose stack to fix a missing local file. rc.52 stopped
+			// their codegen on it.
+			//
+			// The registry is a CACHE of this machine's port allocations, not a
+			// statement about whether the project exists. With no entry there are
+			// no ports to get WRONG — the honest outcome is "no local stores
+			// resolve here", which is what a runner with no databases wants and
+			// what `codegen` already does. Every caller handles a nil project:
+			// each store is then skipped by name with the reason.
+			//
+			// The two refusals that remain are the ones with a genuine ambiguity
+			// or a genuine hazard: several entries under other names (below), and
+			// an entry whose PATH is another checkout (further down) — that one
+			// would hand back another tree's ports, which is #75's whole point,
+			// and a shared runner is exactly where it could happen.
+			return lockProject, nil, fmt.Sprintf(
+				"this machine's registry (~/.w17/config.yaml) has no entry for this checkout, so no local " +
+					"store resolves from it — fine on a fresh checkout or CI runner, where there are none.\n" +
+					"  `w17ctl stack up` registers it and assigns host ports when you do want them here.",
+			), nil
 		}
 		// ⚠️ The registry entry must be THIS checkout. A lock copied from another
 		// tree — or left behind by one — names a project registered against a
@@ -401,16 +484,16 @@ func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, 
 		// checkout's store ports: the same wrong-database dump this function
 		// exists to prevent, arriving by the door built to stop it.
 		if p.Path != "" && absPath != "" && p.Path != absPath {
-			return "", nil, fmt.Errorf(
+			return "", nil, "", fmt.Errorf(
 				"w17/lock.yaml names project %q, but the registry has that project at %s — this checkout is %s\n"+
 					"its store ports belong to that other directory, so building here would reach its databases\n"+
 					"fix: correct `project:` in this lock, or re-register this checkout with `w17ctl stack up`",
 				lockProject, p.Path, absPath)
 		}
-		return lockProject, p, nil
+		return lockProject, p, "", nil
 	}
 	if dup := c.DuplicatePaths()[absPath]; len(dup) > 1 {
-		return "", nil, fmt.Errorf(
+		return "", nil, "", fmt.Errorf(
 			"the project registry has %d entries for this directory (%s) and the lock does not name which:\n"+
 				"  %s\n"+
 				"every one of them carries its own published store ports, so commands disagree about where this "+
@@ -421,5 +504,5 @@ func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, 
 			len(dup), absPath, strings.Join(dup, ", "))
 	}
 	name, p := c.FindByPath(absPath)
-	return name, p, nil
+	return name, p, "", nil
 }

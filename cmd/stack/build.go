@@ -132,7 +132,10 @@ func (c *BuildCmd) Run() error {
 		// duplicate registry entry would otherwise tunnel to ANOTHER project's
 		// stores here while the local path resolved correctly (marb #75).
 		var ports map[string]int
-		_, p, perr := cfg.ResolveProject(lockProjectName(root), root)
+		_, p, pnote, perr := cfg.ResolveProject(lockProjectName(root), root)
+		if pnote != "" {
+			fmt.Fprintf(core.Stdout, "stack build: %s\n", pnote)
+		}
 		if perr != nil {
 			return fmt.Errorf("stack build: %w", perr)
 		}
@@ -417,7 +420,10 @@ func (c *BuildCmd) ResolveTargets(root string) ([]factory.TargetSpec, error) {
 	// different answer per run (map iteration) — and each entry carries its own
 	// published store ports, so a dump reached another workspace's database on
 	// the same machine (marb #75).
-	projName, p, rerr := cfg.ResolveProject(lockProjectName(root), root)
+	projName, p, pnote, rerr := cfg.ResolveProject(lockProjectName(root), root)
+	if pnote != "" {
+		fmt.Fprintf(core.Stdout, "stack build: %s\n", pnote)
+	}
 	if rerr != nil {
 		return nil, fmt.Errorf("stack build: %w", rerr)
 	}

@@ -48,6 +48,7 @@ type Cmd struct {
 	Import       ProjectImportCmd `cmd:"" help:"Register an existing w17 project (default: current dir) and allocate it unique host ports."`
 	Register     RegisterCmd      `cmd:"" help:"CONSOLE: register a project that ALREADY has a lock, and repoint that lock at the new project_id. Use when a project moves to another console — init refuses an existing lock, because rerunning it would rewrite connections, pins and plugin activations. NB: distinct from project import, which is the LOCAL port registry."`
 	Remove       ProjectRemoveCmd `cmd:"" help:"Unregister a project from the local registry (frees its assigned host ports for reuse)."`
+	Rename       ProjectRenameCmd `cmd:"" help:"Re-key this checkout's registry entry to NAME, KEEPING its assigned host ports. Use when the project was renamed in the console and the local registry still holds the old name — 'remove' + 'import' would reallocate the ports, which may land outside the range this machine is allowed to publish on."`
 	Ports        ProjectPortsCmd  `cmd:"" help:"Re-sync + show a project's assigned host ports (run after adding a connection / bundle)."`
 	Ps           ProjectPsCmd     `cmd:"" help:"Show running containers across ALL registered projects (docker compose ps per project)."`
 	ReleaseToOrg ReleaseToOrgCmd  `cmd:"" name:"release-to-org" help:"CONSOLE: offer this project to another organization (step 1 of 2). Run as the CURRENT organization. Nothing moves until that organization claims it; --to '' withdraws the offer."`
@@ -180,6 +181,11 @@ func (c *ProjectImportCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	if err := devconfig.ValidateProjectName(name); err != nil {
+		// The name came from w17/lock.yaml, a file that travels with a
+		// repository — see devconfig.ValidateProjectName for where it lands.
+		return fmt.Errorf("project import: w17/lock.yaml names an unusable project: %w", err)
+	}
 	if existing := cfg.Projects[name]; existing != nil && existing.Path != root {
 		return fmt.Errorf("project name %q already registered at a different path (%s); remove it first or rename this project", name, existing.Path)
 	}
@@ -200,6 +206,90 @@ func (c *ProjectImportCmd) Run() error {
 	}
 	fmt.Fprintln(core.Stdout, "assigned host ports:")
 	printPorts(cfg.Projects[name], slots)
+	return nil
+}
+
+// --- project rename -------------------------------------------------
+
+// ProjectRenameCmd re-keys this checkout's registry entry, keeping everything
+// under it.
+//
+// The missing repair. A project renamed in the console leaves the local registry
+// holding the old key, which is legal and common — an owner may rename, and the
+// key was written at `init` from whatever name existed then. `ResolveProject`
+// takes the single entry for the directory and says the two names differ; this is
+// what stops it saying so.
+//
+// `remove` + `import` is NOT that repair, and the difference is the whole reason
+// this exists: import allocates FRESH ports. deinvo's ports are inside the range
+// their machine tunnels to the developer (16000-16099) and the allocator's default
+// base is 14000, so reallocating could move their stack outside the range that
+// makes it reachable at all. They read import's own help, saw "allocate it unique
+// host ports", and stopped — which was right.
+type ProjectRenameCmd struct {
+	NewName string `arg:"" help:"The name to key this checkout's entry under — normally the project: in w17/lock.yaml."`
+	Dir     string `arg:"" optional:"" help:"Project directory (default: current)."`
+}
+
+func (c *ProjectRenameCmd) Run() error {
+	start := c.Dir
+	if start == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		start = wd
+	}
+	root, err := findProjectRootFrom(start)
+	if err != nil {
+		return err
+	}
+	cfg, err := core.LoadDevConfigFn()
+	if err != nil {
+		return err
+	}
+	if err := devconfig.ValidateProjectName(c.NewName); err != nil {
+		return fmt.Errorf("project rename: %w", err)
+	}
+	// ⚠️ FindByPath picks the lexicographically first entry when several keys
+	// name one directory, and ResolveProject calls that state ambiguous — so
+	// re-keying "the" entry here could move the wrong one. Worse, if NewName is
+	// itself one of them, the assignment below would overwrite ITS ports before
+	// deleting the other: a silent loss of exactly the allocation this command
+	// exists to preserve.
+	if dup := cfg.DuplicatePaths()[root]; len(dup) > 1 {
+		return fmt.Errorf(
+			"project rename: %d registry entries name this directory (%s):\n"+
+				"  %s\n"+
+				"each carries its own published store ports, so there is no single entry to re-key\n"+
+				"fix: `w17ctl project remove <name>` the ones that are stale, then rename what is left",
+			len(dup), root, strings.Join(dup, ", "))
+	}
+	old, p := cfg.FindByPath(root)
+	if p == nil {
+		return fmt.Errorf("project rename: no registry entry for %s — `w17ctl stack up` registers it and assigns its host ports", root)
+	}
+	if old == c.NewName {
+		fmt.Fprintf(core.Stdout, "project rename: %q already names this checkout — nothing to do\n", c.NewName)
+		return nil
+	}
+	// A name already used for a DIFFERENT directory is the one case that must
+	// not proceed: the two checkouts would then share one set of published store
+	// ports, which is the wrong-database dump ResolveProject exists to prevent.
+	if existing := cfg.Projects[c.NewName]; existing != nil && existing.Path != root {
+		return fmt.Errorf(
+			"project rename: %q already names a different checkout (%s)\n"+
+				"its store ports belong to that directory, so sharing the name would point both at one set of databases\n"+
+				"fix: pick another name, or `w17ctl project remove %s` first if that entry is stale",
+			c.NewName, existing.Path, c.NewName)
+	}
+	cfg.Projects[c.NewName] = p
+	delete(cfg.Projects, old)
+	if err := core.SaveDevConfigFn(cfg); err != nil {
+		return err
+	}
+	fmt.Fprintf(core.Stdout, "renamed %q → %q at %s (ports unchanged)\n", old, c.NewName, root)
+	printPorts(p, nil)
 	return nil
 }
 
@@ -496,6 +586,9 @@ func EnsureRegistered(cfg *devconfig.Config, root string) (string, error) {
 	name, err := loadProjectName(root)
 	if err != nil {
 		return "", err
+	}
+	if err := devconfig.ValidateProjectName(name); err != nil {
+		return "", fmt.Errorf("w17/lock.yaml names an unusable project: %w", err)
 	}
 	if existing := cfg.Projects[name]; existing != nil && existing.Path != root {
 		return "", fmt.Errorf("project name %q already registered at %s — resolve the name collision", name, existing.Path)

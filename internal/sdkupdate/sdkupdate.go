@@ -173,8 +173,8 @@ func applyToModule(dir, mod, ver, zipHash, modHash string) error {
 }
 
 // goSumUpsert returns go.sum content with mod's entries replaced by the given
-// version's hashes, every other line preserved verbatim, output sorted (go.sum
-// is sorted, and a stable order keeps regen diffs empty).
+// version's hashes, every other line preserved verbatim, output sorted THE WAY
+// GO SORTS IT.
 //
 // Dropping the module's OTHER-version lines is the point: a leftover line for
 // the previous version is what makes `go` reject the build with a hash
@@ -195,8 +195,53 @@ func goSumUpsert(prior, mod, ver, zipHash, modHash string) string {
 		mod+" "+ver+" "+zipHash,
 		mod+" "+ver+"/go.mod "+modHash,
 	)
-	sort.Strings(lines)
+	sort.Slice(lines, func(i, j int) bool { return goSumLess(lines[i], lines[j]) })
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// goSumLess orders two go.sum lines the way `go mod tidy` does: by module path,
+// then by version as SEMVER, then the `/go.mod` line after the zip line.
+//
+// ⚠️ This was `sort.Strings`, and marb #48 measured what that costs: go.sum is
+// sorted by semver, and a string sort disagrees with it wherever the two differ
+// — `v0.10.0` sorts before `v0.9.0` as text and after it as a version. So
+// `sdk update` rewrote lines nobody had touched, and the next `go mod tidy`
+// rewrote them back. Cosmetic, and it lands in a consumer's diff twice.
+//
+// Nothing breaks either way, which is exactly why it survived: the file's own
+// comment said "output sorted" and it WAS sorted, just by the wrong key.
+func goSumLess(a, b string) bool {
+	amod, aver, asuffix := goSumKey(a)
+	bmod, bver, bsuffix := goSumKey(b)
+	if amod != bmod {
+		return amod < bmod
+	}
+	if c := semver.Compare(aver, bver); c != 0 {
+		return c < 0
+	}
+	if aver != bver {
+		// Same semver ordering but different text (e.g. build metadata, which
+		// semver.Compare ignores): fall back to the bytes so the order is still
+		// total and therefore stable.
+		return aver < bver
+	}
+	return asuffix < bsuffix
+}
+
+// goSumKey splits a go.sum line into module path, version and the `/go.mod`
+// marker. A line that is not in that shape sorts by its whole text under an
+// empty version — a malformed line is not this function's to reject, and it must
+// still land somewhere deterministic.
+func goSumKey(line string) (mod, ver, suffix string) {
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return line, "", ""
+	}
+	mod, ver = fields[0], fields[1]
+	if trimmed, ok := strings.CutSuffix(ver, "/go.mod"); ok {
+		return mod, trimmed, "/go.mod"
+	}
+	return mod, ver, ""
 }
 
 // findSdkModules returns project-relative dirs of every module that requires
