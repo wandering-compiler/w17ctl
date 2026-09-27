@@ -41,11 +41,68 @@ type Source struct {
 	// the repo and the tag prefix — one string, so the three cannot drift.
 	Plugin string
 	// Version is the tag's version part, `v`-prefixed (`v0.1.0-rc.1`).
+	//
+	// Empty when Commit is set. Exactly one of the two names what to fetch,
+	// and validate() enforces that rather than picking a winner: a Source
+	// carrying both would resolve to whichever the code happened to read
+	// first, and the lock would then record a pin nobody asked for.
 	Version string
+	// Commit is a full 40-hex commit SHA, for fetching a plugin that has NOT
+	// been released.
+	//
+	// The reason this exists: a plugin's author tree leads its published
+	// releases by design, so the only way to try a fix before it is tagged was
+	// to tag it. That turns every experiment into a release candidate in a
+	// registry other people read. A commit is the honest way to say "this exact
+	// tree, which nobody has published".
+	//
+	// FULL sha, never abbreviated: an abbreviation is not a stable name for a
+	// tree (it can become ambiguous as the repository grows), and this value
+	// goes into a LOCK, where it has to keep meaning the same bytes years
+	// later. Abbreviation is a display concern — see shortSHA in cmd/plugin.
+	Commit string
 }
 
-// Tag is the ref a release is published under.
-func (s Source) Tag() string { return s.Plugin + "/" + s.Version }
+// Tag is the release tag a Source names, or "" when it names a commit.
+func (s Source) Tag() string {
+	if s.Version == "" {
+		return ""
+	}
+	return s.Plugin + "/" + s.Version
+}
+
+// Ref is what git is asked for, and what the lock records: the release tag, or
+// the commit SHA.
+func (s Source) Ref() string {
+	if s.Commit != "" {
+		return s.Commit
+	}
+	return s.Tag()
+}
+
+// pinnedToCommit reports whether a recorded ref is a commit rather than a tag.
+//
+// Exported through [PinnedToCommit] because `plugin update` has to know: an
+// update that resolved "the latest release" for a commit-pinned plugin would
+// silently throw away the unreleased tree somebody installed on purpose.
+func pinnedToCommit(ref string) bool { return isFullSHA(ref) }
+
+// PinnedToCommit reports whether a lock's recorded git ref names a commit.
+func PinnedToCommit(ref string) bool { return pinnedToCommit(ref) }
+
+// isFullSHA reports whether s is a full 40-character hex commit id.
+func isFullSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
 
 // Fetched is what the lock records: where the tree landed, which release it
 // was, and the two values that make the pin immutable.
@@ -78,18 +135,8 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 	}
 	defer func() { _ = os.RemoveAll(work) }()
 
-	// Blobless + sparse: one repo holds every plugin, and a consumer that
-	// wants auth has no use for the rest of the tree or for any history.
-	if out, err := git(ctx, "", "clone", "--quiet", "--depth", "1",
-		"--branch", src.Tag(), "--filter=blob:none", "--sparse", src.Repo, work); err != nil {
-		return Fetched{}, fmt.Errorf(
-			"plugin fetch: %s %s is not published at %s (%w)\n\n"+
-				"  why: a plugin version is a git TAG, so a pin that resolves to nothing is a\n"+
-				"       version that was never released — or was released somewhere else.\n%s",
-			src.Plugin, src.Version, src.Repo, err, indent(out))
-	}
-	if out, err := git(ctx, work, "sparse-checkout", "set", src.Plugin); err != nil {
-		return Fetched{}, fmt.Errorf("plugin fetch: narrowing to %s: %w\n%s", src.Plugin, err, indent(out))
+	if err := materialise(ctx, src, work); err != nil {
+		return Fetched{}, err
 	}
 
 	sha, err := git(ctx, work, "rev-parse", "HEAD")
@@ -104,7 +151,8 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 			src.Repo, src.Plugin, src.Tag())
 	}
 
-	if err := checkManifest(tree, src); err != nil {
+	version, err := checkManifest(tree, src)
+	if err != nil {
 		return Fetched{}, err
 	}
 
@@ -129,7 +177,75 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 	if err != nil {
 		return Fetched{}, err
 	}
-	return Fetched{Dir: dest, Repo: src.Repo, Ref: src.Tag(), Version: src.Version, SHA: sha, Digest: digest}, nil
+	return Fetched{Dir: dest, Repo: src.Repo, Ref: src.Ref(), Version: version, SHA: sha, Digest: digest}, nil
+}
+
+// materialise puts the repository's tree for src into work.
+//
+// Two shapes, because git offers no single one that takes either name:
+//
+//   - a TAG is `clone --branch`, which is one round trip and the path every
+//     released install has always taken;
+//   - a COMMIT cannot be cloned by name at all (`--branch` takes refs, and a
+//     SHA is not a ref), so it is `init` + `fetch <sha>` + `checkout
+//     FETCH_HEAD`. That needs the server to allow fetching an arbitrary
+//     reachable object — GitHub does; a server that does not says so, and the
+//     refusal below repeats it rather than guessing.
+//
+// Blobless + sparse in both: one repository holds every plugin, and a consumer
+// that wants `auth` has no use for the rest of the tree or for any history.
+func materialise(ctx context.Context, src Source, work string) error {
+	if src.Commit == "" {
+		if out, err := git(ctx, "", "clone", "--quiet", "--depth", "1",
+			"--branch", src.Tag(), "--filter=blob:none", "--sparse", src.Repo, work); err != nil {
+			return fmt.Errorf(
+				"plugin fetch: %s %s is not published at %s (%w)\n\n"+
+					"  why: a plugin version is a git TAG, so a pin that resolves to nothing is a\n"+
+					"       version that was never released — or was released somewhere else.\n%s",
+				src.Plugin, src.Version, src.Repo, err, indent(out))
+		}
+		if out, err := git(ctx, work, "sparse-checkout", "set", src.Plugin); err != nil {
+			return fmt.Errorf("plugin fetch: narrowing to %s: %w\n%s", src.Plugin, err, indent(out))
+		}
+		return nil
+	}
+
+	// A blobless clone of the whole COMMIT GRAPH, then a checkout — not
+	// `fetch <sha>`, which asks the server for one object by id.
+	//
+	// That shortcut is cheaper and conditional: it needs
+	// `uploadpack.allowReachableSHA1InWant`, which is OFF in git by default.
+	// GitHub happens to allow it, so a test over a local repository would pass
+	// (local transport skips the check entirely) while some other host refused —
+	// a guard proven on the wrong side of the wire.
+	//
+	// So: unconditional. `--filter=blob:none` keeps it cheap by leaving the file
+	// contents on the server until the checkout asks for the ones it needs, and
+	// dropping `--depth` is what makes an arbitrary commit reachable at all —
+	// a depth-1 clone contains one commit, which is almost never the one asked
+	// for.
+	if out, err := git(ctx, "", "clone", "--quiet", "--filter=blob:none",
+		"--sparse", "--no-checkout", src.Repo, work); err != nil {
+		return fmt.Errorf(
+			"plugin fetch: %s could not be read (%w)\n\n"+
+				"  why: a commit install needs the repository's commit graph to find the sha.\n%s",
+			src.Repo, err, indent(out))
+	}
+	// Sparse BEFORE the checkout, so the narrow set is what lands rather than
+	// what gets pruned afterwards.
+	if out, err := git(ctx, work, "sparse-checkout", "set", src.Plugin); err != nil {
+		return fmt.Errorf("plugin fetch: narrowing to %s: %w\n%s", src.Plugin, err, indent(out))
+	}
+	if out, err := git(ctx, work, "checkout", "--quiet", src.Commit); err != nil {
+		return fmt.Errorf(
+			"plugin fetch: commit %s is not in %s (%w)\n\n"+
+				"  why: the repository was read, so this is the sha and not the access — the commit\n"+
+				"       does not exist there, or exists only in a fork or an unpushed branch.\n"+
+				"  fix: `git rev-parse` it against the repository you are naming, or install a\n"+
+				"       published tag instead.\n%s",
+			shortID(src.Commit), src.Repo, err, indent(out))
+	}
+	return nil
 }
 
 func (s Source) validate() error {
@@ -138,14 +254,35 @@ func (s Source) validate() error {
 		return fmt.Errorf("plugin fetch: no repository given")
 	case s.Plugin == "":
 		return fmt.Errorf("plugin fetch: no plugin name given")
-	case s.Version == "":
-		return fmt.Errorf("plugin fetch: no version given for %s", s.Plugin)
+	case s.Version == "" && s.Commit == "":
+		return fmt.Errorf("plugin fetch: no version or commit given for %s", s.Plugin)
+	case s.Version != "" && s.Commit != "":
+		// Refused rather than resolved in favour of either. A Source carrying
+		// both would fetch whichever the code read first and record the other
+		// in the lock — a pin that names bytes nobody fetched.
+		return fmt.Errorf(
+			"plugin fetch: %s names both version %s and commit %s — one or the other",
+			s.Plugin, s.Version, shortID(s.Commit))
 	}
 	// A name is a catalogue key and a directory, never a path: refusing
 	// separators here is what stops a crafted pin from writing outside the
 	// destination, and the refusal names the rule rather than the symptom.
 	if path.Clean(s.Plugin) != s.Plugin || path.Base(s.Plugin) != s.Plugin {
 		return fmt.Errorf("plugin fetch: %q is not a plugin name (names carry no path separators)", s.Plugin)
+	}
+	if s.Commit != "" {
+		// A full sha, checked here rather than left to git. An abbreviation
+		// resolves fine today and is not a stable name for a tree — this value
+		// is going into a lock, where it must keep meaning the same bytes after
+		// the repository has grown enough to make the prefix ambiguous.
+		if !isFullSHA(s.Commit) {
+			return fmt.Errorf(
+				"plugin fetch: %q is not a full commit id — 40 lowercase hex characters\n\n"+
+					"  why: the sha goes into w17/lock.yaml as the pin. An abbreviation can become\n"+
+					"       ambiguous as the repository grows, so it is not a name a lock can keep.",
+				s.Commit)
+		}
+		return nil
 	}
 	if !strings.HasPrefix(s.Version, "v") {
 		return fmt.Errorf(
@@ -155,31 +292,60 @@ func (s Source) validate() error {
 	return nil
 }
 
+// shortID abbreviates a sha for a MESSAGE. Never for anything stored.
+func shortID(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
 // checkManifest is the consuming half of the guard publish-plugins.sh applies
 // when cutting a tag. A third party's repo never met that gate.
-func checkManifest(tree string, src Source) error {
+// It also returns the version to record.
+//
+// For a TAG install that is src.Version and the manifest must agree with it.
+// For a COMMIT install there is no tag to agree with, so the manifest is the
+// only thing that knows, and its value is what travels into the lock — which is
+// the same rule as before, just with the cross-check absent because there is
+// nothing to cross-check against.
+func checkManifest(tree string, src Source) (string, error) {
 	body, err := os.ReadFile(filepath.Join(tree, "plugin.yaml"))
 	if err != nil {
-		return fmt.Errorf("plugin fetch: %s/%s has no plugin.yaml — every plugin declares its own identity: %w",
-			src.Plugin, src.Version, err)
+		return "", fmt.Errorf("plugin fetch: %s at %s has no plugin.yaml — every plugin declares its own identity: %w",
+			src.Plugin, src.Ref(), err)
 	}
 	name := manifestField(string(body), "name")
 	version := manifestField(string(body), "version")
 
 	if name != src.Plugin {
-		return fmt.Errorf(
-			"plugin fetch: %s declares name: %s — the tag and the plugin disagree about what this is",
-			src.Tag(), name)
+		return "", fmt.Errorf(
+			"plugin fetch: %s declares name: %s — the ref and the plugin disagree about what this is",
+			src.Ref(), name)
+	}
+	if version == "" {
+		return "", fmt.Errorf(
+			"plugin fetch: %s ships a manifest with no version\n\n"+
+				"  why: the manifest is what travels on into the project, where no ref is around to\n"+
+				"       ask. A tree that cannot say which version it is cannot be pinned.",
+			src.Ref())
+	}
+	if src.Commit != "" {
+		// Deliberately NOT compared to anything. An unreleased tree usually
+		// declares the version it is heading FOR, which is by definition not
+		// published yet — refusing that would refuse every commit install,
+		// which is the point of the feature.
+		return "v" + version, nil
 	}
 	if "v"+version != src.Version {
-		return fmt.Errorf(
+		return "", fmt.Errorf(
 			"plugin fetch: %s ships a manifest saying version: %s\n\n"+
 				"  why: the manifest is what travels on into the project, where no tag is around to\n"+
 				"       ask. A tree that disagrees with the tag it was published under is a version\n"+
 				"       nobody downstream can trust.",
 			src.Tag(), version)
 	}
-	return nil
+	return src.Version, nil
 }
 
 // manifestField reads one top-level scalar. Deliberately not a YAML parser:
@@ -216,7 +382,8 @@ func indent(s string) string {
 	return "  " + strings.ReplaceAll(s, "\n", "\n  ")
 }
 
-// stripSrcSuffix renames `x.go.src` → `x.go` across the placed tree.
+// stripSrcSuffix renames `x.go.src` → `x.go` across the placed tree, and DROPS
+// the plugin's own tests.
 //
 // A plugin repository publishes its Go files INERT: a live `.go` (let alone a
 // `go.mod`) under `<proto_dir>/plugins/<name>/src` would make the plugin a
@@ -224,19 +391,56 @@ func indent(s string) string {
 // staged into a service bundle with their import paths rewritten. The suffix
 // is how the published form says "data, not code", and stripping it here is
 // the same unpacking the catalogue path has always done on the client side.
+//
+// # Why the tests are dropped here rather than never published
+//
+// They belong in the PUBLIC repository: a plugin is the one part of this system
+// somebody outside the team reads, and a plugin whose tests are invisible asks
+// to be trusted on its word. So the publish render carries them.
+//
+// They do not belong in a CONSUMER's tree. Nothing there runs them — the sources
+// are staged into a bundle with rewritten import paths, and a test staged along
+// with them would reference symbols the staging never placed. And the bulk is
+// not marginal: measured on this repo, tests are +121% on auth's published Go
+// (7,961 lines against 6,532), +89% on payment, +76% on agent. That is ten
+// thousand lines committed into a consumer's repository for code they cannot
+// run.
+//
+// The digest is computed AFTER this, over what actually landed. That keeps the
+// property the pin exists for — two consumers on one release get one digest, and
+// an edited tree still fails `verify` — while the value no longer equals the
+// published tree's own digest. It never described the published bytes anyway: the
+// `.src` suffixes are stripped before it is taken.
 func stripSrcSuffix(root string) error {
-	var renames [][2]string
+	var (
+		renames [][2]string
+		drops   []string
+	)
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && strings.HasSuffix(p, ".src") {
+		if d.IsDir() {
+			return nil
+		}
+		switch {
+		case strings.HasSuffix(p, "_test.go.src"), strings.HasSuffix(p, "_test.go"):
+			// Both spellings: `.src` is what the render publishes, and a bare
+			// `_test.go` would arrive from a repository that publishes its author
+			// tree directly. Neither has a job here.
+			drops = append(drops, p)
+		case strings.HasSuffix(p, ".src"):
 			renames = append(renames, [2]string{p, strings.TrimSuffix(p, ".src")})
 		}
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("plugin fetch: %w", err)
+	}
+	for _, p := range drops {
+		if err := os.Remove(p); err != nil {
+			return fmt.Errorf("plugin fetch: dropping %s: %w", filepath.Base(p), err)
+		}
 	}
 	for _, r := range renames {
 		if err := os.Rename(r[0], r[1]); err != nil {

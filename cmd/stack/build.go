@@ -55,6 +55,8 @@ type BuildCmd struct {
 	NoCodegen       bool     `name:"no-codegen" help:"Skip the codegen step (assume the generated code is already current). By default 'stack build' runs codegen first so the images compile against fresh generated code."`
 	Lossy           string   `name:"lossy" default:"refuse" help:"What to do when the sync would DESTROY data (drop a table or column, retype one): refuse | apply | snapshot. snapshot takes one of the affected stores first."`
 	NoSnapshot      bool     `name:"no-snapshot" help:"On a branch switch, do NOT snapshot the outgoing branch. ⛔ DESTRUCTIVE: with no snapshot to restore, the stores are WIPED and rebuilt from empty, so what is in them RIGHT NOW is lost too — not just the outgoing branch's history. Use it when the stores are empty or you do not want their contents."`
+	CacheCap        string   `name:"cache-cap" placeholder:"SIZE" help:"Ceiling for THIS project's build cache (default 10GB). The project builds on its own buildx builder, so the cap touches no other project's cache. One build's records measured ~7GB on a real project, so a cap below that turns every build into a cold one."`
+	NoReclaim       bool     `name:"no-reclaim" help:"Keep the untagged images this build orphans. By default a local build removes them — scoped to THIS compose project by label, never the daemon's other projects — because a rebuild replaces each image's tag and the layers the old tag pointed at are otherwise kept forever. Volumes and the build cache are never touched either way."`
 	NoBuild         bool     `name:"no-build" help:"Skip building images and sync the local database only. The schema sync and the image build are independent steps that happen to share this command; with this flag the sync needs no Docker daemon, no build context and no compose file at all. Use it when you changed a proto and want the database to match."`
 	modeFlags
 
@@ -147,9 +149,46 @@ func (c *BuildCmd) Run() error {
 		// SSH), not local ones.
 		c.cc = remoteComposeCtl(tgt.Runner)
 	} else if !c.NoBuild {
-		// Compile Go + build images locally.
-		if err := docker.RunComposeFn(root, append(append(docker.FileArgs(root), "build"), c.Services...)...); err != nil {
+		// Build on THIS project's own buildx builder, so its cache is its own
+		// and can be capped without touching anybody else's.
+		//
+		// The shared builder cannot say whose cache is whose — a cache record
+		// carries no owner and `buildx prune` has no label filter — and the
+		// gigabytes in it are per-project anyway (the context upload, the
+		// `COPY . .` layer, the `go build` exec mount). What sharing buys is the
+		// base-image layers, tens of megabytes. See docker.EnsureBuilder.
+		//
+		// Empty name means it could not be had (older buildx, no
+		// docker-container driver, --no-reclaim). Then this builds exactly as it
+		// always did, on the default builder, and the summary says the cache is
+		// shared rather than pretending otherwise.
+		var builder string
+		if !c.NoReclaim {
+			builder = docker.EnsureBuilder(root, projectForBuilder(root), c.cacheCap())
+		}
+		if err := docker.RunComposeEnvFn(root, docker.BuilderEnv(builder),
+			append(append(docker.FileArgs(root), "build"), c.Services...)...); err != nil {
 			return fmt.Errorf("stack build: compose build: %w", err)
+		}
+		// Reclaim what this build just orphaned.
+		//
+		// A generated compose stanza carries `build:` with no `image:`, so
+		// compose names each image `<project>-<service>` and a rebuild REPLACES
+		// that tag. The layers the old tag pointed at survive as an untagged
+		// image nothing references, and nothing reclaims them — build daily and
+		// that is daily disk growth.
+		//
+		// LOCAL ONLY, and not in the remote branch above: the images that went
+		// stale there are on somebody else's host, and a prune aimed over SSH
+		// from a build command is a bigger decision than this one.
+		//
+		// Never fatal. The build succeeded; the tidying is not a reason to fail
+		// it, and ReclaimAfterBuild returns an empty report rather than an error
+		// precisely so this call site cannot turn housekeeping into an outage.
+		if !c.NoReclaim {
+			if line := docker.ReclaimAfterBuild(root, builder, c.cacheCap()).Line(); line != "" {
+				fmt.Fprintln(core.Stdout, line)
+			}
 		}
 	}
 	// --no-build stops HERE and falls through to the diff-apply. The two steps
@@ -671,4 +710,20 @@ func errStoreAlreadyBootstrapped(cause error) error {
        the dev-diff base is the console checkpoint, which starts empty — so they collide.
   fix: run 'w17ctl stack reset' — it wipes the local stores, re-applies db/init, and
        adopts the current schema as the checkpoint baseline so the next build is a no-op`, cause)
+}
+
+// cacheCap is the ceiling this project's build cache is held to.
+func (c *BuildCmd) cacheCap() string {
+	if strings.TrimSpace(c.CacheCap) != "" {
+		return strings.TrimSpace(c.CacheCap)
+	}
+	return docker.DefaultCacheCap
+}
+
+// projectForBuilder names the builder after the COMPOSE project, so one name
+// answers "whose builder is this" and "whose images are these" — the image
+// reclaim filters on the same string. Empty when compose cannot be asked, which
+// is what makes EnsureBuilder decline rather than invent a name.
+func projectForBuilder(root string) string {
+	return docker.ComposeProjectName(root)
 }

@@ -24,7 +24,7 @@ package plugin
 // `rm -rf <proto_dir>/plugins/<name>/` + drop the lock entry.
 type Cmd struct {
 	List    ListCmd    `cmd:"" help:"List the console's plugin catalogue + each plugin's install state in this project's lock."`
-	Install InstallCmd `cmd:"" help:"Install one plugin: a catalogue name, or a release in a repository as <repo>#<plugin>/<version> (e.g. github.com/wandering-compiler/plugins#auth/v0.1.0-rc.1). The fragment is the git TAG, so what you type is what the repository carries."`
-	Update  UpdateCmd  `cmd:"" help:"Refresh one or every installed plugin's on-disk tree from the CONSOLE's catalogue (FetchPlugin), not from this binary's embedded copy. Updates the recorded version in the lock."`
+	Install InstallCmd `cmd:"" help:"Install one plugin: a catalogue name, a release as <repo>#<plugin>/<version> (github.com/wandering-compiler/plugins#auth/v0.1.0-rc.1 — the fragment is the git TAG, so what you type is what the repository carries), or an UNRELEASED tree as <repo>#<plugin>@<40-hex-sha> for trying a fix before it is published."`
+	Update  UpdateCmd  `cmd:"" help:"Refresh one or every installed plugin's on-disk tree to a published release. Updates the recorded version in the lock. REFUSES a commit-pinned plugin unless --to names a version: an update with no target means \"the newest release\", which is the tree a commit pin chose not to be on."`
 	GenPb   GenPbCmd   `cmd:"" name:"gen-pb" help:"Regenerate a plugin's standalone src/gen/pb from its proto/ (author-side dev/test loop; not used by project codegen)."`
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/codegen"
 	"github.com/wandering-compiler/w17ctl/internal/core"
+	"github.com/wandering-compiler/w17ctl/internal/guidestamp"
 )
 
 //go:embed guide.md
@@ -56,17 +57,40 @@ func (c *Cmd) Run() error {
 		// Overwriting is still what --force means, so this does not refuse.
 		// It says what is happening, because a one-way replacement the user
 		// cannot see is the part that cost them.
-		if existing, rerr := os.ReadFile(c.Out); rerr == nil && !bytes.Equal(existing, guideBody) {
-			fmt.Fprintf(core.Stdout,
-				"guide: replacing %s with this binary's copy (w17ctl %s).\n"+
-					"  note: the guide ships INSIDE w17ctl, so a file written by a NEWER client loses\n"+
-					"        whatever that version had to say. `git diff %s` before committing.\n",
-				c.Out, core.Version, c.Out)
+		//
+		// Now by STAMP rather than by byte-compare. The compare could only say
+		// "these differ", which is true of an upgrade and of a downgrade alike
+		// — so the warning fired on every refresh and named neither case. The
+		// stamp gives direction, so a downgrade can be called a downgrade and
+		// an ordinary refresh can stop crying wolf.
+		if existing, rerr := os.ReadFile(c.Out); rerr == nil {
+			switch rel, was, mine := guidestamp.Staleness(existing); rel {
+			case guidestamp.Newer:
+				fmt.Fprintf(core.Stdout,
+					"guide: ⚠ %s was written by w17ctl %s and you are running %s — this is a "+
+						"DOWNGRADE.\n"+
+						"  The guide ships INSIDE w17ctl, so whatever %s had to say is lost and "+
+						"cannot be fetched back.\n"+
+						"  `git diff %s` before committing, or upgrade first (`w17ctl update`).\n",
+					c.Out, was, mine, was, c.Out)
+			case guidestamp.Unknown:
+				// No stamp (written before stamps existed), or a dev build on
+				// one side. Say only what is true: something is being replaced
+				// and the direction is not knowable.
+				if !bytes.Equal(existing, guidestamp.Stamp(guideBody)) {
+					fmt.Fprintf(core.Stdout,
+						"guide: replacing %s with this binary's copy (w17ctl %s).\n"+
+							"  note: the existing file carries no version stamp, so whether this is a "+
+							"refresh or a\n"+
+							"        downgrade cannot be told. `git diff %s` before committing.\n",
+						c.Out, mine, c.Out)
+				}
+			}
 		}
 	} else if !os.IsNotExist(statErr) {
 		return fmt.Errorf("guide: stat %s: %w", c.Out, statErr)
 	}
-	if err := os.WriteFile(c.Out, guideBody, 0o644); err != nil {
+	if err := os.WriteFile(c.Out, guidestamp.Stamp(guideBody), 0o644); err != nil {
 		return fmt.Errorf("guide: write %s: %w", c.Out, err)
 	}
 	fmt.Fprintf(core.Stdout, "wrote %s — the w17ctl usage guide for coding agents\n", c.Out)

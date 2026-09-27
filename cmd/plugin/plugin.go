@@ -384,7 +384,7 @@ func (c *InstallCmd) Run() error {
 		// server-side is every judgement about the tree, starting with the
 		// manifest check two statements below.
 		fetched, err = pluginfetch.Fetch(context.Background(),
-			pluginfetch.Source{Repo: git.Repo, Plugin: git.Plugin, Version: git.Version}, staging)
+			git.source(), staging)
 		if err != nil {
 			_ = os.RemoveAll(staging)
 			return fmt.Errorf("plugin install: %w", err)
@@ -394,7 +394,7 @@ func (c *InstallCmd) Run() error {
 			_ = os.RemoveAll(staging)
 			return fmt.Errorf("plugin install: read fetched manifest: %w", err)
 		}
-		manifestFrom = git.Repo + "#" + git.Tag() + "/plugin.yaml"
+		manifestFrom = git.Repo + "#" + git.Ref() + "/plugin.yaml"
 	} else {
 		manifestData, err = fetchPluginInto(cl, name, staging)
 		if err != nil {
@@ -613,6 +613,16 @@ func (c *UpdateCmd) Run() error {
 		)
 		if isGit {
 			manifestData, fetched, err = updateFromGit(c.To, name, existing, staging)
+			if pinned, isPinned := asCommitPinned(err); isPinned && c.All {
+				// A sweep skips what it cannot move and keeps going, exactly as
+				// it already does for a `url:` source two branches up. Returning
+				// here aborted the whole run — and since `--to` is refused WITH
+				// `--all`, EVERY sweep over a project holding one commit-pinned
+				// plugin updated nothing at all.
+				fmt.Fprintln(core.Stdout, pinned.skipLine())
+				_ = os.RemoveAll(staging)
+				continue
+			}
 			if err != nil {
 				_ = os.RemoveAll(staging)
 				removeStaging()

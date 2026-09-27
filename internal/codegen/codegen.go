@@ -25,6 +25,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/adminruntime"
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/gofmtc"
+	"github.com/wandering-compiler/w17ctl/internal/guidestamp"
 	"github.com/wandering-compiler/w17ctl/internal/scaffold"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
@@ -491,6 +492,25 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
 	} else if n > 0 {
 		fmt.Fprintf(core.Stdout, "refreshed w17/specs/ (%d file(s)) — the platform reference for this compiler\n", n)
 	}
+	// And say so when the THIRD guide artefact is stale, which this command
+	// cannot fix for them.
+	//
+	// A project has three: `w17/specs/*` and `w17/AGENTS.md` are
+	// server-generated and both are refreshed by this command, so they follow
+	// the compiler on their own. `AGENTS.md` at the project root is COMPILED
+	// INTO w17ctl — it describes the client's own command surface — so it
+	// follows the BINARY, and nothing refreshed it: `update` swaps the binary
+	// and never mentions it, and `guide` refuses to overwrite without --force.
+	//
+	// So the one guide that documents what an upgrade changed was the one
+	// guaranteed to be describing the client the adopter no longer has. Said
+	// HERE because this is the command the adoption loop runs and the console
+	// is on the line anyway; `update` cannot say it with any precision, being
+	// itself the older binary.
+	//
+	// Non-fatal and silent unless there is something to report — a codegen
+	// that nags on every run is a codegen whose output stops being read.
+	noticeStaleGuide(root)
 	// Keep `w17/.gitignore` current. This runs from CODEGEN, not just `init`,
 	// because the patterns track the compiler: a project initialised before a
 	// pattern existed would otherwise never receive it, and the loop a
@@ -739,12 +759,18 @@ func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[stri
 		}
 		ver, how = v, "proxy"
 	}
+	if err := checkSdkFloor(ver, how); err != nil {
+		return err
+	}
 	for _, d := range targets {
 		// Prefer this module's own prior pin over a project-wide answer, so a
 		// deliberately divergent module isn't silently unified.
 		v := ver
 		if p, ok := prior[filepath.ToSlash(d)]; ok && how != "project" {
 			v = p
+		}
+		if err := checkSdkFloor(v, how); err != nil {
+			return err
 		}
 		if err := writeSdkPin(filepath.Join(root, d, "go.mod"), sdkMod, v); err != nil {
 			return fmt.Errorf("pin in %s: %w", d, err)
@@ -776,6 +802,41 @@ func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[stri
 		}
 	}
 	return nil
+}
+
+// checkSdkFloor refuses a pin older than the sdk/go this client was published
+// with. See core.SdkFloor for why, and for the limit of what it can catch.
+//
+// It REFUSES rather than raising the pin, because a project's pin is a
+// deliberate statement and silently moving it forward would be a different
+// defect — and because refusing here stops at the step that caused the problem
+// instead of at a build image three commands later. The refusal names the one
+// command that fixes it.
+//
+// A version that is not a comparable semver (a placeholder, a replace target,
+// anything hand-edited into a shape semver cannot order) is left alone: this
+// check exists to catch a stale pin, not to become a second validator of what
+// a pin may look like.
+func checkSdkFloor(ver, how string) error {
+	floor := core.SdkFloor
+	if floor == "" || ver == "" {
+		return nil // local / co-dev build, or nothing resolved to compare
+	}
+	if !semver.IsValid(ver) || !semver.IsValid(floor) {
+		return nil
+	}
+	if semver.Compare(ver, floor) >= 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"the project pins %s %s (from %s), which predates the %s this w17ctl was "+
+			"published with (%s)\n"+
+			"why: codegen has just written code against the NEWER surface, so the "+
+			"build will fail inside the build image with `undefined: …` and nothing "+
+			"there will point back at the pin\n"+
+			"fix: `w17ctl sdk update` (then `w17ctl sdk pin <version>` if you keep a "+
+			"deliberate pin), and re-run codegen",
+		core.SdkModuleBase+"/sdk/go", ver, how, core.SdkModuleBase+"/sdk/go", floor)
 }
 
 // priorPin returns the snapshotted version for one of targets ("" when the
@@ -1680,4 +1741,21 @@ func PinFingerprintOf(path string) string { return pinFingerprintOf(path) }
 // pins anything itself.
 func ReadDepVersions(root, genDir string) (*codegenpb.DepVersions, error) {
 	return readDepVersions(root, genDir)
+}
+
+// noticeStaleGuide prints one line when the project's root AGENTS.md was
+// written by an older w17ctl than the one running.
+//
+// Best-effort throughout: no AGENTS.md (the adopter never ran `w17ctl guide`),
+// an unreadable one, or a file with no version stamp all yield silence. The
+// only thing worth saying is "this describes a client you no longer have", and
+// that is the one case a stamp can establish.
+func noticeStaleGuide(root string) {
+	body, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		return
+	}
+	if msg := guidestamp.StaleNotice(body); msg != "" {
+		fmt.Fprintln(core.Stdout, msg)
+	}
 }

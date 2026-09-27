@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	project "github.com/wandering-compiler/w17ctl/cmd/project"
 
@@ -55,9 +56,11 @@ type UpCmd struct {
 	NoSync  bool   `name:"no-sync" help:"Start the containers without syncing the stores' schema from the console."`
 	Console string `name:"console" placeholder:"HOST:PORT" env:"CONSOLE_STORAGE_ADDR" help:"Console address for the schema sync. Empty = the lock's."`
 
-	Services []string `arg:"" optional:"" help:"Services to start; overrides the preset's selection. Empty = the preset's services, or the whole stack."`
-	Preset   string   `name:"preset" short:"p" help:"Run preset to apply (services + extra env). Empty = the project's active preset, if any."`
-	Build    bool     `name:"build" help:"Rebuild images before starting (docker compose up -d --build). For dev diff-apply of the proto to local stores, run 'stack build' (with --proto/--target) first."`
+	Services  []string `arg:"" optional:"" help:"Services to start; overrides the preset's selection. Empty = the preset's services, or the whole stack."`
+	Preset    string   `name:"preset" short:"p" help:"Run preset to apply (services + extra env). Empty = the project's active preset, if any."`
+	Build     bool     `name:"build" help:"Rebuild images before starting (docker compose up -d --build). For dev diff-apply of the proto to local stores, run 'stack build' (with --proto/--target) first."`
+	NoReclaim bool     `name:"no-reclaim" help:"With --build: keep the untagged images the rebuild orphans and build on the SHARED builder instead of this project's own. See 'stack build --help'."`
+	CacheCap  string   `name:"cache-cap" placeholder:"SIZE" help:"With --build: ceiling for this project's build cache (default 10GB). See 'stack build --help'."`
 	modeFlags
 }
 
@@ -127,8 +130,28 @@ func (c *UpCmd) Run() error {
 		args = append(args, "--build")
 	}
 	args = append(args, services...)
+	// With --build this lands on the project's own builder, the same one
+	// `stack build` uses, so a developer who only ever runs `up --build` gets the
+	// bounded cache too. Without --build there is nothing to build on, and the
+	// env addition would be inert.
+	var builder string
+	if c.Build && !c.NoReclaim {
+		builder = docker.EnsureBuilder(root, docker.ComposeProjectName(root), c.cacheCap())
+		env = append(env, docker.BuilderEnv(builder)...)
+	}
 	if err := docker.RunComposeEnvFn(root, env, append(docker.FileArgs(root), args...)...); err != nil {
 		return err
+	}
+	// `up --build` orphans images exactly as `stack build` does, so it reclaims
+	// them the same way. Both, or the growth simply moves to whichever command
+	// the developer happens to use — and `up --build` is the one an adopter
+	// reaches for.
+	//
+	// Only the LOCAL branch: the remote path's images are on another host.
+	if c.Build && !c.NoReclaim {
+		if line := docker.ReclaimAfterBuild(root, builder, c.cacheCap()).Line(); line != "" {
+			fmt.Fprintln(core.Stdout, line)
+		}
 	}
 	// The stores now hold whatever they held before — which, on a fresh
 	// volume, is nothing. Sync them.
@@ -365,4 +388,13 @@ func cleanServicesDir(servicesDir string) {
 	}
 	_ = os.Remove(servicesDir) // drops services dir only if empty
 	fmt.Fprintf(core.Stdout, "cleaned %s (preserved hand-written packages)\n", servicesDir)
+}
+
+// cacheCap mirrors BuildCmd's: `up --build` and `stack build` must hold one
+// project's cache to ONE ceiling, or whichever command ran last would decide it.
+func (c *UpCmd) cacheCap() string {
+	if v := strings.TrimSpace(c.CacheCap); v != "" {
+		return v
+	}
+	return docker.DefaultCacheCap
 }

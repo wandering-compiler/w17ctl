@@ -50,6 +50,34 @@ var (
 	SrcgoModuleBase = "github.com/wandering-compiler/platform"
 )
 
+// SdkFloor is the sdk/go snapshot that went out with THIS w17ctl — stamped at
+// publish time by scripts/publish-w17ctl.sh as a generated file, derived from
+// the published sdk repo's HEAD commit. Empty in a local or co-dev build,
+// which disables the check below rather than guessing.
+//
+// ⚠️ Derived from the COMMIT, not from the proxy's `@latest`. The first release
+// to use this floor caught why: publish-sdk had already pushed the new
+// snapshot, the proxy served that exact version's .info, and `@latest` still
+// answered the previous day's — so a floor read from there would have been one
+// version behind on the day it had to bite, and silently, because a floor that
+// is too low refuses nothing and reads as working.
+//
+// It exists because a project's sdk/go pin and the code codegen writes are two
+// independently moving things, and nothing compared them. A consumer upgraded
+// to rc.52, kept a pin from five days earlier, and the generated gateway called
+// `restgw.WriteGRPCErrorCtx` — a symbol that pin predates. `codegen` exited 0,
+// `stack build` failed inside the build image with `undefined:`, and nothing
+// tied the two together. It stayed silent for days because their CI compiles
+// the authored tree, not the generated bundles (marb #81).
+//
+// ⚠️ A FLOOR, not a ceiling. The code being generated comes from the CONSOLE,
+// which can be newer than the client; this only catches a pin older than the
+// client itself. That is the case that actually bit, but a console ahead of
+// w17ctl can still emit a symbol no pin this check accepts would carry —
+// closing THAT needs the console to declare its own sdk/go version, which it
+// does not today.
+var SdkFloor = ""
+
 // ClientCtx is the default per-call deadline for console RPCs.
 func ClientCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 30*time.Second)

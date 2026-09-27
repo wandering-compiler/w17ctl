@@ -80,6 +80,26 @@ func (c *Cmd) Run() error {
 		}
 		return nil
 	}
+	// The one project file an upgrade leaves behind.
+	//
+	// A project has three guide artefacts. `w17/specs/*` (the platform
+	// reference) and `w17/AGENTS.md` (the project map) are server-generated and
+	// the next `codegen` refreshes both. `AGENTS.md` at the project root is
+	// COMPILED INTO w17ctl — it describes the client's own command surface — so
+	// it follows the BINARY, and this command is the moment the binary changed.
+	//
+	// A flat line rather than a check, because this process CANNOT do the
+	// check: it is the OLD binary. The guide that was just installed is in the
+	// new one, and nothing here can read it. `codegen` compares the stamp and
+	// says so with versions attached; this only has to make sure the adopter
+	// knows there is a step.
+	//
+	// Printed unconditionally on a real install, and not on --dry-run: nothing
+	// was replaced there, so nothing went stale.
+	fmt.Printf("update: your project's AGENTS.md was written by the PREVIOUS client and is " +
+		"now out of date —\n" +
+		"        run `w17ctl guide --force` in the project to refresh it. It ships inside\n" +
+		"        w17ctl, so it is the one guide a `codegen` cannot bring up to date.\n")
 	return nil
 }
 
