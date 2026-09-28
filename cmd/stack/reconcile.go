@@ -236,7 +236,7 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 	// the author chose in their targets, and the compose SERVICE name in
 	// their stack file. Excluding only the first stopped the store wherever
 	// they differed, and the snapshot then failed inside a container that was
-	// no longer running (marb #57). Both are excluded now; the service is
+	// no longer running (a consumer). Both are excluded now; the service is
 	// resolved through the container that publishes the store's port, which
 	// is the one comparison that does not assume the names match.
 	storeNames := map[string]bool{}
@@ -292,7 +292,7 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 		// switch left the project's gateway and business services down until
 		// someone noticed and ran `stack up`. It read as an infrastructure
 		// outage with no cause, because the command that caused it had
-		// already reported success (marb #57).
+		// already reported success (a consumer).
 		Resume: func(context.Context) error {
 			if len(*quiesced) == 0 {
 				return nil
@@ -310,7 +310,7 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 		// switch proceeds, the uncovered store is overwritten with nothing
 		// standing behind it, and coming back to that branch fails at restore
 		// with `open …/authplatform-postgres.sql: no such file or directory`.
-		// marb had six of those directories (#68).
+		// a consumer had six of those directories (#68).
 		//
 		// Refused HERE rather than inside snapstore because this is the only
 		// place that knows a store was left out — snapstore is handed the conns
@@ -411,7 +411,7 @@ const declaredRolesFixture = "acl-roles.json"
 // so the first account registers with NO roles — and the flag is spent, so the
 // one chance is gone. The result is a sign-in that cannot invite anybody and a
 // database effectively closed, reached through a SignUp that returned 200 and
-// a token (marb, 2026-09-23).
+// a token (a consumer, 2026-09-23).
 //
 // Only the generated role file, deliberately. Hand-authored data fixtures keep
 // the behaviour they have: their seeds are upserts, and re-applying them on
@@ -473,7 +473,7 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 	// target came first. With two postgres stores that seeded the second
 	// domain's rows into the first domain's database: `relation "auth_role"
 	// does not exist` where the table was absent, and a silent write into the
-	// wrong store where a same-named table was there (marb #67, marbai-04 §3).
+	// wrong store where a same-named table was there (a consumer, 2026-09-24).
 	//
 	// The client cannot work out the mapping — it uploads the IR as opaque
 	// bytes and never decodes it — so the console returns the connection name
@@ -691,7 +691,7 @@ func sortedKeys(m map[string]string) []string {
 // seedTargetDSN resolves the store a rendered fixture belongs to.
 //
 // Separated from the loop so the decision can be driven without a live
-// postgres: it is the whole of marb #67, and a fix nothing exercises is the
+// postgres: it is the whole of a consumer, and a fix nothing exercises is the
 // shape that let the defect ship.
 //
 // A named connection with no matching target is a REFUSAL, not a fallback to

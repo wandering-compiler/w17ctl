@@ -73,7 +73,7 @@ func For(ctx context.Context, dsn string) *Snapshotter {
 // project the fallback engaged for one and not the other, and the only thing
 // the person saw was the host error — `pg_dump: executable file not found in
 // $PATH` — which names the host and says nothing about the route that was
-// tried and refused. marb could not tell whether the fallback had failed or
+// tried and refused. a consumer could not tell whether the fallback had failed or
 // simply did not exist (#62/3). A fallback that declines without a word is
 // indistinguishable from one that is not there.
 func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
@@ -114,7 +114,7 @@ func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 	// Measured on two throwaway stores: a DSN for `10.9.9.9:17004` — an address
 	// that exists nowhere on the machine — produced a 724-byte dump with zero
 	// CREATE TABLE and no error, while the correct DSN produced 1277 bytes with
-	// the table in it. marb's silently-empty branch snapshots are 722 bytes
+	// the table in it. a consumer's silently-empty branch snapshots are 722 bytes
 	// (#68), and this is how a snapshot of a populated store becomes a dump of
 	// somebody else's empty one.
 	//
@@ -129,10 +129,10 @@ func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 	}
 	// THIS PROJECT'S container first. The machine-wide lookup answers about the
 	// DAEMON — a host port is unique there — so on a shared box it finds another
-	// workspace's store just as readily (marb #75).
+	// workspace's store just as readily (a consumer).
 	// THIS PROJECT'S container first. The machine-wide match answers about the
 	// DAEMON — a host port is unique there — so on a shared box it finds another
-	// workspace's store just as readily (marb #75).
+	// workspace's store just as readily (a consumer).
 	cid := containerPublishingInProject(ctx, u.Port())
 	scoped := cid != ""
 	if !scoped {
@@ -156,7 +156,7 @@ func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 		// one fact that was missing: Dump names the container AND the compose
 		// project it belongs to, so a dump going somewhere else says so. The
 		// prevention lives at the other end — a snapshot with no tables in it is
-		// refused before it can be restored (#68) — and upstream, where marb's
+		// refused before it can be restored (#68) — and upstream, where a consumer's
 		// real cause was a project resolved by path instead of by its lock.
 		cid = containerPublishingAnywhere(ctx, u.Port())
 	}
@@ -260,7 +260,7 @@ func (s *Snapshotter) Dump(ctx context.Context, w io.Writer) error {
 		// compose stack. Name the compose project it actually belongs to: a
 		// consumer spent half a day on a dump that was reaching another
 		// workspace's database, and nothing in the output said whose container
-		// it was (marb #75).
+		// it was (a consumer).
 		if proj := composeProjectOf(ctx, s.container); proj != "" {
 			where = fmt.Sprintf("%s, compose project %q — matched by port, not by this project's stack", s.container, proj)
 		} else {
@@ -378,7 +378,7 @@ func isLocalHost(host string) bool {
 // names from a list of SERVICE names, so where the two differed the store was
 // stopped like anything else — and the snapshot arranged to run inside that
 // container then failed with "pg_dump: executable file not found", which reads
-// like a missing tool rather than a container that is no longer running (marb
+// like a missing tool rather than a container that is no longer running (a consumer
 // #57). Crossing the namespaces through the container is the one comparison
 // that does not depend on the two names matching.
 func ComposeServiceFor(ctx context.Context, dsn string) string {
@@ -455,7 +455,7 @@ func composeProjectOf(ctx context.Context, container string) string {
 // which container publishes this host port — but inside THIS project's compose
 // stack instead of across the whole daemon.
 //
-// That difference is the fix for marb #75. `docker ps` answers about the
+// That difference is the fix for a consumer. `docker ps` answers about the
 // machine, and a host port is unique there, so on a shared box the container it
 // finds can belong to another workspace entirely: their store gets dumped, and
 // on the wipe path their data is what the command is pointed at. `docker compose

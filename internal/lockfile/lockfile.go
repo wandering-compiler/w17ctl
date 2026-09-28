@@ -99,6 +99,51 @@ type GeneratedCode struct {
 	// question — which file on this disk holds the module — and the lock is
 	// already here.
 	Stubs string `yaml:"stubs"`
+
+	// The other roots codegen writes into. Read for ONE question the client
+	// alone can answer: will this project's git commit a generated tree?
+	//
+	// A `.gitignore` reaches only its own directory and below, so the one
+	// codegen writes into `w17/` cannot cover a root outside it — there is no
+	// file for the console to fix, and the console never sees the consumer's
+	// repo anyway. A consumer put a React client at
+	// `frontend/apps/rehab/api` and committed 91 generated files without being
+	// told; the warning that now says so needs these roots.
+	//
+	// ⚠️ An EMPTY `output_root` is not a root outside `w17/` — it means the
+	// default, which codegen derives under the stubs root. Treat it as absent
+	// rather than as the project directory.
+	PbStubs     []GeneratedRoot `yaml:"pb_stubs"`
+	Clients     []GeneratedRoot `yaml:"clients"`
+	GrpcClients []GeneratedRoot `yaml:"grpc_clients"`
+}
+
+// GeneratedRoot is one `generated_code` entry's output location. Only the root
+// is read here — the language and wire format are the console's business.
+type GeneratedRoot struct {
+	OutputRoot string `yaml:"output_root"`
+}
+
+// OutputRoots returns every declared, non-default generated root beside the
+// stubs root: the set a project's own `.gitignore` has to cover.
+func (g GeneratedCode) OutputRoots() []string {
+	var out []string
+	add := func(r string) {
+		if r = strings.Trim(strings.TrimSpace(r), "/"); r != "" {
+			out = append(out, r)
+		}
+	}
+	add(g.Stubs)
+	for _, e := range g.PbStubs {
+		add(e.OutputRoot)
+	}
+	for _, e := range g.Clients {
+		add(e.OutputRoot)
+	}
+	for _, e := range g.GrpcClients {
+		add(e.OutputRoot)
+	}
+	return out
 }
 
 // GenDir is the directory holding the project's hand-written Go module: the

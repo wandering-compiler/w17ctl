@@ -202,7 +202,7 @@ func goSumUpsert(prior, mod, ver, zipHash, modHash string) string {
 // goSumLess orders two go.sum lines the way `go mod tidy` does: by module path,
 // then by version as SEMVER, then the `/go.mod` line after the zip line.
 //
-// ⚠️ This was `sort.Strings`, and marb #48 measured what that costs: go.sum is
+// ⚠️ This was `sort.Strings`, and a consumer measured what that costs: go.sum is
 // sorted by semver, and a string sort disagrees with it wherever the two differ
 // — `v0.10.0` sorts before `v0.9.0` as text and after it as a version. So
 // `sdk update` rewrote lines nobody had touched, and the next `go mod tidy`

@@ -221,7 +221,7 @@ func (c *ProjectImportCmd) Run() error {
 // what stops it saying so.
 //
 // `remove` + `import` is NOT that repair, and the difference is the whole reason
-// this exists: import allocates FRESH ports. deinvo's ports are inside the range
+// this exists: import allocates FRESH ports. a consumer's ports are inside the range
 // their machine tunnels to the developer (16000-16099) and the allocator's default
 // base is 14000, so reallocating could move their stack outside the range that
 // makes it reachable at all. They read import's own help, saw "allocate it unique

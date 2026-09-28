@@ -43,7 +43,7 @@ var w17IgnoreEntries = []w17IgnoreEntry{
 	// These are not transient or secret; they are kept out of git because a
 	// pull request should show the change you made rather than the thousands
 	// of lines the compiler wrote around it. On a real consuming project 92%
-	// of tracked lines are codegen output (269 439 of 292 547 — deinvo,
+	// of tracked lines are codegen output (269 439 of 292 547 — a consumer,
 	// 2026-09-13), and GitHub counts those files toward a PR's size and its
 	// "files changed" regardless of `linguist-generated`. A diff nobody can
 	// read is a review that does not happen.

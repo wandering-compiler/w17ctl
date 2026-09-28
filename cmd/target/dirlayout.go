@@ -13,7 +13,7 @@ import (
 // are written, where the language catalogues sit.
 //
 // Those answers used to be given once, in the `init` wizard, and never again.
-// Asked for by marb, and the shape of the ask is migration onto w17: you want a
+// Asked for by a consumer, and the shape of the ask is migration onto w17: you want a
 // provisional proto dir while an existing tree is still being converted, then
 // the real one when the conversion lands. Changing your mind cost a re-init —
 // which is the normal first week for anyone adopting w17 on an existing

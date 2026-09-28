@@ -18,7 +18,7 @@
 // which is the half that matters: snapstore never infers from a DSN or an
 // extension which rule applies. It was allowed in because the alternative is
 // worse. A dump that succeeds and contains nothing was written out as a valid
-// snapshot, and reconcile then wiped the store on the strength of it; marb lost
+// snapshot, and reconcile then wiped the store on the strength of it; a consumer lost
 // six dev databases to eleven silently-empty snapshots (#68).
 //
 // Snapshots are disposable dev scratch, never a backup/DR mechanism —
@@ -71,7 +71,7 @@ type Conn struct {
 	// where that route declined too, the only error a person saw named the
 	// host's missing binary — true of every store in the project and an
 	// explanation of none, so they could not tell a failed fallback from an
-	// absent one (marb #62/3).
+	// absent one (reported by a consumer).
 	//
 	// Carried on the Conn rather than printed when the route is chosen,
 	// because the conns are built on EVERY build and the dump happens on a
@@ -276,7 +276,7 @@ func (s *Store) saveOneTo(ctx context.Context, dbDir string, c Conn) error {
 	}
 	// A dump that SUCCEEDED and created nothing has two causes, and accepting
 	// either is how reconcile came to restore a 722-byte file over a live
-	// database (marb #68): the store is EMPTY, or the dump reached a different
+	// database (a consumer): the store is EMPTY, or the dump reached a different
 	// database than the one this store names.
 	//
 	// This used to infer the second from the first and refuse both, telling the
@@ -511,7 +511,7 @@ const namedSchemaFile = "schema"
 // moment anybody wants it is AFTER that change has happened — when the
 // initiative's schema no longer matches the one the savepoint was taken at,
 // by construction. The consistency guard, reading only the taken-at hash,
-// therefore refused exactly the case the savepoint exists for (deinvo,
+// therefore refused exactly the case the savepoint exists for (a consumer,
 // 2026-09-19).
 //
 // So the sync writes down where it was going. `activate` allows the return

@@ -913,13 +913,13 @@ func RelFromProject(abs string) string {
 // The prefix is derived from the project name — and the doc on
 // ProtoSafePackagePrefix tells operators to shorten it by hand when the
 // derived one is ugly (`e2e` for `e2e_project`). Both halves of that advice
-// are fine; together they are a trap. A project called `marb-finplatform`
-// derives `marb_finplatform`, an operator trims their domain protos to
-// `marb.finplatform.<module>`, and the next `module add` re-derives from the
-// project and scaffolds `marb_finplatform.finplatform.<module>` — a SECOND
+// are fine; together they are a trap. A project called `acme-finplatform`
+// derives `acme_finplatform`, an operator trims their domain protos to
+// `acme.finplatform.<module>`, and the next `module add` re-derives from the
+// project and scaffolds `acme_finplatform.finplatform.<module>` — a SECOND
 // namespace beside the domain's. Codegen accepts it, so it surfaces in review,
 // or later when somebody adds an event to that module and cannot find the
-// types (marb, 2026-09-23).
+// types (a consumer, 2026-09-23).
 //
 // A scaffolder's job is to match the tree it writes into. What the domain says
 // wins; the project name is the fallback for a domain that says nothing yet.

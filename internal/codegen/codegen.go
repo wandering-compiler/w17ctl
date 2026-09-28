@@ -476,10 +476,30 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
 	// project builds immediately. Non-fatal: on a proxy/network hiccup the files
 	// are already written, so advise the manual fix rather than fail codegen.
 	if err := resolveSdkGoPins(root, servicesDir, w17StubsDir, genDir, priorSdkPins, core.Stdout); err != nil {
+		// Two failures, two answers. A stale pin is a REFUSAL — the generated
+		// code was written against a newer surface and the build cannot work
+		// — so codegen stops and the reader has one thing to do. Everything
+		// else here is a hiccup (a proxy outage, an unreadable go.mod) where
+		// the files are already written and warning is right.
+		//
+		// They shared one arm until a consumer measured what shipped: the
+		// floor check came out as one warning among nine with exit 0, so a
+		// client released as "refuses a stale pin" did not.
+		if errors.Is(err, ErrSdkFloor) {
+			return err
+		}
 		fmt.Fprintf(core.Stdout, "codegen: warning: could not pin %s automatically (%v);\n"+
 			"  set the version by hand in the project's go.mod files, or make a module\n"+
 			"  proxy reachable (GOPROXY) and re-run codegen\n",
 			core.SdkModuleBase+"/sdk/go", err)
+	}
+	// Say what this project's git will do with what was just written. Last,
+	// after the pins, because it is about the tree as it now stands — and only
+	// the client can ask: a `.gitignore` reaches its own directory and below,
+	// so nothing the console writes into `w17/` can cover a root outside it,
+	// and the console never sees the consumer's repo.
+	if lk, lkErr := lockfile.Load(filepath.Join(root, "w17", "lock.yaml")); lkErr == nil {
+		warnUningnoredGeneratedRoots(root, lk.GeneratedCode.OutputRoots(), core.Stdout)
 	}
 	// Refresh the platform reference (w17/specs/*) while the console is on
 	// the line. It describes the COMPILER's output, so it goes stale exactly
@@ -759,9 +779,15 @@ func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[stri
 		}
 		ver, how = v, "proxy"
 	}
-	if err := checkSdkFloor(ver, how); err != nil {
-		return err
-	}
+	// The floor is checked AFTER the writes, not before, and that ordering is
+	// the fix rather than a detail. Returning early left the modules that had
+	// never been pinned carrying the unresolved placeholder, so the build died
+	// on `sdk/go@v0.0.0-00010101000000-000000000000: unable to resolve git
+	// version` — a message that points at the pin no better than the
+	// `undefined:` this whole check exists to replace. Pinning consistently
+	// first means the refusal below is the only thing the reader has to act on,
+	// and `w17ctl sdk update` starts from a tree that makes sense.
+	floorErr := checkSdkFloor(ver, how)
 	for _, d := range targets {
 		// Prefer this module's own prior pin over a project-wide answer, so a
 		// deliberately divergent module isn't silently unified.
@@ -769,8 +795,10 @@ func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[stri
 		if p, ok := prior[filepath.ToSlash(d)]; ok && how != "project" {
 			v = p
 		}
-		if err := checkSdkFloor(v, how); err != nil {
-			return err
+		if floorErr == nil {
+			if err := checkSdkFloor(v, how); err != nil {
+				floorErr = err
+			}
 		}
 		if err := writeSdkPin(filepath.Join(root, d, "go.mod"), sdkMod, v); err != nil {
 			return fmt.Errorf("pin in %s: %w", d, err)
@@ -801,8 +829,22 @@ func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[stri
 				"`w17ctl sdk update` moves the whole project forward\n", strings.Join(fresh, ", "))
 		}
 	}
-	return nil
+	// Last, so the tree is consistently pinned and the notices are printed
+	// before the reader hits the refusal.
+	return floorErr
 }
+
+// ErrSdkFloor marks the one failure in resolveSdkGoPins that is a REFUSAL
+// rather than a hiccup, so the caller can stop instead of warning.
+//
+// It has to be distinguishable, and a consumer proved why: the caller treats
+// every error from that function as non-fatal, because the original ones were
+// proxy outages where the files were already written. So the floor check —
+// shipped as "codegen REFUSES a stale pin", in a release and in two letters —
+// came out as one warning among nine with exit 0, and the tree was left with
+// the stale pin in place. A refusal that does not refuse is worse than no
+// refusal: it is a promise the reader acts on.
+var ErrSdkFloor = errors.New("sdk/go pin predates this client")
 
 // checkSdkFloor refuses a pin older than the sdk/go this client was published
 // with. See core.SdkFloor for why, and for the limit of what it can catch.
@@ -828,15 +870,15 @@ func checkSdkFloor(ver, how string) error {
 	if semver.Compare(ver, floor) >= 0 {
 		return nil
 	}
-	return fmt.Errorf(
+	return fmt.Errorf("%w: "+
 		"the project pins %s %s (from %s), which predates the %s this w17ctl was "+
-			"published with (%s)\n"+
-			"why: codegen has just written code against the NEWER surface, so the "+
-			"build will fail inside the build image with `undefined: …` and nothing "+
-			"there will point back at the pin\n"+
-			"fix: `w17ctl sdk update` (then `w17ctl sdk pin <version>` if you keep a "+
-			"deliberate pin), and re-run codegen",
-		core.SdkModuleBase+"/sdk/go", ver, how, core.SdkModuleBase+"/sdk/go", floor)
+		"published with (%s)\n"+
+		"why: codegen has just written code against the NEWER surface, so the "+
+		"build will fail inside the build image with `undefined: …` and nothing "+
+		"there will point back at the pin\n"+
+		"fix: `w17ctl sdk update` (then `w17ctl sdk pin <version>` if you keep a "+
+		"deliberate pin), and re-run codegen",
+		ErrSdkFloor, core.SdkModuleBase+"/sdk/go", ver, how, core.SdkModuleBase+"/sdk/go", floor)
 }
 
 // priorPin returns the snapshotted version for one of targets ("" when the

@@ -16,7 +16,7 @@ import (
 // what the author edits. When they disagree, rendering the registry's
 // copy silently is the failure that matters.
 //
-// deinvo, 2026-09-04: a 356-row local fixture, a 1-row copy in the
+// a consumer, 2026-09-04: a 356-row local fixture, a 1-row copy in the
 // registry, and `--out` wrote the 1-row version under a "DO NOT EDIT"
 // header claiming "the fixture is the source of truth" — a sentence
 // about a file that was not the one rendered. The output goes into
@@ -28,7 +28,7 @@ import (
 // Nothing was wrong with the rendering. The gap is that `apply` never
 // looks at the tree it was invoked in, so "the registry is behind" and
 // "the registry is current" produce identical, confident output. The
-// remedy is the one deinvo proposed: compare, and refuse.
+// remedy is the one a consumer proposed: compare, and refuse.
 
 // localFixturePath is where the working tree keeps a fixture, mirroring
 // the layout `push` derives its registry key from.

@@ -328,7 +328,7 @@ func (p *Project) ClearActivePreset() {
 // one, `stack build` dialled another, and their lock named a third — so a dump
 // reached a database in a DIFFERENT WORKSPACE on the same machine, and the
 // empty snapshots that came back are what a branch switch then restored over
-// their live stores (marb #75, and the mechanism behind #68).
+// their live stores (a consumer, and the mechanism behind #68).
 //
 // Sorting makes the wrong answer at least a STABLE wrong answer, which is what
 // makes it findable. Duplicates themselves are refused by DuplicatePaths, and
@@ -353,7 +353,7 @@ func (c *Config) FindByPath(absPath string) (string, *Project) {
 // Two entries on one path is not a state any command can resolve correctly: the
 // registry is keyed by name and asked by path, so the question has more than one
 // true answer and every caller picks one. Reporting it is the only honest
-// handling — see marb #75, where the three answers differed by store PORT and
+// handling — see a consumer, where the three answers differed by store PORT and
 // the dump went to another workspace's database.
 func (c *Config) DuplicatePaths() map[string][]string {
 	byPath := map[string][]string{}
@@ -418,7 +418,7 @@ func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, 
 		if !ok {
 			// ⚠️ This used to REFUSE, and refusing was wrong in the ordinary
 			// case. Renaming a project in the console is a legitimate act an
-			// owner is allowed to perform — deinvo renamed theirs to match a
+			// owner is allowed to perform — a consumer renamed theirs to match a
 			// GitHub branch — while the registry key was written at `init` from
 			// the org slug and nothing ever paired the two. Eight client
 			// releases did not care; rc.52 blocked `stack build` outright and
@@ -428,7 +428,7 @@ func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, 
 			// one tree.
 			//
 			// What the name is FOR is disambiguating several entries on one
-			// path (marb #75). With exactly one entry here there is nothing to
+			// path (a consumer). With exactly one entry here there is nothing to
 			// disambiguate, so the single entry is the answer — said out loud,
 			// with the command that aligns the two names and keeps the ports.
 			// DuplicatePaths only reports paths carrying MORE than one entry, so
@@ -454,7 +454,7 @@ func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, 
 					lockProject, len(byPath), strings.Join(byPath, ", "), lockProject, lockProject)
 			}
 			// Nothing registered for this directory at all — and that is a FRESH
-			// CHECKOUT, not a mistake. marb's CI runner has no `~/.w17` by
+			// CHECKOUT, not a mistake. a consumer's CI runner has no `~/.w17` by
 			// construction: their `w17-codegen` job passes `--no-build` exactly
 			// so nothing starts, and the refusal's advice (`stack up`) says to
 			// bring up a compose stack to fix a missing local file. rc.52 stopped

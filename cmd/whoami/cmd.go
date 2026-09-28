@@ -4,7 +4,7 @@
 //
 // The offline read is deliberate and stays. What changed is what it CLAIMS:
 // printing an identity and a list of organizations reads as "you are logged
-// in", and what it actually knows is "this file says so". deinvo took that as
+// in", and what it actually knows is "this file says so". a consumer took that as
 // confirmation before a regeneration and found out at the first real call that
 // the token was dead (2026-09-12).
 //
@@ -47,7 +47,7 @@ func (c *Cmd) Run() error {
 	// — advice a CI runner must not take. `login` is the wrong act for a
 	// machine account and would not even work: it is `kind = BOT`, and the
 	// plugin refuses a password sign-in for one. Reported from a real CI run
-	// where the token was valid (deinvo, 2026-09-21), and AGENTS.md points at
+	// where the token was valid (a consumer, 2026-09-21), and AGENTS.md points at
 	// this very command as the arbiter of "is the credential the problem".
 	if core.EnvTokenIsSet() {
 		return c.reportMachineAccount()

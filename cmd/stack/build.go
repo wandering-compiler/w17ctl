@@ -132,7 +132,7 @@ func (c *BuildCmd) Run() error {
 		}
 		// Same resolution as the local path below, and for the same reason: a
 		// duplicate registry entry would otherwise tunnel to ANOTHER project's
-		// stores here while the local path resolved correctly (marb #75).
+		// stores here while the local path resolved correctly (a consumer).
 		var ports map[string]int
 		_, p, pnote, perr := cfg.ResolveProject(lockProjectName(root), root)
 		if pnote != "" {
@@ -362,7 +362,7 @@ func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiativ
 		// The schema this savepoint belongs to, so `db snapshot activate` can
 		// warn when it is put back onto a different one. Empty was what
 		// produced a listing reading `(schema )` — an empty slot nobody could
-		// tell from a lost value (deinvo, 2026-09-19).
+		// tell from a lost value (a consumer, 2026-09-19).
 		//
 		// It is the schema the database holds NOW, i.e. the checkpoint BEFORE
 		// this sync advances it: the snapshot is of what is there, not of
@@ -389,7 +389,7 @@ func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiativ
 		// anywhere else: this line is read by somebody who has just destroyed
 		// data and is copying the command out of it. `restore` was refused
 		// with "unexpected argument", at the one moment nobody goes looking
-		// through --help (deinvo, 2026-09-19).
+		// through --help (a consumer, 2026-09-19).
 		fmt.Fprintf(core.Stdout, "stack build: snapshot %q taken before applying (put it back: w17ctl db snapshot activate %s%s)\n",
 			name, name, c.restoreFlags())
 		return nil
@@ -458,7 +458,7 @@ func (c *BuildCmd) ResolveTargets(root string) ([]factory.TargetSpec, error) {
 	// NAME and was being asked by PATH, so two entries on one directory gave a
 	// different answer per run (map iteration) — and each entry carries its own
 	// published store ports, so a dump reached another workspace's database on
-	// the same machine (marb #75).
+	// the same machine (a consumer).
 	projName, p, pnote, rerr := cfg.ResolveProject(lockProjectName(root), root)
 	if pnote != "" {
 		fmt.Fprintf(core.Stdout, "stack build: %s\n", pnote)
@@ -476,7 +476,7 @@ func (c *BuildCmd) ResolveTargets(root string) ([]factory.TargetSpec, error) {
 	}
 	// What compose publishes NOW beats what this machine's config remembers —
 	// see localtarget.ResolveLive for why the memory was the remaining half of
-	// marb #75.
+	// a consumer.
 	published, asked := publishedPortsFn(root)
 	specs, skipped := resolveLocalTargetsWith(connNames, p, published, asked)
 	for _, s := range skipped {
@@ -484,7 +484,7 @@ func (c *BuildCmd) ResolveTargets(root string) ([]factory.TargetSpec, error) {
 	}
 	// Say WHICH project and WHICH port each store resolved to. Half a day went
 	// into working out that three registry entries were answering differently,
-	// and the commands never said which answer they had taken (marb #75/3).
+	// and the commands never said which answer they had taken (reported by a consumer).
 	for _, sp := range specs {
 		fmt.Fprintf(core.Stdout, "stack build: store %s → %s (project %s)\n",
 			sp.Connection, redactDSN(sp.DSN), projName)
@@ -562,7 +562,7 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 			return fmt.Errorf("stack build: reconcile: %w", rerr)
 		}
 		// The hatch leaves its trace in the line that reports the result,
-		// not only in the line that took it — the pattern deinvo named on
+		// not only in the line that took it — the pattern a consumer named on
 		// --allow-stale-pins ("3 lock(s)" instead of 4): output that looks
 		// like a clean run is how a person keeps taking a hatch they have
 		// forgotten they opted into.

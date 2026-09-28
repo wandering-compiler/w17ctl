@@ -42,7 +42,7 @@ import (
 // about a lock that drifted. The distinction is not cosmetic: the headline
 // above these errors used to advise `w17ctl codegen`, which cannot fix any of
 // them — the fix is a `plugin update`, four lines further down, and advice
-// people act on first is advice that has to apply (deinvo, 2026-09-23).
+// people act on first is advice that has to apply (a consumer, 2026-09-23).
 //
 // A TYPE rather than a match on the message text: a classifier keyed on a
 // phrase goes quietly generic the day somebody rewords the error, which looks

@@ -171,7 +171,7 @@ func GuideViaConsole(root, console string) error {
 // the compiler is the adoption loop, which runs codegen and has no reason to
 // re-run guide. A consumer read an old copy, concluded a shipped annotation
 // did not exist, and went looking for a gap that had already been closed
-// (deinvo, 2026-07-28). Refreshing where the compiler is contacted anyway
+// (a consumer, 2026-07-28). Refreshing where the compiler is contacted anyway
 // costs one RPC and removes the drift entirely.
 func refreshPlatformSpecs(cl codegenpb.CodegenServiceClient, root string) (int, error) {
 	ctx, cancel := core.ClientCtx()

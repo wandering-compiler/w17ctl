@@ -53,7 +53,7 @@ var longestMarker = func() int {
 // A dump that FAILS is already an error. A dump that succeeds and contains
 // nothing was written out as a valid snapshot, and reconcile then wiped the
 // store on the strength of it (`the outgoing branch was already snapshotted,
-// so the wipe is recoverable`). marb lost six dev databases that way, over
+// so the wipe is recoverable`). a consumer lost six dev databases that way, over
 // eleven silently-empty snapshots of 722 bytes each — a dump of a DIFFERENT,
 // empty database, because the in-container route matched a container by port
 // digits and ignored the DSN's host (#68, fixed in `containerdump`).

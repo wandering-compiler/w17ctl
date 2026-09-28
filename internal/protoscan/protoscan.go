@@ -32,7 +32,7 @@ var modelTableMarker = []byte("(w17.db.table)")
 // table marker alone can never pick it up, while a sibling module's
 // `(w17.field).upload.connection` points straight at it.
 //
-// deinvo hit this on 2026-08-30: `codegen`, `verify` and `test` compile
+// a consumer hit this on 2026-08-30: `codegen`, `verify` and `test` compile
 // the whole tree and accepted their project; `stack build` compiled the
 // table-declaring subset and refused it with `upload.connection
 // "core-uploads" is not declared in this domain (declared:

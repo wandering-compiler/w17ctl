@@ -117,7 +117,7 @@ func (c *RenderCmd) Run() error {
 		// CONNECTION name, so it writes that wrong path itself.
 		//
 		// Reported with 642 rows in and 0 statements out, exit 0, no word
-		// said (deinvo, 2026-09-21). Refusing costs nothing: a genuinely
+		// said (a consumer, 2026-09-21). Refusing costs nothing: a genuinely
 		// empty fixture has no rows to lose.
 		if len(resp.GetStatements()) == 0 && fixtureHasRows(body) {
 			return fmt.Errorf(

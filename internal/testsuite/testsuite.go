@@ -83,7 +83,7 @@ var (
 // nothing read. So a compose failure reached the operator as
 // `docker compose config: exit status 1` while the sentence explaining it
 // ("services.core-server conflicts with imported resource") sat in the error
-// value, discarded. deinvo spent a CI round re-running `docker compose config`
+// value, discarded. a consumer spent a CI round re-running `docker compose config`
 // by hand as a separate step to read a message this process had already been
 // handed (2026-09-12).
 //
@@ -272,7 +272,7 @@ func (c *Config) Run() (err error) {
 	// `connection refused`, under a `FAIL`, an exit 1 and a list of `✗`,
 	// while the same log said `Healthy` a few lines above. It reads as
 	// "I broke the suite", and it costs whoever sees it a search through
-	// their own diff (deinvo, 2026-08-30 — and once already in July).
+	// their own diff (a consumer, 2026-08-30 — and once already in July).
 	//
 	// So: wait here, and if it never comes up, fail with a sentence that
 	// says the stack is the problem. Same slot and same reasoning as
@@ -852,7 +852,7 @@ const composedAdminContainerPort = 9090
 // container with ZERO published ports, and the run then dies during
 // discovery on a stack that is in fact fully up. Measured at ~50% of runs
 // on a loaded shared box (16 cores, load ~12, ~50 foreign containers —
-// deinvo, 2026-07-28); it does not reproduce on an idle machine, which is
+// a consumer, 2026-07-28); it does not reproduce on an idle machine, which is
 // why it read as a config error for a week.
 //
 // Waiting costs nothing when the ports are already up — the first attempt
@@ -906,7 +906,7 @@ func (c *Config) servicePortOnce(files []string, project, root, svc string, cont
 		// Docker says exactly what went wrong here — "no port 8080/tcp for
 		// container X: 4222/tcp, …" or `service "X" is not running` — and
 		// dropping it left a bare "exit status 1" that names neither the
-		// cause nor the fix (deinvo, 2026-07-28). It is the only evidence
+		// cause nor the fix (a consumer, 2026-07-28). It is the only evidence
 		// there is: the caller cannot re-derive it from the exit code.
 		if msg := dockerStderr(err); msg != "" {
 			return 0, portsUnpublished(msg), fmt.Errorf("discover host port (%s:%d): %w — docker: %s", svc, containerPort, err, msg)
@@ -946,7 +946,7 @@ var (
 // is serving. The gate was answering "did docker publish a port", which is
 // true several seconds before the answer anyone wanted.
 //
-// deinvo measured the window with a socket on 2026-09-05: five resets at
+// a consumer measured the window with a socket on 2026-09-05: five resets at
 // 400ms intervals, then HTTP at t+2.0s. It became deterministic the day
 // before, and by our own hand: dbwait stopped the server exiting on a
 // database that had not finished starting, so instead of dying and taking

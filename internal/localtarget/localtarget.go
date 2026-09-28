@@ -145,7 +145,7 @@ func DialectByEnginePort(containerPort int) (string, bool) {
 // Asked of compose rather than of `docker ps`, so the answer is scoped to this
 // project by construction: a host port is unique per MACHINE, so "who publishes
 // 16209" is a question about the machine — the question whose answer reached
-// another workspace's database (marb #75).
+// another workspace's database (a consumer).
 func PublishedPorts(root string) (map[string]map[int]int, bool) {
 	raw, err := docker.CaptureComposeFn(root, append(docker.FileArgs(root), "ps", "--format", "json")...)
 	if err != nil || len(raw) == 0 {
@@ -177,7 +177,7 @@ func PublishedPorts(root string) (map[string]map[int]int, bool) {
 // ResolveLive is ResolveDSN with what compose publishes preferred over what the
 // devconfig remembers.
 //
-// The remembered number was the remaining half of marb #75. Resolving the project
+// The remembered number was the remaining half of a consumer. Resolving the project
 // by its lock stopped a command reading another project's allocation, and scoping
 // the container lookup stopped a dump reaching another workspace — but the port
 // itself was still a memory and nothing compared it with the machine. A remembered

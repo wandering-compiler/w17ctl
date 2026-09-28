@@ -194,7 +194,7 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 		// a wrong diagnosis printed above a correct detail. A consumer read
 		// "drift detected — re-run codegen and commit the locks", did that,
 		// and only then read to the end of the line: the locks were fine,
-		// the role was missing three permissions (deinvo, 2026-09-23).
+		// the role was missing three permissions (a consumer, 2026-09-23).
 		//
 		// Advice that cannot apply to the case it is printed for is worse
 		// than no advice: it is the part people act on first.
@@ -208,7 +208,7 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 		// Same shape one floor further out: a plugin TREE that disagrees with
 		// its pin is not lock drift, and `codegen` will not touch it. The fix
 		// is a `plugin update`, which the detail already names — the headline
-		// used to send people at the wrong one first (deinvo, 2026-09-23).
+		// used to send people at the wrong one first (a consumer, 2026-09-23).
 		if names, only := PluginTreeDrift(errs); only {
 			return fmt.Errorf("verify: %s — the committed plugin tree is not the one the lock pins, "+
 				"so this is not lock drift and `codegen` will not repair it. "+

@@ -192,15 +192,16 @@ func (c *GenerateCmd) Run() error {
 
 // ResetCmd implements `w17ctl migrate reset`.
 type ResetCmd struct {
-	Force     bool     `name:"force" short:"f" help:"Acknowledge the destructive action (drops the DB volume + the console's migration history — ALL data lost, hand-authored data migrations included). Required: without it the command refuses."`
-	Up        bool     `name:"up" help:"After tearing down, bring the stack back up (docker compose up -d) so you land on a clean, empty, running slate."`
-	ProjectID string   `name:"project" placeholder:"ID" help:"Project whose migration history is discarded. Empty = read project_id from the lock."`
-	Console   string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console ProjectRegistry. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
-	Protos    []string `name:"proto" short:"p" placeholder:"PROTO" help:"Path to a .proto schema. Repeatable. Supplied = the fresh baseline is pushed for you (step 4); omitted = the command stops after the reset and tells you to run 'migrate generate --initial'."`
-	Imports   []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
-	LockPath  string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file, re-pinned by the baseline push. Only read when --proto is given."`
-	NoLock    bool     `name:"no-lock" help:"Skip the lock-file write on the baseline push. Only read when --proto is given."`
-	LocalOnly bool     `name:"local-only" help:"Tear the local stack + DB volume down WITHOUT touching the console's migration history. The dev-loop escape from before the reset RPC existed — the project keeps its history, so the next apply replays it onto the empty DB."`
+	Force       bool     `name:"force" short:"f" help:"Acknowledge the destructive action (drops the DB volume + the console's migration history — ALL data lost, hand-authored data migrations included). Required: without it the command refuses."`
+	Up          bool     `name:"up" help:"After tearing down, bring the stack back up (docker compose up -d) so you land on a clean, empty, running slate."`
+	ProjectID   string   `name:"project" placeholder:"ID" help:"Project whose migration history is discarded. Empty = read project_id from the lock."`
+	Console     string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console ProjectRegistry. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
+	Protos      []string `name:"proto" short:"p" placeholder:"PROTO" help:"Path to a .proto schema. Repeatable. Supplied = the fresh baseline is pushed for you (step 4); omitted = the command stops after the reset and tells you to run 'migrate generate --initial'."`
+	Imports     []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
+	LockPath    string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file, re-pinned by the baseline push. Only read when --proto is given."`
+	NoLock      bool     `name:"no-lock" help:"Skip the lock-file write on the baseline push. Only read when --proto is given."`
+	LocalOnly   bool     `name:"local-only" help:"Tear the local stack + DB volume down WITHOUT touching the console's migration history. The dev-loop escape from before the reset RPC existed — the project keeps its history, so the next apply replays it onto the empty DB."`
+	HistoryOnly bool     `name:"history-only" help:"The MIRROR of --local-only: discard the console's migration history and touch NO stack, DB or docker. Needs no project directory, so an operator can run it for a project whose checkout lives on somebody else's machine. ⚠️ Leaves databases holding a schema the console has no history for — the state the step order otherwise avoids — so the project must push a fresh baseline ('w17ctl migrate generate --initial') before it applies anything again."`
 }
 
 // docker.RunComposeFn execs `docker compose <args...>` in dir. Package var
@@ -211,17 +212,62 @@ type ResetCmd struct {
 // env) into the subprocess without touching any .env file. Tests
 // override it to capture the env + args.
 
+// projectIDForBanner names the target in the banner, or says it is unset. The
+// banner prints BEFORE the --force check on purpose, so it has to survive the
+// case where no id was given — which under --history-only is a refusal, not a
+// fallback.
+func projectIDForBanner(c *ResetCmd) string {
+	if c.ProjectID == "" {
+		return "the project (none given — this will refuse)"
+	}
+	return "project " + c.ProjectID
+}
+
 func (c *ResetCmd) Run() error {
-	root, err := core.FindProjectRoot()
-	if err != nil {
-		return err
+	// The two scopes are opposites, and asking for both asks for nothing:
+	// --local-only says "no console", --history-only says "no local". A
+	// command that silently picked one would destroy half of what the caller
+	// thought they were protecting.
+	if c.LocalOnly && c.HistoryOnly {
+		return fmt.Errorf("--local-only and --history-only are opposites: the first spares the console's history, the second spares the local stack — pass neither to do both")
+	}
+	// --history-only runs nowhere near a project, so the flags that only mean
+	// something inside one are refused rather than ignored. An ignored flag on
+	// a destructive command reads as "it was honoured".
+	if c.HistoryOnly {
+		switch {
+		case c.Up:
+			return fmt.Errorf("--up brings a local stack back up, and --history-only never took one down")
+		case len(c.Protos) > 0:
+			return fmt.Errorf("--proto pushes the fresh baseline from a project's proto tree, which --history-only has no checkout for — run 'w17ctl migrate generate --initial' in the project instead")
+		}
+	}
+
+	// root is only needed by the local half. Resolving it under --history-only
+	// would make the flag require the very checkout it exists to work without.
+	var root string
+	if !c.HistoryOnly {
+		var err error
+		root, err = core.FindProjectRoot()
+		if err != nil {
+			return err
+		}
 	}
 
 	// Loud banner naming everything that dies. It runs before the
 	// --force check on purpose: someone who typed the command without
 	// the flag should still read what it would have done.
-	fmt.Fprintln(core.Stdout, "⚠️  w17ctl migrate reset is DESTRUCTIVE and DEV-ONLY. It loses:")
-	fmt.Fprintln(core.Stdout, "      • the local DB volume — ALL data in it (docker compose down -v)")
+	// DEV-ONLY is true of the local halves and false of --history-only, which
+	// exists SO an operator can point it at a deployed console. A banner that
+	// says dev-only on a production box either stops the person following the
+	// runbook or teaches them that this command's banners can be ignored.
+	if c.HistoryOnly {
+		fmt.Fprintln(core.Stdout, "⚠️  w17ctl migrate reset --history-only is DESTRUCTIVE and acts on the console you are")
+		fmt.Fprintln(core.Stdout, "    pointed at — which for this flag is usually a DEPLOYED one. It loses:")
+	} else {
+		fmt.Fprintln(core.Stdout, "⚠️  w17ctl migrate reset is DESTRUCTIVE and DEV-ONLY. It loses:")
+		fmt.Fprintln(core.Stdout, "      • the local DB volume — ALL data in it (docker compose down -v)")
+	}
 	if !c.LocalOnly {
 		fmt.Fprintln(core.Stdout, "      • the project's migration history on the console, its stored schema with it")
 		fmt.Fprintln(core.Stdout, "      • every hand-authored data migration (migrate push-raw) — those bodies are")
@@ -230,10 +276,24 @@ func (c *ResetCmd) Run() error {
 		fmt.Fprintln(core.Stdout, "      • the ACL permission-id allocation — retired ids are re-handed out, so any")
 		fmt.Fprintln(core.Stdout, "        grant issued against the old lock now points somewhere else")
 	}
-	fmt.Fprintln(core.Stdout, "    There is no project-stage gate yet: nothing here checks that this is not prod.")
+	if c.HistoryOnly {
+		fmt.Fprintln(core.Stdout, "    --history-only: no stack, DB or docker is touched. The databases keep a schema")
+		fmt.Fprintln(core.Stdout, "    the console no longer has a history for, which is the one state the step order")
+		fmt.Fprintln(core.Stdout, "    otherwise avoids — push a fresh baseline (`w17ctl migrate generate --initial`)")
+		fmt.Fprintln(core.Stdout, "    before applying anything again.")
+	}
+	if c.HistoryOnly {
+		fmt.Fprintf(core.Stdout, "    There is no project-stage gate yet: NOTHING here checks that %s is not a\n", projectIDForBanner(c))
+		fmt.Fprintln(core.Stdout, "    production project. --force is the only thing between this and one.")
+	} else {
+		fmt.Fprintln(core.Stdout, "    There is no project-stage gate yet: nothing here checks that this is not prod.")
+	}
 	fmt.Fprintln(core.Stdout)
 
 	if !c.Force {
+		if c.HistoryOnly {
+			return fmt.Errorf("refusing: `migrate reset --history-only` discards the console's migration history, hand-authored bodies included — pass --force to confirm")
+		}
 		return fmt.Errorf("refusing: `migrate reset` drops the DB volume and the console's migration history, and loses ALL data — pass --force to confirm")
 	}
 
@@ -242,8 +302,10 @@ func (c *ResetCmd) Run() error {
 	// resolution). Guard on its presence so we
 	// fail clearly outside a generated project rather than running a
 	// stray compose.
-	if _, statErr := os.Stat(filepath.Join(root, "compose.yaml")); statErr != nil {
-		return fmt.Errorf("no compose.yaml at project root %s — `migrate reset` only handles the local compose dev loop today (see `migrate reset --help`)", root)
+	if !c.HistoryOnly {
+		if _, statErr := os.Stat(filepath.Join(root, "compose.yaml")); statErr != nil {
+			return fmt.Errorf("no compose.yaml at project root %s — `migrate reset` only handles the local compose dev loop today (see `migrate reset --help`)", root)
+		}
 	}
 
 	// --- preflight (before anything is destroyed) --------------------
@@ -257,10 +319,25 @@ func (c *ResetCmd) Run() error {
 	var projectID string
 	if !c.LocalOnly {
 		projectID = c.ProjectID
-		if projectID == "" {
+		// ⚠️ NO lock fallback under --history-only, and this is the whole
+		// reason the branch exists rather than reading like a redundant one.
+		//
+		// The flag is for an operator wiping a history on the console, run from
+		// wherever they happen to be — and "wherever" is often inside SOME w17
+		// project. With the fallback, `reset --history-only --force` with no
+		// --project silently discarded whatever project that directory's lock
+		// named, exit 0, and the caller had asked about a different one. Proved
+		// with a probe before this line existed: the console was asked to wipe
+		// the lock's project and the command returned nil.
+		//
+		// An id that must be TYPED is the only one an operator can be held to.
+		if projectID == "" && !c.HistoryOnly {
 			projectID = core.LockProjectIDBestEffort()
 		}
 		if projectID == "" {
+			if c.HistoryOnly {
+				return fmt.Errorf("no project id: --history-only never reads one from a lock — the directory you are standing in is not the project you are wiping — pass --project")
+			}
 			return fmt.Errorf("no project id: pass --project, or run inside a project whose lock carries project_id — pass --local-only to tear the stack down WITHOUT resetting the history")
 		}
 
@@ -283,9 +360,11 @@ func (c *ResetCmd) Run() error {
 	}
 
 	// --- step 2: drop the DB ----------------------------------------
-	fmt.Fprintln(core.Stdout, "tearing down: docker compose down -v")
-	if err := docker.RunComposeFn(root, append(docker.FileArgs(root), "down", "-v")...); err != nil {
-		return fmt.Errorf("docker compose down -v: %w", err)
+	if !c.HistoryOnly {
+		fmt.Fprintln(core.Stdout, "tearing down: docker compose down -v")
+		if err := docker.RunComposeFn(root, append(docker.FileArgs(root), "down", "-v")...); err != nil {
+			return fmt.Errorf("docker compose down -v: %w", err)
+		}
 	}
 
 	// --- step 3: forget the history ---------------------------------
@@ -312,6 +391,16 @@ func (c *ResetCmd) Run() error {
 		fmt.Fprintln(core.Stdout, "Next: replay the existing history onto the empty DB with your generated")
 		fmt.Fprintln(core.Stdout, "server binary's fetch + apply commands (w17ctl plans migrations; the")
 		fmt.Fprintln(core.Stdout, "binary that owns the database applies them).")
+		return nil
+	}
+	if c.HistoryOnly {
+		fmt.Fprintln(core.Stdout, "done (--history-only: no stack, DB or docker was touched).")
+		// Said to the OPERATOR, who is not the person who will run the next
+		// command: this half cannot be finished from here, and a project left
+		// with no history is a project that refuses to apply.
+		fmt.Fprintln(core.Stdout, "Next, IN THE PROJECT: `w17ctl migrate generate --initial --proto <file>` — until a")
+		fmt.Fprintln(core.Stdout, "baseline is pushed the console has no history for this project, so fetch has")
+		fmt.Fprintln(core.Stdout, "nothing to serve and the databases still hold the old schema.")
 		return nil
 	}
 	if len(c.Protos) == 0 {

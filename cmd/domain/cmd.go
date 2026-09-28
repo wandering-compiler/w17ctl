@@ -81,9 +81,9 @@ func (c *AddCmd) Run() error {
 	//
 	// The derived one is a guess that is right exactly once: at init, when
 	// there is nothing to compare it to. A consumer whose project is called
-	// `marb-finplatform` — named after its first domain, which is ordinary —
-	// has domains under `marb.finplatform`, and a second domain scaffolded
-	// from the project name lands in `marb_finplatform.geoplatform`. Seven
+	// `acme-finplatform` — named after its first domain, which is ordinary —
+	// has domains under `acme.finplatform`, and a second domain scaffolded
+	// from the project name lands in `acme_finplatform.geoplatform`. Seven
 	// files, consistently wrong, and a proto package is WIRE IDENTITY: fixing
 	// it after a client exists is a breaking change to the contract, not a
 	// rename.

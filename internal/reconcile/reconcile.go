@@ -46,7 +46,7 @@ type Deps struct {
 	// branch's dev data stops being recoverable, so switching back to it
 	// later finds no snapshot and builds fresh. The default refuses, because
 	// the alternative is a command that silently destroys the database of
-	// the branch you just left (marb #62).
+	// the branch you just left (a consumer).
 	SkipSnapshot bool
 
 	// LastLive / SetLastLive read + persist the branch w17 last built
@@ -108,7 +108,7 @@ type Outcome struct {
 // three things unsaid that a person standing in front of it needs: what state
 // their project is in, that EVERY later build will stop in the same place
 // (last-live still names the outgoing branch, correctly — the stores do hold
-// its data), and that there is a way on at all. marb ran it twice to find out
+// its data), and that there is a way on at all. a consumer ran it twice to find out
 // the second one.
 func snapshotRefusal(last string, err error) error {
 	return fmt.Errorf(`reconcile: snapshot %q: %w

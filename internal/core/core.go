@@ -68,7 +68,7 @@ var (
 // `restgw.WriteGRPCErrorCtx` — a symbol that pin predates. `codegen` exited 0,
 // `stack build` failed inside the build image with `undefined:`, and nothing
 // tied the two together. It stayed silent for days because their CI compiles
-// the authored tree, not the generated bundles (marb #81).
+// the authored tree, not the generated bundles (reported by a consumer).
 //
 // ⚠️ A FLOOR, not a ceiling. The code being generated comes from the CONSOLE,
 // which can be newer than the client; this only catches a pin older than the

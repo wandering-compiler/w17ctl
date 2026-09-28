@@ -94,7 +94,7 @@ func (c *ApplyCmd) Run() error {
 	// Resolve the target DSN BEFORE any RPC — no point fetching a seed we
 	// can't apply. Skipped when emitting: --out writes SQL and dials
 	// nothing, which is the whole point for a database that has no DSN
-	// yet (deinvo, 2026-08-29: an ephemeral e2e Postgres is seeded only
+	// yet (a consumer, 2026-08-29: an ephemeral e2e Postgres is seeded only
 	// from db/init/*.sql and exists only for the length of a run, so
 	// "apply against the live target" has nothing to aim at).
 	var dsn string
@@ -246,7 +246,7 @@ func registryFixtureName(group, name string) string {
 // "." and "./" are the natural way to write "no group" and read as such,
 // and our own published recipe used `--group .`. It produced the registry
 // key `./acl-roles`, which matches nothing, and surfaced as a bare
-// NotFound naming a key the author never wrote (deinvo, 2026-09-04).
+// NotFound naming a key the author never wrote (a consumer, 2026-09-04).
 func normalizeGroup(group string) string {
 	group = strings.TrimSuffix(strings.TrimSpace(group), "/")
 	if group == "." {
@@ -350,7 +350,7 @@ func (c *ApplyCmd) resolveTargetDSN() (string, error) {
 	}
 	// By the lock's `project:`, like `stack build`. This reads and writes a
 	// STORE, so a duplicate registry entry picked silently is a dump of — or
-	// into — another project's database (marb #75).
+	// into — another project's database (a consumer).
 	_, p, pnote, rerr := cfg.ResolveProject(lockProjectName(root), root)
 	if pnote != "" {
 		fmt.Fprintf(core.Stdout, "fixtures apply: %s\n", pnote)
@@ -360,7 +360,7 @@ func (c *ApplyCmd) resolveTargetDSN() (string, error) {
 	}
 	// What compose publishes NOW, not what this machine's config remembers: this
 	// reads and writes a STORE, and a remembered port for a store that is not
-	// running names whatever else took it (marb #75, the half the lock-based
+	// running names whatever else took it (a consumer, the half the lock-based
 	// project resolution did not cover).
 	published, asked := localtarget.PublishedPorts(root)
 	dsn, skip, note := localtarget.ResolveLive(c.Connection, p, published, asked)

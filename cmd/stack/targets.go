@@ -49,7 +49,7 @@ func SnapshotConns(specs []factory.TargetSpec) (conns []snapstore.Conn, skipped 
 				// The container route declined too. Carried, not printed:
 				// the host dumper is about to fail with a message naming a
 				// missing binary, which is true of every store in the
-				// project and explains none of them — marb could not tell a
+				// project and explains none of them — a consumer could not tell a
 				// failed fallback from an absent one, because the route that
 				// refused said nothing (#62/3).
 				note = fmt.Sprintf("no %s on this machine either, and the dump cannot run inside a container: %s",
@@ -63,7 +63,7 @@ func SnapshotConns(specs []factory.TargetSpec) (conns []snapstore.Conn, skipped 
 			Snapshotter: snap,
 			// A SQL dump that creates nothing did not reach the store it
 			// names, and accepting one is how a branch switch came to wipe a
-			// database on the strength of a 722-byte file (marb #68). The
+			// database on the strength of a 722-byte file (a consumer). The
 			// gob-carried stores (redis, nats, s3) and sqlite's file copy
 			// carry no CREATE statements at all, so the question is not
 			// asked of them.
