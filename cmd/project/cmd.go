@@ -89,7 +89,30 @@ func SyncPorts(cfg *devconfig.Config, name, root string) ([]devconfig.Slot, erro
 	if err != nil {
 		return nil, err
 	}
-	cfg.AllocatePorts(name, slots)
+	// An explicit choice — in the environment or in the project's `.env` —
+	// wins over an allocated one, and is recorded so other projects avoid it.
+	//
+	// Without this the registry silently answered a question the developer had
+	// already answered: compose takes a variable from the environment over the
+	// same variable in `.env`, and `stack up` passes the registry's value as
+	// environment. A consumer set their gateway to a port inside the block
+	// their host tunnels, got one outside it, and had a stack that came up and
+	// could not be reached.
+	_, honoured := cfg.AllocatePortsPinned(name, slots, devconfig.PinnedPorts(root, slots))
+	for _, pin := range honoured {
+		if pin.ClashesWith != "" {
+			fmt.Fprintf(core.Stdout, "ports: %s pinned to %d, which project %q also holds — "+
+				"both stacks cannot publish it at once, and docker will only say "+
+				"\"port is already allocated\"\n", pin.Key, pin.Now, pin.ClashesWith)
+			continue
+		}
+		if pin.Was == 0 {
+			fmt.Fprintf(core.Stdout, "ports: %s pinned to %d (from your environment / .env)\n", pin.Key, pin.Now)
+			continue
+		}
+		fmt.Fprintf(core.Stdout, "ports: %s %d → %d (your environment / .env wins over the registry)\n",
+			pin.Key, pin.Was, pin.Now)
+	}
 	return slots, nil
 }
 

@@ -1136,12 +1136,6 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 				continue
 			}
 		}
-		if !isPoCatalog && !isLock && !force {
-			if _, statErr := os.Stat(target); statErr == nil {
-				collisions = append(collisions, target)
-				continue
-			}
-		}
 		contents := f.GetContents()
 		// Every generated go.mod (bundle, e2erunner, stubs, …) may carry
 		// operator-maintained `replace` directives the server has no
@@ -1159,11 +1153,42 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 			}
 			contents = merged
 		}
+		// EXISTS is not the question; DIFFERS is.
+		//
+		// The write pass below already knows that a body identical to the file
+		// on disk — timestamps aside — is not a change. This check used to ask
+		// only whether the target existed, and it ran BEFORE the go.mod merge,
+		// so a plain `w17ctl codegen` over a freshly generated tree collided on
+		// every create-once scaffold file and refused the whole run.
+		//
+		// A consumer measured it: 683 files recognised as "already held in this
+		// exact form", six go.mod / .w17-client.json files reported as
+		// conflicts, exit 1, nothing written. The cycle could not close —
+		// --force rewrote them and the next plain run rejected them again. Worse,
+		// files that genuinely HAD to change landed in the same refusal, so the
+		// command did nothing and said only "already exist"; they lost a morning
+		// to two conclusions drawn from runs that never generated anything.
+		//
+		// After the merge, because for a go.mod the thing to compare against is
+		// what would actually be written, not the server's unmerged body.
+		if _, statErr := os.Stat(target); statErr == nil {
+			if unchangedApartFromTimestamp(target, contents) {
+				continue
+			}
+			if !isPoCatalog && !isLock && !force {
+				collisions = append(collisions, target)
+				continue
+			}
+		}
 		planned = append(planned, plannedWrite{target: target, contents: contents})
 	}
 	if len(collisions) > 0 {
 		sort.Strings(collisions)
-		return fmt.Errorf("%d target file(s) already exist (use --force to overwrite):\n  %s",
+		// "already exist" was the old wording and it was misleading about a file
+		// codegen itself had written seconds earlier. Every name in this list now
+		// DIFFERS from what this run would put there.
+		return fmt.Errorf("%d target file(s) differ from what this run would write "+
+			"(use --force to overwrite, or diff them first):\n  %s",
 			len(collisions), strings.Join(collisions, "\n  "))
 	}
 	// Write pass — every body is final (go.mod already merged), so nothing here

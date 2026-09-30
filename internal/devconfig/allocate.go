@@ -17,6 +17,38 @@ import "sort"
 // consulted when picking a NEW port — existing sticky assignments are
 // never disturbed.
 func (c *Config) AllocatePorts(name string, slots []Slot) bool {
+	return c.allocatePorts(name, slots, nil, nil)
+}
+
+// AllocatePortsPinned is AllocatePorts with the developer's own choices
+// honoured: any slot present in `pinned` takes that value instead of an
+// allocated one, and the pin is RECORDED in the registry so the next
+// project's allocator avoids it.
+//
+// Returns the slots whose registry value it changed to honour a pin, so the
+// caller can say so. Silently moving a port is what this exists to stop —
+// the report is half the fix, not a nicety.
+func (c *Config) AllocatePortsPinned(name string, slots []Slot, pinned map[string]int) (changed bool, honoured []PortPin) {
+	var moved []PortPin
+	changed = c.allocatePorts(name, slots, pinned, func(pin PortPin) { moved = append(moved, pin) })
+	return changed, moved
+}
+
+// PortPin is one slot whose registry assignment was replaced by an explicit
+// choice: `Was` is what the registry held (0 when it held nothing).
+type PortPin struct {
+	Key string
+	Was int
+	Now int
+	// ClashesWith names another registered project already holding this port.
+	// The pin is still honoured — an explicit choice is the answer, and
+	// refusing it would put this back where it started — but two stacks that
+	// both publish it cannot run at once, and docker's own message at bind
+	// time says only "port is already allocated", never which project owns it.
+	ClashesWith string
+}
+
+func (c *Config) allocatePorts(name string, slots []Slot, pinned map[string]int, onPin func(PortPin)) bool {
 	p := c.Projects[name]
 	if p == nil {
 		return false
@@ -38,6 +70,27 @@ func (c *Config) AllocatePorts(name string, slots []Slot) bool {
 		if !want[k] {
 			delete(p.Ports, k)
 			changed = true
+		}
+	}
+
+	// An EXPLICIT choice replaces whatever the registry holds, before the
+	// collision set is built — so a pin is one of the ports everything else
+	// avoids, rather than something the next allocation can land on.
+	for _, s := range slots {
+		want, ok := pinned[s.Key]
+		if !ok {
+			continue
+		}
+		if have, had := p.Ports[s.Key]; !had || have != want {
+			was := 0
+			if had {
+				was = have
+			}
+			p.Ports[s.Key] = want
+			changed = true
+			if onPin != nil {
+				onPin(PortPin{Key: s.Key, Was: was, Now: want, ClashesWith: c.projectHolding(name, want)})
+			}
 		}
 	}
 
@@ -78,4 +131,20 @@ func (c *Config) AllocatePorts(name string, slots []Slot) bool {
 		changed = true
 	}
 	return changed
+}
+
+// projectHolding names a registered project other than "except" that already
+// holds this port, or "" when none does.
+func (c *Config) projectHolding(except string, port int) string {
+	for n, pr := range c.Projects {
+		if n == except {
+			continue
+		}
+		for _, have := range pr.Ports {
+			if have == port {
+				return n
+			}
+		}
+	}
+	return ""
 }
