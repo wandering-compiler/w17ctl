@@ -165,8 +165,17 @@ func shortDigest(d string) string {
 // than that path enforces — it requires VERIFIED where an install tolerates
 // UNSIGNED — so it adds a condition on top rather than opening its own door.
 func confirmVerifiable(cl codegenpb.CodegenServiceClient, manifest []byte, source, digest, signature string) error {
+	// PublishedDigest and NOT Digest, which stays empty on purpose.
+	//
+	// The tree in hand at signing time IS the published form — `plugin sign`
+	// runs on the rendered tree, before any consumer has unpacked it — so this
+	// is the digest a signature is checked against. There is no LANDED tree
+	// here at all, and filling `Digest` with the same number would assert one
+	// hashes to this, which no one has computed. It would also hide the next
+	// mistake of this kind: if something ever reads the landed digest on this
+	// path, it should fail loudly rather than agree by coincidence.
 	resp, err := inspectManifest(cl, manifest, source, nil, pluginfetch.Fetched{
-		Digest: digest, Signature: signature,
+		PublishedDigest: digest, Signature: signature,
 	})
 	if err != nil {
 		return fmt.Errorf("confirming the signature verifies: %w", err)

@@ -17,7 +17,6 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	"github.com/wandering-compiler/w17ctl/internal/pluginfetch"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
-	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
 )
 
 // inspectManifest ships a plugin's raw plugin.yaml + the fetched tree's digest
@@ -53,8 +52,11 @@ func inspectManifest(cl codegenpb.CodegenServiceClient, manifestYAML []byte, sou
 		ManifestYaml: manifestYAML,
 		Source:       source,
 		Installed:    inst,
-		Digest:       fetched.Digest,
-		Signature:    fetched.Signature,
+		// The PUBLISHED digest, not the landed one. The signature is about the
+		// bytes the registry serves; `fetched.Digest` describes the tree after
+		// the client stripped it, which the publisher never had in hand.
+		Digest:    fetched.PublishedDigest,
+		Signature: fetched.Signature,
 	})
 	if err != nil {
 		return nil, err
@@ -82,9 +84,19 @@ func reportSignature(name string, v *codegenpb.SignatureVerdict) error {
 		fmt.Fprintf(core.Stdout, "  signature ok (built against w17 %s)\n", v.GetPlatform())
 		return nil
 	case codegenpb.SignatureVerdict_INVALID:
+		// The advice used to name ONE of two causes as if it were established —
+		// "re-fetch it, and if it fails again the published release has been
+		// altered". It was believed, about a release that was intact: the first
+		// signed plugin failed because a digest was taken over the unpacked tree
+		// instead of the published one, and that sentence sent the reader
+		// looking for tampering and a bad certificate instead.
+		//
+		// The console can tell the two apart and now says which; this prints its
+		// reason and gives the response for each, rather than choosing.
 		return fmt.Errorf("%s carries a signature that does not verify: %s\n"+
-			"  fix: this tree is not what its signature says it is — re-fetch it, and if it "+
-			"fails again the published release has been altered", name, v.GetDetail())
+			"  fix: if the bytes changed, re-fetching gets a clean tree. If it was signed by a "+
+			"key this console does not trust, re-fetching changes nothing — that key has to be "+
+			"in its trust set, or install a release this console can verify", name, v.GetDetail())
 	case codegenpb.SignatureVerdict_SIGNED_FOR_ANOTHER_MAJOR:
 		// Refused, and in DIFFERENT words from INVALID. The signature is sound
 		// and the tree is exactly what was published; it was written against a
@@ -500,7 +512,7 @@ func (c *InstallCmd) Run() error {
 	var (
 		manifestData []byte
 		fetched      pluginfetch.Fetched
-		manifestFrom = "console:" + name + "/plugin.yaml"
+		manifestFrom string
 	)
 	if local {
 		fetched, err = pluginfetch.FromDir(c.Source, staging)
@@ -532,11 +544,17 @@ func (c *InstallCmd) Run() error {
 		}
 		manifestFrom = git.Repo + "#" + git.Ref() + "/plugin.yaml"
 	} else {
-		manifestData, err = fetchPluginInto(cl, name, staging)
-		if err != nil {
-			_ = os.RemoveAll(staging)
-			return catalogueError("plugin install", err)
-		}
+		// Unreachable, and it says so rather than reaching for a third source.
+		//
+		// Every path above either sets `local` or resolves a `git` spec — a bare
+		// name included, which is this organisation's registry with the URL
+		// filled in — and an empty argument was refused where the name was
+		// checked. What used to be here asked the CONSOLE for the bytes, and it
+		// was the one install path with no digest and no signature to verify. A
+		// fall-back for a case that cannot happen is a hole nobody looks at.
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("plugin install: %q resolved to neither a directory nor a release — "+
+			"this is a bug in w17ctl, not in your project", c.Source)
 	}
 
 	// Parse + validate the manifest + run the requirement check server-side,
@@ -745,7 +763,11 @@ func (c *UpdateCmd) Run() error {
 		if !isGit {
 			// A source nothing here can refresh (a `url:` entry). Skip with a
 			// warning rather than abort, so --all still updates what it can.
-			fmt.Fprintf(core.Stdout, "plugin update: skipping %s (source=%s; only catalogue and git plugins can be refreshed)\n", name, existing.Source)
+			// "catalogue" used to be one of the answers here, and it is not a
+			// place any more — naming it sends the reader looking for a console
+			// that no longer serves plugins. `internal` is this organisation's
+			// own registry, which is where those entries migrate to.
+			fmt.Fprintf(core.Stdout, "plugin update: skipping %s (source=%s; only git and `internal` plugins can be refreshed, `internal` being this organisation's own registry)\n", name, existing.Source)
 			continue
 		}
 
@@ -757,37 +779,34 @@ func (c *UpdateCmd) Run() error {
 		var (
 			manifestData []byte
 			fetched      pluginfetch.Fetched
-			manifestFrom = "console:" + name + "/plugin.yaml"
+			manifestFrom string
 		)
-		if isGit {
-			manifestData, fetched, err = updateFromGit(c.To, name, existing, staging)
-			if pinned, isPinned := asCommitPinned(err); isPinned && c.All {
-				// A sweep skips what it cannot move and keeps going, exactly as
-				// it already does for a `url:` source two branches up. Returning
-				// here aborted the whole run — and since `--to` is refused WITH
-				// `--all`, EVERY sweep over a project holding one commit-pinned
-				// plugin updated nothing at all.
-				fmt.Fprintln(core.Stdout, pinned.skipLine())
-				_ = os.RemoveAll(staging)
-				continue
-			}
-			if err != nil {
-				_ = os.RemoveAll(staging)
-				removeStaging()
-				return err
-			}
-			// fetched.Repo, not existing.Git.Repo: a plugin migrating from
-			// `internal` has no pin yet, so the lock's is nil and reaching
-			// through it panics. What was actually fetched always knows.
-			manifestFrom = fetched.Repo + "#" + fetched.Ref + "/plugin.yaml"
-		} else {
-			manifestData, err = fetchPluginInto(cl, name, staging)
-			if err != nil {
-				_ = os.RemoveAll(staging)
-				removeStaging()
-				return catalogueError("plugin update", err)
-			}
+		// There is no branch here any more, and `isGit` is why: the gate above
+		// skips every source this cannot refresh, so reaching this line means
+		// `git`, `internal` or the empty string an older lock carries — all of
+		// which the registry serves. The `else` that used to be here asked the
+		// CONSOLE for the bytes: a retired RPC, and the one refresh path with
+		// no digest and no signature to verify.
+		manifestData, fetched, err = updateFromGit(c.To, name, existing, staging)
+		if pinned, isPinned := asCommitPinned(err); isPinned && c.All {
+			// A sweep skips what it cannot move and keeps going, exactly as
+			// it already does for a `url:` source two branches up. Returning
+			// here aborted the whole run — and since `--to` is refused WITH
+			// `--all`, EVERY sweep over a project holding one commit-pinned
+			// plugin updated nothing at all.
+			fmt.Fprintln(core.Stdout, pinned.skipLine())
+			_ = os.RemoveAll(staging)
+			continue
 		}
+		if err != nil {
+			_ = os.RemoveAll(staging)
+			removeStaging()
+			return err
+		}
+		// fetched.Repo, not existing.Git.Repo: a plugin migrating from
+		// `internal` has no pin yet, so the lock's is nil and reaching
+		// through it panics. What was actually fetched always knows.
+		manifestFrom = fetched.Repo + "#" + fetched.Ref + "/plugin.yaml"
 		// Registered for cleanup only once the fetch has produced a tree, so
 		// the failure arms above don't have to distinguish "staged" from
 		// "about to be staged".
@@ -865,31 +884,6 @@ func isPluginURL(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "git+") || strings.HasPrefix(s, "ssh://")
 }
 
-// fetchPluginInto streams one plugin's tree from the console's catalogue into
-// `target`, and returns the raw plugin.yaml it carried.
-//
-// The manifest comes back from HERE rather than from a second RPC because it
-// arrives in the stream anyway, and the caller has to hold it: the tree is
-// staged before the manifest is validated, so the bytes that get validated
-// must be the bytes that were written — reading the manifest separately would
-// leave a window where the console serves one plugin and the project gets
-// another.
-//
-// Files are written AS THEY ARRIVE rather than accumulated: the codegen RPCs
-// stream one file per message precisely so a project's size is not capped by a
-// single gRPC message, and re-accumulating the stream client-side would put
-// that cap straight back (see core.RecvGeneratedFiles).
-//
-// .src → strip rename: the plugin tree on disk has real `.go` files
-// (src/handlers/, src/lib/, src/gen/, src/plugin.go) + a real `src/go.mod` +
-// `src/go.sum`. Mirroring those verbatim into the console's own source tree
-// would either (a) make .go files part of that module's `./...` walk + break
-// the build, or (b) cause `go:embed` to refuse the tree because Go treats a
-// directory containing `go.mod` as a nested module and skips it. `make
-// sync-plugins-internal` copies all four with a `.src` suffix (`.go.src`,
-// `go.mod.src`, `go.sum.src`) so Go tooling treats them as inert data on the
-// server; the suffix is stripped here so the installed project dir has real
-// `.go` + `go.mod` + `go.sum` ready for the consuming project's codegen.
 // newStagingDir makes a staging directory nothing else will touch.
 //
 // ⚠️ Both call sites used a FIXED name, `.<plugin>.w17tmp`, and opened with
@@ -913,47 +907,4 @@ func newStagingDir(pluginsDir, name string) (string, error) {
 		return "", fmt.Errorf("staging dir for %s: %w", name, err)
 	}
 	return dir, nil
-}
-
-func fetchPluginInto(cl codegenpb.CodegenServiceClient, name, target string) ([]byte, error) {
-	ctx, cancel := core.ClientCtx()
-	defer cancel()
-	stream, err := cl.FetchPlugin(ctx, &codegenpb.FetchPluginRequest{Name: name})
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", target, err)
-	}
-
-	var manifest []byte
-	write := func(f *codegenpb.GeneratedFile) error {
-		rel := strings.TrimSuffix(f.GetRelativePath(), ".src")
-		if rel == "plugin.yaml" {
-			manifest = f.GetContents()
-		}
-		// SERVER-SUPPLIED path: contain it under target so a buggy or
-		// compromised console cannot escape the plugin dir via `..`/absolute.
-		dst, err := pathguard.Join(target, rel)
-		if err != nil {
-			return fmt.Errorf("server file path %q escapes the plugin dir: %w", f.GetRelativePath(), err)
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
-		}
-		if err := os.WriteFile(dst, f.GetContents(), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", dst, err)
-		}
-		return nil
-	}
-	if _, err := core.RecvGeneratedFiles(stream, write); err != nil {
-		return nil, err
-	}
-	if manifest == nil {
-		// The console guarantees a manifest for anything it lists, so this is
-		// a broken catalogue rather than a bad request — say which, because
-		// the fix is a console deploy and not a different command.
-		return nil, fmt.Errorf("plugin %q arrived from the console without a plugin.yaml (its catalogue is broken — redeploy the console)", name)
-	}
-	return manifest, nil
 }

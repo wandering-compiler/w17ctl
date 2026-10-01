@@ -117,7 +117,26 @@ type Fetched struct {
 	Ref     string
 	Version string
 	SHA     string
-	Digest  string
+	// Digest covers the tree AS LANDED — after stripSrcSuffix. It is the lock's
+	// pin, and `w17ctl verify` recomputes it over the installed tree, so it has
+	// to describe what is on disk in a consumer's project.
+	Digest string
+	// PublishedDigest covers the tree AS PUBLISHED — before stripSrcSuffix, so
+	// `.go.src` still carries its suffix and the plugin's own tests are still
+	// present.
+	//
+	// THE SIGNATURE IS ABOUT THIS ONE, and the two are never equal: the strip
+	// renames every `.src` and deletes every test, so a tree that has been
+	// through it hashes to something the publisher never signed. `plugin sign`
+	// digests the registry's bytes (it runs on the rendered tree, before any
+	// consumer has touched it), which makes this the only digest a claim can be
+	// checked against.
+	//
+	// Keeping both is not redundancy — they answer two different questions.
+	// "Are these the bytes that were released?" is a signature question and only
+	// the published form can answer it. "Is this working tree still the one that
+	// was installed?" is a pin question and only the landed form can.
+	PublishedDigest string
 	// Signature is the contents of SignatureFile, VERBATIM, when the published
 	// tree carries one — and empty otherwise.
 	//
@@ -190,11 +209,7 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 			return Fetched{}, fmt.Errorf("plugin fetch: placing %s: %w", dest, err)
 		}
 	}
-	if err := stripSrcSuffix(dest); err != nil {
-		return Fetched{}, err
-	}
-
-	digest, err := plugindigest.Of(dest)
+	published, digest, err := unpackDigests(dest)
 	if err != nil {
 		return Fetched{}, err
 	}
@@ -205,7 +220,7 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 
 	return Fetched{
 		Dir: dest, Repo: src.Repo, Ref: src.Ref(), Version: version,
-		SHA: sha, Digest: digest, Signature: string(sig),
+		SHA: sha, Digest: digest, PublishedDigest: published, Signature: string(sig),
 	}, nil
 }
 
@@ -437,6 +452,37 @@ func indent(s string) string {
 	return "  " + strings.ReplaceAll(s, "\n", "\n  ")
 }
 
+// unpackDigests takes BOTH digests of a placed tree and unpacks it, in the one
+// order that is correct: published first, then strip, then landed.
+//
+// # Why this is a function and not four lines at each call site
+//
+// It was four lines at each call site, and the order was wrong in both. Signing
+// digests the tree as the registry serves it; the client digested it after
+// unpacking and sent THAT to be verified. Two honest computations over two
+// different trees, so no signed release could ever verify — and nothing caught
+// it, because the publish side and the install side each tested their own digest
+// against itself. The ordering is the whole defect, so it gets one name, one
+// place, and a test that reads it (TestUnpackDigestsOrder).
+//
+// Returns (published, landed): published covers the bytes a registry serves and
+// is what a signature claims; landed covers what ends up in the project and is
+// what the lock pins. They are never equal for a rendered tree.
+func unpackDigests(dest string) (published, landed string, err error) {
+	published, err = plugindigest.Of(dest)
+	if err != nil {
+		return "", "", err
+	}
+	if err = stripSrcSuffix(dest); err != nil {
+		return "", "", err
+	}
+	landed, err = plugindigest.Of(dest)
+	if err != nil {
+		return "", "", err
+	}
+	return published, landed, nil
+}
+
 // stripSrcSuffix renames `x.go.src` → `x.go` across the placed tree, and DROPS
 // the plugin's own tests.
 //
@@ -581,8 +627,10 @@ func FromDir(src, dest string) (Fetched, error) {
 		}
 	}
 	// The same unpack a repository install runs, so the two paths cannot
-	// disagree about what a consumer's tree looks like.
-	if err := stripSrcSuffix(dest); err != nil {
+	// disagree about what a consumer's tree looks like — or about which digest
+	// the signature is checked against.
+	pubDigest, digest, err := unpackDigests(dest)
+	if err != nil {
 		return Fetched{}, err
 	}
 
@@ -590,14 +638,10 @@ func FromDir(src, dest string) (Fetched, error) {
 	if err != nil {
 		return Fetched{}, err
 	}
-	digest, err := plugindigest.Of(dest)
-	if err != nil {
-		return Fetched{}, err
-	}
 	sig, _ := os.ReadFile(filepath.Join(dest, SignatureFile))
 
 	return Fetched{
-		Dir: dest, Version: version, Digest: digest, Signature: string(sig),
+		Dir: dest, Version: version, Digest: digest, PublishedDigest: pubDigest, Signature: string(sig),
 	}, nil
 }
 

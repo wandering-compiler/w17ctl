@@ -38,6 +38,7 @@ import (
 	"golang.org/x/mod/sumdb/dirhash"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
+	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 )
 
 // SdkModule is the public SDK module path this command moves a project onto.
@@ -64,7 +65,7 @@ func Run(stdout io.Writer, root, version string) (string, error) {
 	if version != "" && !semver.IsValid(version) {
 		return "", fmt.Errorf("sdk update: %q is not a valid version (want e.g. v0.0.0-20260716201145-36e33cc8168a)", version)
 	}
-	mods, err := findSdkModules(stdout, root, SdkModule)
+	mods, err := projectModules(stdout, root, SdkModule)
 	if err != nil {
 		return "", err
 	}
@@ -108,8 +109,14 @@ func Run(stdout io.Writer, root, version string) (string, error) {
 // told to pin, pinned nothing, and read the same advice again. Advice printed
 // unconditionally is advice people learn to skip, and the next time it matters
 // they will skip it then too.
+// It skips vendored plugin trees for the same reason the update does, and the
+// consequence here is quieter: a plugin's SDK pin is its own and routinely
+// differs from the project's, so counting it would make "already at this
+// version" permanently false and print the follow-up advice on every run —
+// which is the complaint this function was written to answer, arriving a second
+// time through a different door.
 func AlreadyAt(root, mod, ver string) bool {
-	mods, err := findSdkModules(io.Discard, root, mod)
+	mods, err := projectModules(io.Discard, root, mod)
 	if err != nil || len(mods) == 0 {
 		return false
 	}
@@ -245,6 +252,54 @@ func goSumKey(line string) (mod, ver, suffix string) {
 }
 
 // findSdkModules returns project-relative dirs of every module that requires
+// projectModules is the ONLY way to ask what this command may rewrite: the walk
+// composed with the skip.
+//
+// Composed in one place because the skip was a call-site argument first, and a
+// call-site argument is something a call site can get wrong — `AlreadyAt` did,
+// and so did the test meant to prove the skip worked, which passed the set in
+// itself and therefore stayed green when the real callers stopped passing it.
+func projectModules(stdout io.Writer, root, mod string) ([]string, error) {
+	return findSdkModules(stdout, root, mod, pluginTrees(root))
+}
+
+// pluginTrees returns the repo-relative directories the lock pins as installed
+// plugin trees, as the set the module walk skips.
+//
+// It derives them the same way the digest gate does — `<proto_dir>/plugins/<name>`
+// from the lock — on purpose. The two commands disagreeing about where a plugin
+// tree is would reintroduce exactly the defect this skip exists for, in the
+// other direction: a tree this command edits and the gate then checks.
+//
+// Unreadable, absent or old locks yield no skips. The lock is the only thing
+// that knows a plugin is installed, so a command that cannot read it does not
+// get to guess; and a project with no lock has no vendored plugin either.
+// `proto_dir` is empty on a lock written before the field existed, and with no
+// proto directory there is no tree to locate.
+func pluginTrees(root string) map[string]bool {
+	lock, err := lockfile.Load(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil || lock == nil {
+		return nil
+	}
+	protoDir := lock.GeneratedCode.ProtoDir
+	if protoDir == "" {
+		return nil
+	}
+	out := make(map[string]bool, len(lock.Plugins))
+	for _, p := range lock.Plugins {
+		if p.Name == "" {
+			continue
+		}
+		// Every source, not just `git`. The digest check skips a plugin with no
+		// pin because it has nothing to compare, but the reason a plugin tree is
+		// not a project module does not come from the pin — the sources are
+		// staged into a bundle with their import paths rewritten, so the module
+		// a consumer builds is never this one.
+		out[path.Join(filepath.ToSlash(protoDir), "plugins", p.Name)] = true
+	}
+	return out
+}
+
 // mod WITHOUT a local replace.
 //
 // Includes the hand-written module on purpose — it is the one codegen refuses
@@ -252,7 +307,7 @@ func goSumKey(line string) (mod, ver, suffix string) {
 // module carrying a `replace` is co-dev: its resolution is owned by the
 // checkout it points at, so bumping a version there would be meaningless
 // churn.
-func findSdkModules(stdout io.Writer, root, mod string) ([]string, error) {
+func findSdkModules(stdout io.Writer, root, mod string, plugins map[string]bool) ([]string, error) {
 	var out []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -282,6 +337,19 @@ func findSdkModules(stdout io.Writer, root, mod string) ([]string, error) {
 		}
 		if d.IsDir() {
 			if path != root && skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			if rel, rErr := filepath.Rel(root, path); rErr == nil && plugins[filepath.ToSlash(rel)] {
+				// A vendored plugin is not a module of this project. Its tree
+				// is fetched, carries its OWN SDK pin, and the lock records a
+				// digest over it that `w17ctl verify` recomputes — so a
+				// rewrite here is an edit to generated output, and the next
+				// `verify` fails with "the committed plugin tree is not the one
+				// the lock pins". Two of our own commands used to disagree
+				// about this, and the gate's own advice sent the operator in a
+				// circle: restoring the tree brings back the plugin's pin,
+				// which the next update rewrites again.
+				fmt.Fprintf(stdout, "sdk update: skipping %s — a plugin carries its own SDK pin, and the lock pins a digest over its tree\n", filepath.ToSlash(rel))
 				return filepath.SkipDir
 			}
 			return nil
