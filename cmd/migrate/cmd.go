@@ -53,6 +53,7 @@ type Cmd struct {
 	Status        StatusCmd        `cmd:"" help:"Show each connection's pinned target migration + how many fetched artifacts are on disk. Offline, read-only."`
 	Reset         ResetCmd         `cmd:"" help:"DEV-ONLY destructive recreate (pre-prod): drop the local DB volume, discard the project's migration history on the console, and derive a fresh baseline from the proto. ⚠️ Loses ALL data + every hand-authored data migration; not stage-gated."`
 	VerifyHistory VerifyHistoryCmd `cmd:"" name:"verify-history" help:"Ask the console whether this project's recorded migration history reproduces its stored schema — the clean-gate. Read-only. Answers consistent / drifted / unknown; unknown means no evidence (a project pushed before revisions were recorded), not drift."`
+	Check         CheckCmd         `cmd:"" help:"What would 'migrate generate' do now? Plans the current proto on the console WITHOUT storing anything, with the decisions in w17/migrate-decisions/. Exit 0 = nothing to decide; 2 = a change needs a decision (--write creates the file to decide in); 3 = decision files need tidying (--write, or --rewrite to start over); 4 = with --generated, the proto has changes not generated or not pinned in the lock. Safe for every member and every PR: it mints nothing."`
 	Squash        SquashCmd        `cmd:"" help:"Freeze a change request together with its migrations: collapse the project's history into one baseline the collapsed migrations point at. Unlike reset the rows are KEPT, and a deployment already at the old head records the baseline without running it."`
 }
 
@@ -136,14 +137,25 @@ func (c *GenerateCmd) Run() error {
 	if err := c.deriveFromProject(); err != nil {
 		return err
 	}
-	return schema.RunSchemaPush(schema.SchemaPushArgs{
+	args := schema.SchemaPushArgs{
 		Protos: c.Protos, Imports: c.Imports, ProjectID: c.ProjectID, Console: c.Console,
 		LockPath: c.LockPath, NoLock: c.NoLock,
 		Mode:         schema.SchemaPushAuto,
 		ForceInitial: c.Initial,
 		Decide:       c.Decide,
 		Initiative:   c.Initiative,
-	})
+	}
+	root, rootErr := core.FindProjectRoot()
+	if rootErr != nil {
+		return schema.RunSchemaPush(args)
+	}
+	if err := schema.ApplyDecisionFiles(root, &args); err != nil {
+		return err
+	}
+	if err := schema.RunSchemaPush(args); err != nil {
+		return err
+	}
+	return schema.ConsumeDecisionFiles(root, c.LockPath)
 }
 
 // ====================================================================

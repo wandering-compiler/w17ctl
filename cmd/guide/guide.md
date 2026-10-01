@@ -71,6 +71,58 @@ times you iterate. The migration is created once, for the tree that shipped.
 organization's owner, whose rights no role catalogue restrains. Turn it on for
 a project whose history matters; leave it off for the prototype.
 
+**`push` and `migrate generate` mint the same migration.** `push` is what CI
+runs: the schema AND the fixtures, in one call. `migrate generate` is the
+schema half alone. Use one of them in the minting job, not both. Either one
+re-pins `w17/lock.yaml` to the new migrations, and that lock is the deploy
+target — **the commit you deploy has to carry it.** The generated `publish`
+job does not commit it back for you; commit it from your minting job, and run
+`w17ctl migrate check --generated` before a deploy to prove you did.
+Mint wherever your release starts: on merge to the default branch (what
+`init --ci` generates), or on the move to a release branch if you deploy from
+one — that keeps the history to what actually ships.
+
+### Some changes need a person's decision — in the pull request
+
+A schema change the planner will not classify on its own (a type change that
+may not convert, a column that would lose data) stops the mint with
+`NEEDS_CONFIRM` until a strategy is chosen. That choice is made **in the PR
+that caused it**, as a file, and reviewed there:
+
+```
+w17ctl migrate check            # every PR, any member: what would a mint do now?
+```
+
+It plans the current proto on the console and **stores nothing** — no
+migration, no lock change; `ci_only` does not apply to it. Exit codes:
+
+| exit | meaning | what to do |
+|---|---|---|
+| 0 | nothing needs a decision | — |
+| 2 | a change needs a decision — no file yet, or its file waits for a database owner | no file: `w17ctl migrate check --write`, commit `w17/migrate-decisions/`; waiting: a database owner keeps ONE option |
+| 3 | a decision file needs tidying (decides nothing any more, duplicated, conflicting, broken) | the message names what gets out: `--write` (keeps every choice made), a person, or `--rewrite` (starts the files over) |
+| 4 | (`--generated` only) the proto has changes no stored migration covers, or the lock does not pin them (id or digest) | mint, and commit the lock |
+
+A console or network failure is exit 1, never 4.
+
+`--write` creates one file per open question, offering the options; **deciding
+is deleting every option but one**, and approving the PR. Put the directory in
+`CODEOWNERS` if a database owner must approve (on GitHub that needs a plan with
+required code-owner review for private repositories — Team or above). The mint
+applies the files and deletes them once it succeeds.
+
+**A decision is bound to the schema it was made against.** Each file records
+the console's `base`, and applies only while the base is the same; every mint
+moves it. So a decision a release consumed can never decide a later change of
+the same column — even when the file is still in the repository because the
+job that minted did not commit the deletion back. `check` reports such a file
+as consumed (it does not fail), and `--write` deletes it. A file whose change
+was undone before release is reported too, and never applied.
+
+In a GitHub Actions job, `check` also writes its verdict to the job summary.
+`migrate check --generated` is the release gate: run it before deploying to
+prove the lock pins every migration the proto needs.
+
 ## Credentials: a person, or a machine
 
 A **person** runs `w17ctl login <console>` once; the bearer and the chosen
@@ -174,6 +226,7 @@ compiler directly — you drive `w17ctl`.
 | Generate all code | `w17ctl codegen` |
 | Check for generated-vs-proto drift (CI) | `w17ctl verify` |
 | Plan / list migrations | `w17ctl migrate generate` / `migrate list` |
+| Will a mint need a decision? (every PR) | `w17ctl migrate check` (`--write` to create the decision files) |
 | Seed fixtures | `w17ctl fixtures …` |
 | Run the local stack | `w17ctl stack up` / `down` / `logs` |
 | Run the e2e suite | `w17ctl test --target <url>` |

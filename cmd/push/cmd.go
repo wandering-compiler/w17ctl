@@ -55,9 +55,6 @@ type Cmd struct {
 }
 
 func (c *Cmd) Run() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
 	projectID := c.ProjectID
 	if projectID == "" {
 		projectID = core.LockProjectIDBestEffort()
@@ -65,6 +62,22 @@ func (c *Cmd) Run() error {
 	if projectID == "" {
 		return fmt.Errorf("push: --project / W17_PROJECT_ID / lock project_id not set")
 	}
+
+	// Decisions committed in w17/migrate-decisions/ are applied here exactly
+	// as `migrate generate` applies them — this is the command CI mints with.
+	// Resolved BEFORE the push's own deadline starts: the preflight dry runs
+	// compile and plan with their own timeouts, and must not eat the budget
+	// of the push that follows.
+	files := schemahub.SchemaPushArgs{Protos: c.Protos, Imports: c.Imports, ProjectID: projectID, Console: c.Console, Decide: c.Decide}
+	root, rootErr := core.FindProjectRoot()
+	if rootErr == nil {
+		if err := schemahub.ApplyDecisionFiles(root, &files); err != nil {
+			return err
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	ir, err := schemahub.LoadIRBytes(ctx, c.Protos, c.Imports, c.Console)
 	if err != nil {
@@ -81,8 +94,13 @@ func (c *Cmd) Run() error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	if err := pushSchemaIdempotent(ctx, cl, c.Console, projectID, ir, c.LockPath, c.NoLock, c.Decide, c.Initiative); err != nil {
+	if err := pushSchemaIdempotent(ctx, cl, c.Console, projectID, ir, c.LockPath, c.NoLock, files, c.Initiative); err != nil {
 		return err
+	}
+	if rootErr == nil {
+		if err := schemahub.ConsumeDecisionFiles(root, c.LockPath); err != nil {
+			return err
+		}
 	}
 
 	if err := pushFixtures(ctx, cl, projectID, c.FixturesDir); err != nil {
@@ -95,8 +113,8 @@ func (c *Cmd) Run() error {
 // resolves first-push (create) vs revision (update) itself, so from the
 // operator's POV `push` is one command. The client ships the IR bytes; the
 // create/update split is the server's implementation detail.
-func pushSchemaIdempotent(ctx context.Context, cl w17registrypb.ProjectRegistryClient, console, projectID string, ir []byte, lockPath string, noLock bool, decide []string, explicitInitiative string) error {
-	decideFlags, customSQL, err := schemahub.BuildDecidePayload(decide)
+func pushSchemaIdempotent(ctx context.Context, cl w17registrypb.ProjectRegistryClient, console, projectID string, ir []byte, lockPath string, noLock bool, decisions schemahub.SchemaPushArgs, explicitInitiative string) error {
+	decideFlags, customSQL, err := decisions.DecidePayload()
 	if err != nil {
 		return err
 	}

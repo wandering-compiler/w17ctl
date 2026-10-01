@@ -4,7 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
@@ -56,6 +60,67 @@ type SchemaPushArgs struct {
 	ForceInitial bool     // auto mode only: force create (refuse if a schema exists)
 	Decide       []string // raw `--decide` flag strings; forwarded to the console to resolve NEEDS_CONFIRM findings
 	Initiative   string   // explicit change-request id; empty = derive from the current git branch
+	// FileDecisions / FileCustomSQL are decisions read from
+	// w17/migrate-decisions/, already in the console's form; sent with Decide.
+	FileDecisions []string
+	FileCustomSQL map[string]string
+}
+
+// DecidePayload merges --decide flags with file decisions.
+func (a SchemaPushArgs) DecidePayload() ([]string, map[string]string, error) {
+	flags, custom, err := BuildDecidePayload(a.Decide)
+	if err != nil {
+		return nil, nil, err
+	}
+	flags = append(append([]string(nil), flags...), a.FileDecisions...)
+	for k, v := range a.FileCustomSQL {
+		if custom == nil {
+			custom = map[string]string{}
+		}
+		custom[k] = v
+	}
+	return flags, custom, nil
+}
+
+// PlanPush asks the console what a push of this schema WOULD do — a dry run:
+// findings still open after the decisions sent, the connections a push would
+// migrate, and the decisions that match no finding. The console stores
+// nothing and the lock is not touched.
+func PlanPush(args SchemaPushArgs) (*w17registrypb.PushSchemaResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ir, err := LoadIRBytes(ctx, args.Protos, args.Imports, args.Console)
+	if err != nil {
+		return nil, fmt.Errorf("load schema: %w", err)
+	}
+	addr, err := core.ResolveConsoleAddr(args.Console)
+	if err != nil {
+		return nil, err
+	}
+	cl, conn, err := core.DialProjectRegistry(addr)
+	if err != nil {
+		return nil, fmt.Errorf("connect %s: %w", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	decideFlags, customSQL, err := args.DecidePayload()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cl.PushSchema(ctx, &w17registrypb.PushSchemaRequest{
+		ProjectId:       args.ProjectID,
+		Ir:              ir,
+		Mode:            w17registrypb.PushMode_PUSH_MODE_DRY_RUN,
+		ForceInitial:    args.ForceInitial,
+		Decide:          decideFlags,
+		DecideCustomSql: customSQL,
+	})
+	// A console that predates DRY_RUN refuses the unknown mode — which is
+	// why it is a mode and not a flag an old server would ignore and then
+	// run a real push for. Say what that refusal means.
+	if status.Code(err) == codes.InvalidArgument && strings.Contains(status.Convert(err).Message(), "unknown mode") {
+		return nil, fmt.Errorf("this console cannot plan without storing (it predates `migrate check`) — nothing was stored; upgrade the console: %w", err)
+	}
+	return resp, err
 }
 
 // core.Stdout is the writer RunSchemaPush prints to. Production main() uses
@@ -82,7 +147,7 @@ func RunSchemaPush(args SchemaPushArgs) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	decideFlags, customSQL, err := BuildDecidePayload(args.Decide)
+	decideFlags, customSQL, err := args.DecidePayload()
 	if err != nil {
 		return err
 	}
