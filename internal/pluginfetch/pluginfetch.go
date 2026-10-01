@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/wandering-compiler/w17ctl/internal/pluginrender"
 	"github.com/wandering-compiler/sdk/go/tooling/plugindigest"
 )
 
@@ -117,7 +118,27 @@ type Fetched struct {
 	Version string
 	SHA     string
 	Digest  string
+	// Signature is the contents of SignatureFile, VERBATIM, when the published
+	// tree carries one — and empty otherwise.
+	//
+	// Not trimmed, not parsed. The file is a structured body the console wrote
+	// and the console reads; a client that tidied it would be a third opinion
+	// about a format only two ends need to agree on. Verifying an artefact is a
+	// console job (public-split §4).
+	//
+	// Empty is the ordinary case today — every plugin published before signing
+	// existed is unsigned — and the console reports that differently from a
+	// signature that fails to verify.
+	Signature string
 }
+
+// SignatureFile is where a published plugin carries its signature, beside the
+// manifest the signature is partly about.
+//
+// Excluded from the digest by construction: the digest covers the tree the
+// signature is ABOUT, so a file whose content depends on the digest cannot be
+// part of it.
+const SignatureFile = "plugin.sig"
 
 // Fetch materialises src into dest and returns what it resolved.
 //
@@ -177,7 +198,15 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 	if err != nil {
 		return Fetched{}, err
 	}
-	return Fetched{Dir: dest, Repo: src.Repo, Ref: src.Ref(), Version: version, SHA: sha, Digest: digest}, nil
+	// Read before the digest is trusted for anything: a missing file is the
+	// unsigned case and not an error, so ReadFile's error is deliberately
+	// dropped rather than surfaced as a fetch failure.
+	sig, _ := os.ReadFile(filepath.Join(dest, SignatureFile))
+
+	return Fetched{
+		Dir: dest, Repo: src.Repo, Ref: src.Ref(), Version: version,
+		SHA: sha, Digest: digest, Signature: string(sig),
+	}, nil
 }
 
 // materialise puts the repository's tree for src into work.
@@ -348,6 +377,32 @@ func checkManifest(tree string, src Source) (string, error) {
 	return src.Version, nil
 }
 
+// manifestVersion is the version a LOCAL tree declares, with no tag to check it
+// against.
+//
+// Deliberately not `checkManifest`: that function's whole job is to catch a tree
+// disagreeing with the tag it was published under, and a local tree has no tag.
+// Refusing a version here because it is unpublished would refuse every dev
+// install, which is the case this exists for — an author works on the version
+// they are heading FOR.
+//
+// A missing version is still a refusal: the manifest is what travels into the
+// project, where nothing is around to ask.
+func manifestVersion(tree string) (string, error) {
+	body, err := os.ReadFile(filepath.Join(tree, "plugin.yaml"))
+	if err != nil {
+		return "", fmt.Errorf("plugin install: reading the manifest: %w", err)
+	}
+	version := manifestField(string(body), "version")
+	if version == "" {
+		return "", fmt.Errorf(
+			"plugin install: this tree's plugin.yaml declares no version\n" +
+				"  why: the manifest is what travels on into the project, where no tag is around " +
+				"to ask. A tree that cannot say which version it is cannot be recorded.")
+	}
+	return "v" + version, nil
+}
+
 // manifestField reads one top-level scalar. Deliberately not a YAML parser:
 // plugin.yaml's top level is flat, and the console is the side that validates
 // the manifest properly — this is only the identity check a fetch owes its
@@ -471,4 +526,96 @@ func copyTree(src, dst string) error {
 		}
 		return os.WriteFile(target, body, fi.Mode().Perm())
 	})
+}
+
+// FromDir materialises a plugin from a LOCAL author tree into dest.
+//
+// The dev-loop counterpart of Fetch, and it goes the long way round on purpose:
+// it RENDERS the author tree into its published form first, then unpacks that,
+// so what lands in dest is the tree a consumer receives rather than the tree
+// the author happens to have on disk.
+//
+// ⚠️ THOSE DIFFER, and installing the author tree directly would test bytes
+// nobody is ever served. The Go goes inert (a live `.go` under a consumer's
+// proto dir makes the plugin a module in their build), `src/gen/pb` is left out
+// because it is regenerated, and the tests travel into the published form and
+// are dropped again on the way here — so an author tree copied straight in
+// would carry tests that staging cannot place and pb that the next codegen
+// replaces.
+//
+// No commit and no repository: there is nothing to pin. What comes back has a
+// Version from the manifest and a Digest over what landed, which is what the
+// install records, and `source: local` is how the lock says a pin was not
+// possible rather than pretending to one.
+func FromDir(src, dest string) (Fetched, error) {
+	abs, err := filepath.Abs(src)
+	if err != nil {
+		return Fetched{}, fmt.Errorf("plugin install: %w", err)
+	}
+	if _, serr := os.Stat(filepath.Join(abs, "plugin.yaml")); serr != nil {
+		return Fetched{}, fmt.Errorf(
+			"plugin install: %s carries no plugin.yaml — that file is what makes a "+
+				"directory a plugin: %w", abs, serr)
+	}
+
+	work, err := os.MkdirTemp("", "w17-pluginlocal-*")
+	if err != nil {
+		return Fetched{}, fmt.Errorf("plugin install: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(work) }()
+
+	published := filepath.Join(work, "published")
+	if _, rerr := pluginrender.Plugin(abs, published); rerr != nil {
+		return Fetched{}, rerr
+	}
+
+	if err := os.RemoveAll(dest); err != nil {
+		return Fetched{}, fmt.Errorf("plugin install: clearing %s: %w", dest, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return Fetched{}, fmt.Errorf("plugin install: %w", err)
+	}
+	if err := os.Rename(published, dest); err != nil {
+		if cerr := copyTree(published, dest); cerr != nil {
+			return Fetched{}, fmt.Errorf("plugin install: placing %s: %w", dest, cerr)
+		}
+	}
+	// The same unpack a repository install runs, so the two paths cannot
+	// disagree about what a consumer's tree looks like.
+	if err := stripSrcSuffix(dest); err != nil {
+		return Fetched{}, err
+	}
+
+	version, err := manifestVersion(dest)
+	if err != nil {
+		return Fetched{}, err
+	}
+	digest, err := plugindigest.Of(dest)
+	if err != nil {
+		return Fetched{}, err
+	}
+	sig, _ := os.ReadFile(filepath.Join(dest, SignatureFile))
+
+	return Fetched{
+		Dir: dest, Version: version, Digest: digest, Signature: string(sig),
+	}, nil
+}
+
+// NameInDir is the plugin name a local tree declares.
+//
+// The manifest names it, never the path. A directory can be called anything —
+// `./plugins/payment`, `./p`, `.` — and a tree's identity is the one thing it is
+// required to state, so taking the basename would let a rename on disk change
+// what gets installed and what the lock records.
+func NameInDir(dir string) (string, error) {
+	body, err := os.ReadFile(filepath.Join(dir, "plugin.yaml"))
+	if err != nil {
+		return "", fmt.Errorf("%s carries no plugin.yaml — that file is what makes a "+
+			"directory a plugin: %w", dir, err)
+	}
+	name := manifestField(string(body), "name")
+	if name == "" {
+		return "", fmt.Errorf("%s/plugin.yaml declares no name", dir)
+	}
+	return name, nil
 }

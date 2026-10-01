@@ -1,0 +1,574 @@
+package plugin
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	codegencmd "github.com/wandering-compiler/w17ctl/cmd/codegen"
+	initcmd "github.com/wandering-compiler/w17ctl/cmd/init"
+	"github.com/wandering-compiler/w17ctl/internal/core"
+	"github.com/wandering-compiler/w17ctl/internal/pluginfetch"
+)
+
+// DevCmd runs a plugin AS ITSELF: it stands up a throwaway w17 project, turns
+// this plugin on in it, and generates.
+//
+// # Why a plugin needed this
+//
+// A plugin's unit tests exercise its handlers over doubles, and they do it well.
+// What they cannot exercise is the half a plugin IS: the proto producing a
+// storage tier, the handlers being STAGED with their import paths rewritten,
+// the bundle compiling, the surface answering. None of that exists inside
+// `plugins/<name>/` — it is created by ACTIVATION in a project — so there is
+// nothing there to integrate against, and a plugin module is forbidden from
+// depending on anything project-shaped anyway (a repo-relative `replace` is
+// refused, because the module is vendored into a tree where that path does not
+// exist).
+//
+// Measured before building this: of four shipped plugins, two had never been
+// activated by anything — never generated, never staged, never compiled in a
+// project, never called. Their handlers had 124 test functions between them.
+//
+// # Why not an example project per plugin
+//
+// That was the first plan and this is better in the way that matters: it goes
+// through `install` and `codegen`, which is the path a CONSUMER takes. An
+// authored example tests a tree we wrote; this tests the tree they receive. It
+// also works for an author who has no monorepo, the feature matrix is a flag
+// rather than N copies of a project, and there is no per-plugin hand-written
+// scaffolding to drift.
+//
+// # What it does NOT prove
+//
+// That the surface answers. This stops at codegen, which is where a plugin that
+// has never been generated fails — and the live half needs a stack, a database
+// and a console. `--up` is where that goes, and until it exists this command
+// says "it generates", not "it works".
+type DevCmd struct {
+	Dir string `arg:"" optional:"" name:"dir" help:"Plugin tree to run — the directory holding plugin.yaml. Default: the current directory."`
+
+	Features    string `name:"features" placeholder:"CSV" help:"Features to activate. Empty = the ones the manifest marks default:true, which is what a consumer gets by doing nothing."`
+	AllFeatures bool   `name:"all-features" help:"Activate every feature the manifest declares. The widest generation the plugin can be asked for, and the one most likely to find something — features are opt-in, so a feature nothing activates has never been generated."`
+
+	Out     string `name:"out" placeholder:"DIR" help:"Where to build the throwaway project. Empty = a temporary directory, removed on exit. A path INSIDE the plugin tree is fine and the conventional name is .w17dev — plugindigest excludes that directory, so a dev project there cannot move the digest of the plugin it is testing."`
+	Keep    bool   `name:"keep" help:"Leave the project on disk and print its path, for looking at what was generated. Implied when --out is given."`
+	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. It does the generating, so this is required in practice — falls back to the binary's compile-time default."`
+	Org     string `name:"org" placeholder:"SLUG" help:"Organization that owns the throwaway project. Empty = your default or your only membership."`
+}
+
+func (c *DevCmd) Run() error {
+	dir := c.Dir
+	if dir == "" {
+		dir = "."
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	name, err := pluginfetch.NameInDir(abs)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	feats, err := devFeatures(abs, c.Features, c.AllFeatures)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+
+	proj, cleanup, err := devProjectDir(c.Out, c.Keep, name)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	defer cleanup()
+
+	fmt.Fprintf(core.Stdout, "plugin dev: %s with %d feature(s): %s\n", name, len(feats), strings.Join(feats, " "))
+	fmt.Fprintf(core.Stdout, "  project: %s\n", proj)
+
+	// Every step below runs with the throwaway project as the working
+	// directory, because that is how `init`, `install` and `codegen` find a
+	// project — the same way a consumer runs them.
+	restore, err := chdir(proj)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	defer restore()
+
+	if err := devScaffold(abs, name, feats); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(core.Stdout, "plugin dev: installing the tree the way a consumer receives it ...")
+	inst := &InstallCmd{Source: abs, Console: c.Console}
+	if err := inst.Run(); err != nil {
+		return fmt.Errorf("plugin dev: install: %w", err)
+	}
+
+	fmt.Fprintln(core.Stdout, "plugin dev: generating ...")
+	gen := &codegencmd.Cmd{Console: c.Console, Force: true, Gofmt: "embedded"}
+	if err := gen.Run(); err != nil {
+		return fmt.Errorf("plugin dev: codegen: %w\n"+
+			"  this is the step a plugin that has never been activated fails at: the proto has "+
+			"to produce a storage tier, the handlers have to stage with their imports rewritten, "+
+			"and the bundle has to compile", err)
+	}
+
+	fmt.Fprintf(core.Stdout, "plugin dev: %s generates with %s\n", name, strings.Join(feats, " "))
+	fmt.Fprintln(core.Stdout, "  ⚠️ that it GENERATES, not that it answers — the live half needs a stack")
+	return nil
+}
+
+// devScaffold writes the project files that turn this plugin on.
+//
+// Two files, and they are the whole activation: a domain sentinel carrying the
+// plugin with its features, and a REST registry including the plugin's presets
+// so its endpoints exist on a surface. Anything else a project has is not
+// needed to find out whether a plugin generates.
+func devScaffold(dir, name string, feats []string) error {
+	initc := &initcmd.Cmd{
+		LockPath: filepath.Join("w17", "lock.yaml"),
+		Name:     "plugindev",
+		GoModule: "example.com/plugindev",
+		// The values the documented first run uses, so this project is shaped
+		// like one a person would get rather than one only this command makes.
+		StubsRoot:       filepath.Join("srcgo", "gen"),
+		Language:        "go",
+		ProtoDir:        "proto",
+		LanguagesDir:    filepath.Join("w17", "languages"),
+		Languages:       "en",
+		E2E:             "no",
+		CI:              "none",
+		SkipConnections: true,
+	}
+	if err := os.WriteFile("go.mod", []byte("module example.com/plugindev\n\ngo 1.26\n"), 0o644); err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	if err := initc.Run(); err != nil {
+		return fmt.Errorf("plugin dev: init: %w", err)
+	}
+
+	domain := filepath.Join("proto", "domains", "app")
+	if err := os.MkdirAll(domain, 0o755); err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(domain, "w17.proto"),
+		[]byte(domainProto(name, feats)), 0o644); err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	// ⚠️ ONLY IF THE PLUGIN HAS A REST PRESET. Found by the dev lane's first
+	// run: agent declares no presets at all, and a REST registry including a
+	// plugin that publishes none is refused outright — "includes plugin
+	// \"agent\", but that plugin ships no rest preset to publish". A scaffold
+	// that writes the include unconditionally cannot generate such a plugin at
+	// all, which is the opposite of a tool for exercising plugins.
+	hasREST, err := manifestHasPreset(dir, "rest")
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	if hasREST {
+		if err := os.WriteFile(filepath.Join(domain, "rest.proto"),
+			[]byte(restProto(name)), 0o644); err != nil {
+			return fmt.Errorf("plugin dev: %w", err)
+		}
+	} else {
+		// Said out loud, because it narrows what the run proves: without a
+		// surface the plugin's endpoints are generated but published nowhere.
+		fmt.Fprintf(core.Stdout, "  no rest preset — generating without a public surface, "+
+			"so this run exercises the tiers and not the endpoints\n")
+	}
+	return nil
+}
+
+// manifestHasPreset reports whether the plugin declares a preset of that kind.
+//
+// `presets:` is a mapping whose KEYS are the surface kinds (`rest`, `mcp`,
+// `admin`), so this looks for the key at one level in — the same small scanner
+// the features use, for the same reason.
+func manifestHasPreset(dir, kind string) (bool, error) {
+	body, err := os.ReadFile(filepath.Join(dir, "plugin.yaml"))
+	if err != nil {
+		return false, fmt.Errorf("reading the manifest: %w", err)
+	}
+	inPresets := false
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimRight(raw, " \t")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "presets:" {
+			inPresets = true
+			continue
+		}
+		if inPresets && line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			return false, nil
+		}
+		if inPresets && trimmed == kind+":" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func domainProto(name string, feats []string) string {
+	var quoted []string
+	for _, f := range feats {
+		quoted = append(quoted, "\""+f+"\"")
+	}
+	return `syntax = "proto3";
+
+// Written by ` + "`w17ctl plugin dev`" + `. A throwaway project whose only job is to
+// activate one plugin and find out whether it generates.
+//
+// File is a SENTINEL — options only, no messages.
+
+package plugindev.app;
+
+import "w17/domain.proto";
+import "w17/module.proto";
+
+option (w17.domain) = {
+  plugins: [
+    {
+      source_name:   "` + name + `"
+      registered_as: "` + name + `"
+      channels:   [ { key: "events", value: "app" } ]
+      auth_input: { header_name: "Authorization", scheme: "Bearer" }
+      features:   { names: [ ` + strings.Join(quoted, ", ") + ` ] }
+    }
+  ]
+};
+
+option (w17.module) = {
+  connection: { name: "app-postgres", dialect: POSTGRES, version: "18" },
+  channels: [
+    { name: "app", transport: TRANSPORT_NATS, retry: { max_deliver: 3 }, drain_timeout_seconds: 30 }
+  ]
+};
+`
+}
+
+func restProto(name string) string {
+	return `syntax = "proto3";
+
+package plugindev.app;
+
+import "w17/rest.proto";
+
+// The plugin's own presets supply the surface. Including them is what makes the
+// plugin's endpoints exist at all — presets are opt-in, so a plugin generated
+// without this has had only half of it exercised.
+option (w17.rest_api) = {
+  name:        "public",
+  version:     "v1",
+  prefix:      "/api/v1",
+  description: "plugin dev — one plugin, generated as itself.",
+  include: [ { plugin: "` + name + `" } ]
+};
+`
+}
+
+// devFeatures resolves which features to activate.
+//
+// The default is what the MANIFEST marks `default: true` — which is what a
+// consumer gets by doing nothing, and therefore the run that matters most.
+//
+// ⚠️ `--all-features` is the one most likely to find something, and the reason
+// is measured rather than guessed: features are opt-in, so a feature nothing
+// activates has never been generated. Of auth's seventeen, sixteen are
+// activated somewhere in this repository and one — `password_reset` — is
+// declared by nothing at all. Its handler has tests. Its generated half has
+// never existed.
+func devFeatures(dir, csv string, all bool) ([]string, error) {
+	declared, defaults, err := manifestFeatures(dir)
+	if err != nil {
+		return nil, err
+	}
+	// ⚠️ AN EXPLICIT LIST IS CHECKED FOR NAMES AND NOT FOR COMPATIBILITY, and
+	// the asymmetry is deliberate. A name the manifest does not carry is a fact
+	// about the MANIFEST, which this command reads, and a typo would otherwise
+	// activate nothing and report success. Whether two features may be enabled
+	// together is enforced by the COMPILER, which owns that rule — re-checking
+	// it here would be a second copy of it, and the refusal an author gets from
+	// the compiler is the authoritative one.
+	switch {
+	case csv != "":
+		var out []string
+		known := map[string]bool{}
+		for _, f := range declared {
+			known[f] = true
+		}
+		for _, f := range strings.Split(csv, ",") {
+			f = strings.TrimSpace(f)
+			if f == "" {
+				continue
+			}
+			if !known[f] {
+				return nil, fmt.Errorf(
+					"this plugin declares no feature %q\n  it declares: %s\n"+
+						"  why refuse rather than pass it on: a feature name the manifest does not "+
+						"carry generates nothing, and a run that quietly activated nothing would "+
+						"report success over an empty exercise",
+					f, strings.Join(declared, " "))
+			}
+			out = append(out, f)
+		}
+		return out, nil
+	case all:
+		return widestCompatibleSet(dir, declared)
+	default:
+		return defaults, nil
+	}
+}
+
+// widestCompatibleSet is the largest activation a plugin actually supports.
+//
+// ⚠️ "EVERY FEATURE" IS NOT NECESSARILY AN ACTIVATION, and the first version of
+// this command assumed it was. Measured on the first run of the dev lane: auth
+// declares `tenant_scope` as incompatible with `oauth`, so asking for all
+// seventeen is refused by the compiler — `features "oauth" and "tenant_scope"
+// cannot be enabled together`. A flag whose whole job is to reach features
+// nothing else turns on cannot be a flag that never generates.
+//
+// So it walks the manifest IN ORDER and takes each feature unless it conflicts
+// with one already taken. Manifest order rather than a search for the true
+// maximum: it is deterministic, it is the order a reader sees, and the answer
+// is reproducible — a set that changed between runs would make a failure
+// impossible to reason about.
+//
+// Features a taken one REQUIRES are pulled in, because a plugin that declares
+// `oauth` needing `email_verification` will not generate with one and not the
+// other, and a run that dropped the dependency would fail for a reason that
+// has nothing to do with the feature being tested.
+//
+// What is left out is REPORTED by the caller, not swallowed: a coverage tool
+// that quietly narrowed its own coverage would be the thing this whole slab
+// exists to prevent.
+func widestCompatibleSet(dir string, declared []string) ([]string, error) {
+	conflicts, requires, err := manifestFeatureGraph(dir)
+	if err != nil {
+		return nil, err
+	}
+	taken := map[string]bool{}
+	var out []string
+
+	// clashWith reports what f is incompatible with among the taken set, in
+	// EITHER direction — a manifest declares the incompatibility on one of the
+	// pair and the reader must not care which.
+	clashWith := func(f string) string {
+		for _, c := range conflicts[f] {
+			if taken[c] {
+				return c
+			}
+		}
+		for t := range taken {
+			for _, c := range conflicts[t] {
+				if c == f {
+					return t
+				}
+			}
+		}
+		return ""
+	}
+
+	for _, f := range declared {
+		if c := clashWith(f); c != "" {
+			fmt.Fprintf(core.Stdout, "  leaving out %s — the manifest declares it incompatible with %s\n", f, c)
+			continue
+		}
+		// ⚠️ A REQUIRED FEATURE IS CHECKED TOO, and the first version of this
+		// did not check it: `add` pulled in everything a taken feature requires
+		// unconditionally, so a requirement that conflicts with something
+		// already taken would have produced a set the COMPILER refuses — and a
+		// refused set means the widest run does not run at all, which is
+		// exactly how auth's failure looked before it was diagnosed.
+		//
+		// No manifest here has that shape today; the check is not waiting for
+		// one to appear before being right.
+		blocked := ""
+		for _, r := range requires[f] {
+			if taken[r] {
+				continue
+			}
+			if c := clashWith(r); c != "" {
+				blocked = r + " (incompatible with " + c + ")"
+				break
+			}
+		}
+		if blocked != "" {
+			fmt.Fprintf(core.Stdout, "  leaving out %s — it requires %s\n", f, blocked)
+			continue
+		}
+		for _, r := range requires[f] {
+			if !taken[r] {
+				taken[r] = true
+				out = append(out, r)
+			}
+		}
+		if !taken[f] {
+			taken[f] = true
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// manifestFeatureGraph reads the `conflicts_with` and `requires` lists.
+//
+// The same small scanner as manifestFeatures and for the same reason — the
+// console validates a manifest and a second parser here would be a second
+// opinion about what one IS — and checked the same way, against a real YAML
+// parse in the test, because a scanner that silently reads FEWER conflicts
+// produces an activation the compiler then refuses.
+func manifestFeatureGraph(dir string) (conflicts, requires map[string][]string, err error) {
+	body, rerr := os.ReadFile(filepath.Join(dir, "plugin.yaml"))
+	if rerr != nil {
+		return nil, nil, fmt.Errorf("reading the manifest: %w", rerr)
+	}
+	conflicts, requires = map[string][]string{}, map[string][]string{}
+	inFeatures, current, list := false, "", ""
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimRight(raw, " \t")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "features:" {
+			inFeatures = true
+			continue
+		}
+		if inFeatures && line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			inFeatures, current, list = false, "", ""
+		}
+		if !inFeatures {
+			continue
+		}
+		if n, ok := cutFeatureName(trimmed); ok {
+			current, list = n, ""
+			continue
+		}
+		switch trimmed {
+		case "conflicts_with:":
+			list = "conflicts"
+			continue
+		case "requires:":
+			list = "requires"
+			continue
+		}
+		if item, ok := strings.CutPrefix(trimmed, "- "); ok && current != "" && list != "" {
+			v := strings.Trim(strings.TrimSpace(item), `"'`)
+			if v == "" || strings.Contains(v, ":") {
+				// A nested mapping item, not a bare name: the list ended.
+				list = ""
+				continue
+			}
+			if list == "conflicts" {
+				conflicts[current] = append(conflicts[current], v)
+			} else {
+				requires[current] = append(requires[current], v)
+			}
+			continue
+		}
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "- ") {
+			// Any other key under this feature ends whichever list was open.
+			list = ""
+		}
+	}
+	return conflicts, requires, nil
+}
+
+// manifestFeatures reads the declared features and the default-on subset.
+//
+// Deliberately a small scanner rather than a YAML parse: this walks one list of
+// `- name:` / `default:` pairs, the console is the side that validates a
+// manifest, and a dependency on a parser here would be a second opinion about
+// what a manifest is.
+func manifestFeatures(dir string) (declared, defaults []string, err error) {
+	body, rerr := os.ReadFile(filepath.Join(dir, "plugin.yaml"))
+	if rerr != nil {
+		return nil, nil, fmt.Errorf("reading the manifest: %w", rerr)
+	}
+	inFeatures := false
+	current := ""
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimRight(raw, " \t")
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "features:":
+			inFeatures = true
+			continue
+		case inFeatures && line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t"):
+			// A new top-level key ends the list.
+			inFeatures = false
+			current = ""
+		}
+		if !inFeatures {
+			continue
+		}
+		if n, ok := cutFeatureName(trimmed); ok {
+			current = n
+			declared = append(declared, n)
+			continue
+		}
+		if current != "" && trimmed == "default: true" {
+			defaults = append(defaults, current)
+		}
+	}
+	if len(declared) == 0 {
+		// Not an error. A plugin may have no features at all — cluster has
+		// none — and "activate nothing" is then the only correct answer.
+		return nil, nil, nil
+	}
+	return declared, defaults, nil
+}
+
+func cutFeatureName(trimmed string) (string, bool) {
+	rest, ok := strings.CutPrefix(trimmed, "- name:")
+	if !ok {
+		return "", false
+	}
+	return strings.Trim(strings.TrimSpace(rest), `"'`), true
+}
+
+// devProjectDir picks where the throwaway project lives.
+//
+// Temporary and REMOVED by default, because the point is the generation and not
+// the tree: a dev loop that left a project behind on every run would fill a
+// working copy with directories nobody asked for. `--keep` and `--out` are how
+// somebody who wants to look at the output says so.
+func devProjectDir(out string, keep bool, name string) (string, func(), error) {
+	if out != "" {
+		abs, err := filepath.Abs(out)
+		if err != nil {
+			return "", func() {}, err
+		}
+		if err := os.MkdirAll(abs, 0o755); err != nil {
+			return "", func() {}, err
+		}
+		return abs, func() {
+			fmt.Fprintf(core.Stdout, "plugin dev: project left at %s\n", abs)
+		}, nil
+	}
+	dir, err := os.MkdirTemp("", "w17-plugindev-"+name+"-*")
+	if err != nil {
+		return "", func() {}, err
+	}
+	if keep {
+		return dir, func() {
+			fmt.Fprintf(core.Stdout, "plugin dev: project left at %s\n", dir)
+		}, nil
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+// chdir moves into dir and returns the way back.
+//
+// In-process rather than a subprocess: `init`, `install` and `codegen` are all
+// in this binary and finding a project is what they do with the working
+// directory, so composing them here runs exactly the path a consumer runs. The
+// restore is deferred because a command that left the process somewhere else
+// would break everything after it in the same run.
+func chdir(dir string) (func(), error) {
+	prev, err := os.Getwd()
+	if err != nil {
+		return func() {}, err
+	}
+	if err := os.Chdir(dir); err != nil {
+		return func() {}, err
+	}
+	return func() { _ = os.Chdir(prev) }, nil
+}

@@ -31,6 +31,80 @@ import (
 	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
 )
 
+// preserveResolvedSdkPin keeps an sdk/go require the CLIENT resolved when the
+// incoming body carries only the placeholder.
+//
+// The same class of fact as an operator's `replace`, preserved for the same
+// reason stated below: the server has no project-extrinsic knowledge of it. It
+// emits `v0.0.0-00010101000000-000000000000` on every run because it cannot do
+// otherwise — the consumer-visible version is a pseudo-version minted by the
+// SDK's publish workflow into a separate public mirror, which the console never
+// sees.
+//
+// ⚠️ WITHOUT THIS, CODEGEN REFUSES ITS OWN OUTPUT. `resolveSdkGoPins` resolves
+// the placeholder on a project that has never pinned and writes a real version;
+// the next plain run emits the placeholder again, the bodies differ in exactly
+// that field, and the run aborts with "N target file(s) differ from what this
+// run would write". The cycle cannot close, and `--force` closes it the wrong
+// way: it writes the placeholder back, which is the pin regression that once
+// shipped the zero version into 7 of 8 modules and broke `stack build`.
+//
+// NARROW ON PURPOSE. Only an incoming PLACEHOLDER yields to the file on disk.
+// A real version from the server still wins — anything else would freeze a
+// project on its first resolution and leave `w17ctl sdk pin` unable to move it.
+func preserveResolvedSdkPin(newContents []byte, existingPath string) ([]byte, error) {
+	sdkMod := core.SdkModuleBase + "/sdk/go"
+
+	newMod, err := modfile.Parse("go.mod", newContents, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parse new go.mod: %w", err)
+	}
+	var incoming string
+	for _, r := range newMod.Require {
+		if r.Mod.Path == sdkMod {
+			incoming = r.Mod.Version
+			break
+		}
+	}
+	// Nothing to yield: the server either said nothing about sdk/go, or said
+	// something real, and something real is the answer.
+	if incoming == "" || !isPlaceholderVersion(incoming) {
+		return newContents, nil
+	}
+
+	existingBytes, err := os.ReadFile(existingPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return newContents, nil // first emission: the placeholder is all there is
+		}
+		return nil, fmt.Errorf("read existing go.mod: %w", err)
+	}
+	existing, err := modfile.Parse(existingPath, existingBytes, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parse existing go.mod: %w", err)
+	}
+	var resolved string
+	for _, r := range existing.Require {
+		if r.Mod.Path == sdkMod {
+			resolved = r.Mod.Version
+			break
+		}
+	}
+	if resolved == "" || isPlaceholderVersion(resolved) {
+		return newContents, nil // nothing resolved to keep
+	}
+
+	if err := newMod.AddRequire(sdkMod, resolved); err != nil {
+		return nil, fmt.Errorf("keep resolved %s pin: %w", sdkMod, err)
+	}
+	newMod.Cleanup()
+	out, err := newMod.Format()
+	if err != nil {
+		return nil, fmt.Errorf("format go.mod: %w", err)
+	}
+	return out, nil
+}
+
 // mergeGoModReplaces splices `replace` directives from the
 // on-disk go.mod at `existingPath` into `newContents`. Returns
 // `newContents` unchanged when:
@@ -1152,6 +1226,14 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 				return fmt.Errorf("preserve replace directives in %s: %w", target, mErr)
 			}
 			contents = merged
+			// The resolved sdk/go pin is the second project-extrinsic fact in
+			// a generated go.mod, and it is preserved for the reason the
+			// replaces are: the server cannot know it.
+			kept, kErr := preserveResolvedSdkPin(contents, target)
+			if kErr != nil {
+				return fmt.Errorf("preserve the resolved sdk/go pin in %s: %w", target, kErr)
+			}
+			contents = kept
 		}
 		// EXISTS is not the question; DIFFERS is.
 		//

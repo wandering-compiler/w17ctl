@@ -60,7 +60,7 @@ type UpCmd struct {
 	Preset    string   `name:"preset" short:"p" help:"Run preset to apply (services + extra env). Empty = the project's active preset, if any."`
 	Build     bool     `name:"build" help:"Rebuild images before starting (docker compose up -d --build). For dev diff-apply of the proto to local stores, run 'stack build' (with --proto/--target) first."`
 	NoReclaim bool     `name:"no-reclaim" help:"With --build: keep the untagged images the rebuild orphans and build on the SHARED builder instead of this project's own. See 'stack build --help'."`
-	CacheCap  string   `name:"cache-cap" placeholder:"SIZE" help:"With --build: ceiling for this project's build cache (default 10GB). See 'stack build --help'."`
+	CacheCap  string   `name:"cache-cap" placeholder:"SIZE" env:"W17_CACHE_CAP" help:"With --build: ceiling for this project's build cache (default 1GB). W17_CACHE_CAP sets it machine-wide. See 'stack build --help'."`
 	modeFlags
 }
 

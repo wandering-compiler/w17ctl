@@ -8,14 +8,28 @@ import (
 
 // DefaultCacheCap is how much build cache one project may keep.
 //
-// Derived from a measurement, and it is a FLOOR rather than an optimum: on a
-// real consumer's project one build's records came to roughly 7 GB — the build
-// context upload (~3 GB, the whole project root), the `COPY . .` layer (2.29 GB)
-// and the `go build` exec mount (1.79 GB). A cap below one build's worth would
-// evict what the next build is about to ask for and turn every build into a cold
-// one, so the default has to clear that with room. It is not swept; `--cache-cap`
-// exists because the right number is a property of the project, not of this file.
-const DefaultCacheCap = "10GB"
+// ⚠️ Deliberately SMALLER than one build's worth, which reverses the reasoning
+// this constant shipped with. It used to be 10 GB, justified by "one build's
+// records came to roughly 7 GB, so anything below that turns every build into a
+// cold one". Both halves of that have since failed:
+//
+//   - the 7 GB was measured on a tree whose build CONTEXT was ~2.5 GB, because a
+//     developer's `node_modules` and `.next` were being uploaded into a w17 build.
+//     Measured again on a consumer's bundle from a clean checkout: one build is
+//     1.6 GB of records, of which the context is 92 MB;
+//   - a per-PROJECT cap does not bound a MACHINE. Twenty workspaces times any
+//     number is a product, not a limit, and a shared box does not care whose
+//     gigabytes they are. 20 x 10 GB is 200 GB on a 100 GB disk, which is not a
+//     tuning problem, it is arithmetic that cannot come out.
+//
+// So the trade is taken in the other direction, on purpose and on instruction:
+// a COLD BUILD IS CHEAPER THAN A FULL DISK. A colleague could not work at all
+// because the machine had no space left, and no build time saved is worth that.
+// At this cap a build keeps its base-image layers and little else, so expect the
+// Go compile to re-run; `--cache-cap` raises it for one project that genuinely
+// needs a warm loop, which is the right place for that decision because the
+// person raising it is the person whose disk it is.
+const DefaultCacheCap = "1GB"
 
 // builderPrefix names the per-project builder. Prefixed so a `docker buildx ls`
 // says whose it is, and so it cannot collide with a builder somebody made by
@@ -74,6 +88,15 @@ func EnsureBuilder(root, project, cap string) string {
 	name := BuilderName(project)
 	// Already there? `inspect` is the cheap existence check and it does not
 	// boot the builder.
+	//
+	// ⚠️ An existing builder keeps the GC policy it was CREATED with, and this
+	// returns before writing a new one — so lowering DefaultCacheCap does not
+	// shrink a builder somebody already has. That is survivable rather than
+	// ignored: [PruneBuilderCache] passes the CURRENT cap explicitly after every
+	// build, which is the half that actually bounds the disk, and the baked policy
+	// only matters for a builder nothing prunes. Changing it means removing the
+	// builder (`docker buildx rm w17-<project>`), which is a developer's call —
+	// recreating it here would throw away a warm cache on a flag change.
 	if _, err := CaptureDockerFn(root, "buildx", "inspect", name); err == nil {
 		return name
 	}

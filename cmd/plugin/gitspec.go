@@ -182,7 +182,17 @@ func normaliseRepo(repo string) string {
 // a rule the server enforces and the lock validates: `git` and the coordinates
 // travel together, and `internal` travels with none. Written twice, the two
 // would eventually disagree.
-func installIntent(name, version string, git *gitSpec, fetched pluginfetch.Fetched) *codegenpb.InstallPluginIntent {
+func installIntent(name, version string, git *gitSpec, local bool, fetched pluginfetch.Fetched) *codegenpb.InstallPluginIntent {
+	if local {
+		// ⚠️ NO PIN, and saying so is the point. A local tree has no commit and
+		// no repository; recording `internal` would claim it came from the
+		// registry, and recording `git` with empty coordinates would be a pin
+		// that resolves to nothing. `local` is the lock admitting that
+		// provenance was not available — which is true, and which is what lets
+		// `plugin update` and `verify` treat it as the dev tree it is instead
+		// of silently reaching for a registry that never served it.
+		return &codegenpb.InstallPluginIntent{Name: name, Version: version, Source: "local"}
+	}
 	if git == nil {
 		return &codegenpb.InstallPluginIntent{Name: name, Version: version, Source: "internal"}
 	}

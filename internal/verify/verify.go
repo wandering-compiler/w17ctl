@@ -157,6 +157,14 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 			checked++
 			fmt.Fprintln(out, "verify: plugin trees match their pinned digests")
 		}
+		// Named rather than passed over. The line above is true about what was
+		// checked and a reader takes it as true about their plugins; a locally
+		// installed tree has no digest to check against, and a skip nobody is
+		// told about turns a true sentence into a false impression.
+		if local := locallyInstalled(lk.Plugins); len(local) > 0 {
+			fmt.Fprintf(out, "verify: %s installed from a directory — no pin to check, "+
+				"and a dev tree is meant to be edited in place\n", pluginList(local))
+		}
 	}
 
 	// Ecosystem pins. A generated bundle's go.mod pins the libraries the

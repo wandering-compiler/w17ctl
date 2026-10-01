@@ -20,24 +20,117 @@ import (
 	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
 )
 
-// inspectManifest ships a plugin's raw plugin.yaml + the installed-plugin set
-// to the console's InspectPluginManifest RPC, which parses + validates it and
-// runs the requirement check server-side (the plugin-system semantics are
-// compiler-domain — the client holds no console/plugins). Returns the parsed
-// identity (name/version) + any requirement warnings. installed may be nil for
-// a pure parse (e.g. `plugin list`, which only needs the version).
-func inspectManifest(cl codegenpb.CodegenServiceClient, manifestYAML []byte, source string, installed map[string]lockfile.Plugin) (*codegenpb.InspectPluginManifestResponse, error) {
+// inspectManifest ships a plugin's raw plugin.yaml + the fetched tree's digest
+// and signature to the console, which parses + validates the manifest, runs the
+// requirement check and returns the identity (name/version), any requirement
+// warnings, and a verdict on the signature.
+//
+// ONE DOOR ON PURPOSE. This used to be two functions — a plain one and a signed
+// one — and `plugin update` reached for the plain one, so the tree that replaces
+// a plugin already running on a project was the one nobody checked. A single
+// entry point that both inspects AND acts on the verdict means the check is not
+// something a call site can decline to make.
+//
+// The client is the courier and nothing more: it computed the digest (hashing
+// is not trust cryptography, and plugindigest lives in the public SDK so both
+// ends get the same answer) and it carries the signature across without reading
+// it. Verifying an artefact is a console job — public-split §4, the same rule
+// that put VerifyLock there.
+//
+// installed may be nil for a pure parse (e.g. `plugin list`, which only needs
+// the version), and fetched may be its zero value where no tree was fetched
+// from a third party — the console reports that as unsigned, which is what it
+// is.
+func inspectManifest(cl codegenpb.CodegenServiceClient, manifestYAML []byte, source string,
+	installed map[string]lockfile.Plugin, fetched pluginfetch.Fetched) (*codegenpb.InspectPluginManifestResponse, error) {
 	var inst []*codegenpb.InstalledPlugin
 	for _, p := range installed {
 		inst = append(inst, &codegenpb.InstalledPlugin{Name: p.Name, Version: p.Version})
 	}
-	ctx, cancel := core.ClientCtx()
-	defer cancel()
-	return cl.InspectPluginManifest(ctx, &codegenpb.InspectPluginManifestRequest{
+	sort.Slice(inst, func(i, j int) bool { return inst[i].GetName() < inst[j].GetName() })
+
+	resp, err := cl.InspectPluginManifest(context.Background(), &codegenpb.InspectPluginManifestRequest{
 		ManifestYaml: manifestYAML,
 		Source:       source,
 		Installed:    inst,
+		Digest:       fetched.Digest,
+		Signature:    fetched.Signature,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if serr := reportSignature(resp.GetName(), resp.GetSignature()); serr != nil {
+		return nil, serr
+	}
+	return resp, nil
+}
+
+// reportSignature prints what the console concluded, and refuses only what is
+// worth refusing.
+//
+// An INVALID signature stops the install: a tree that carries a signature which
+// does not verify has been altered or signed by somebody else, and either way
+// it is not what it says it is.
+//
+// UNSIGNED does not stop anything. Every plugin published before signing
+// existed is unsigned, and refusing those would retire the catalogue on the day
+// this shipped. It is said out loud instead, because "nobody checked this" is
+// something an operator should know even when it is the normal case today.
+func reportSignature(name string, v *codegenpb.SignatureVerdict) error {
+	switch v.GetState() {
+	case codegenpb.SignatureVerdict_VERIFIED:
+		fmt.Fprintf(core.Stdout, "  signature ok (built against w17 %s)\n", v.GetPlatform())
+		return nil
+	case codegenpb.SignatureVerdict_INVALID:
+		return fmt.Errorf("%s carries a signature that does not verify: %s\n"+
+			"  fix: this tree is not what its signature says it is — re-fetch it, and if it "+
+			"fails again the published release has been altered", name, v.GetDetail())
+	case codegenpb.SignatureVerdict_SIGNED_FOR_ANOTHER_MAJOR:
+		// Refused, and in DIFFERENT words from INVALID. The signature is sound
+		// and the tree is exactly what was published; it was written against a
+		// contract this w17 no longer serves. Telling somebody to re-fetch here
+		// would send them hunting a tampering that never happened.
+		return fmt.Errorf("%s was signed for another w17 plugin platform: %s\n"+
+			"  why: the signature bakes the platform contract the plugin was published "+
+			"against, and a major is where that contract changes — so this is the plugin "+
+			"saying it was not written for this w17, not a tree that has been altered\n"+
+			"  fix: install a %s published for this platform", name, v.GetDetail(), name)
+	default:
+		// Deliberately does not name a CAUSE. Nothing travelled with this tree
+		// to verify — because it was published before signing existed, because
+		// it came from the console's own catalogue where no signature is sent,
+		// or because this console is older than the verdict field. All three
+		// look identical from here, and a message that picked one would be
+		// wrong two thirds of the time.
+		fmt.Fprintf(core.Stdout, "  unsigned — nothing travelled with this tree to verify\n")
+		return nil
+	}
+}
+
+// refuseLocalUpdate is the rule that a directory install has nothing to update
+// to, stated once so it can be tested.
+//
+// ⚠️ IT HAS TO REFUSE RATHER THAN BE HANDLED. The branch below this call treats
+// `git`, `internal` and the empty string an older lock carries as updatable —
+// so a `local` source fell through to the registry path, and `plugin update`
+// would fetch whatever the catalogue serves under that name, silently
+// REPLACING the tree the author was editing. The lock would then say it had
+// been updated.
+//
+// Extracted into a function because the first version of this guard lived
+// inline and NO TEST COVERED IT: disabling it left the build green, which is
+// the failure mode a guard is written to avoid.
+func refuseLocalUpdate(name, source string) error {
+	if source != "local" {
+		return nil
+	}
+	return fmt.Errorf(
+		"plugin update: %s was installed from a directory, so there is no release to "+
+			"update it to\n"+
+			"  why: a local install records no repository and no commit — `source: local` is "+
+			"the lock saying provenance was not available, not a pin to move\n"+
+			"  fix: re-run `w17ctl plugin install <dir>` after editing the tree, or install a "+
+			"published version to leave the dev loop", name)
 }
 
 // installedFromLock reads the installed-plugin set from the lock at lockPath
@@ -292,9 +385,29 @@ type InstallCmd struct {
 	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default. Serves the plugin catalogue + validates the manifest."`
 }
 
+// looksLikeLocalDir reports whether a source names a directory on disk rather
+// than a plugin in a registry.
+//
+// A PATH SEPARATOR is the whole test, and it is deliberately not "does this
+// directory exist". A plugin name is a bare identifier (`auth`), so `auth` is
+// always the registry and `./auth` is always the tree in front of you — and
+// nobody has to know which files happen to sit in their working directory for
+// the command to mean one thing. A rule that depended on that would install
+// from the registry or from disk depending on where it was run.
+func looksLikeLocalDir(s string) bool {
+	s = strings.TrimSpace(s)
+	return s != "" && (strings.ContainsRune(s, '/') || strings.ContainsRune(s, os.PathSeparator)) &&
+		!isPluginURL(s) && !looksLikeGitSpec(s)
+}
+
 func (c *InstallCmd) Run() error {
 	var git *gitSpec
-	if looksLikeGitSpec(c.Source) {
+	local := looksLikeLocalDir(c.Source)
+	if local {
+		// Nothing to resolve: the tree is right there. The rendering and the
+		// unpacking happen in pluginfetch.FromDir, so what lands is what a
+		// consumer receives and not what the author has on disk.
+	} else if looksLikeGitSpec(c.Source) {
 		spec, err := parseGitSpec(c.Source)
 		if err != nil {
 			return fmt.Errorf("plugin install: %w", err)
@@ -329,6 +442,17 @@ func (c *InstallCmd) Run() error {
 	name := strings.TrimSpace(c.Source)
 	if git != nil {
 		name = git.Plugin
+	}
+	if local {
+		// The MANIFEST names it, not the path. A directory can be called
+		// anything — `./plugins/payment`, `./p`, `.` — and the plugin's
+		// identity is the one thing a tree is required to declare. Taking the
+		// basename would let a rename on disk change what gets installed.
+		n, nerr := pluginfetch.NameInDir(c.Source)
+		if nerr != nil {
+			return fmt.Errorf("plugin install: %w", nerr)
+		}
+		name = n
 	}
 	if name == "" {
 		return fmt.Errorf("plugin install: name argument is required")
@@ -378,7 +502,19 @@ func (c *InstallCmd) Run() error {
 		fetched      pluginfetch.Fetched
 		manifestFrom = "console:" + name + "/plugin.yaml"
 	)
-	if git != nil {
+	if local {
+		fetched, err = pluginfetch.FromDir(c.Source, staging)
+		if err != nil {
+			_ = os.RemoveAll(staging)
+			return err
+		}
+		manifestData, err = os.ReadFile(filepath.Join(staging, "plugin.yaml"))
+		if err != nil {
+			_ = os.RemoveAll(staging)
+			return fmt.Errorf("plugin install: read rendered manifest: %w", err)
+		}
+		manifestFrom = c.Source + "/plugin.yaml"
+	} else if git != nil {
 		// The client fetches; the console still decides. Cloning is transport,
 		// the same class of work as dialling or writing files — what stays
 		// server-side is every judgement about the tree, starting with the
@@ -403,8 +539,9 @@ func (c *InstallCmd) Run() error {
 		}
 	}
 
-	// Parse + validate the manifest + run the requirement check server-side.
-	manifest, err := inspectManifest(cl, manifestData, manifestFrom, installed)
+	// Parse + validate the manifest + run the requirement check server-side,
+	// and hand over the digest and signature for the console to verify.
+	manifest, err := inspectManifest(cl, manifestData, manifestFrom, installed, fetched)
 	if err != nil {
 		_ = os.RemoveAll(staging)
 		return catalogueError("plugin install", err)
@@ -430,7 +567,7 @@ func (c *InstallCmd) Run() error {
 	}
 	newBytes, err := core.EditLock(c.Console, lockBytes, &codegenpb.LockEditIntent{
 		Intent: &codegenpb.LockEditIntent_InstallPlugin{
-			InstallPlugin: installIntent(manifest.GetName(), manifest.GetVersion(), git, fetched),
+			InstallPlugin: installIntent(manifest.GetName(), manifest.GetVersion(), git, local, fetched),
 		},
 	})
 	if err != nil {
@@ -593,6 +730,17 @@ func (c *UpdateCmd) Run() error {
 		// there and records the pin it did not have before. Every plugin
 		// installed before the registry existed migrates on its first update,
 		// which is the only moment the information needed to pin it is in hand.
+		// ⚠️ A LOCAL PLUGIN IS REFUSED HERE, and it has to be refused rather
+		// than handled. `isGit` below is true for `git`, `internal` and the
+		// empty string an older lock carries — so a `local` source fell into
+		// the else branch and `plugin update` fetched from the REGISTRY,
+		// silently replacing a dev tree with whatever the catalogue serves
+		// under that name. The tree the author was working on would be gone
+		// and the lock would say it had been updated.
+		if lerr := refuseLocalUpdate(name, existing.Source); lerr != nil {
+			removeStaging()
+			return lerr
+		}
 		isGit := existing.Source == "git" || existing.Source == "internal" || existing.Source == ""
 		if !isGit {
 			// A source nothing here can refresh (a `url:` entry). Skip with a
@@ -645,7 +793,11 @@ func (c *UpdateCmd) Run() error {
 		// "about to be staged".
 		swaps = append(swaps, stagedSwap{target: target, staging: staging})
 
-		manifest, err := inspectManifest(cl, manifestData, manifestFrom, installed)
+		// Signed exactly as install is. An update is how a plugin's bytes
+		// actually change on a project that already runs it, so a check that
+		// covered only the first install would be checking the case that
+		// matters least.
+		manifest, err := inspectManifest(cl, manifestData, manifestFrom, installed, fetched)
 		if err != nil {
 			removeStaging()
 			return catalogueError("plugin update", err)

@@ -131,6 +131,27 @@ func versionOf(ref string) string {
 	return ref
 }
 
+// locallyInstalled names the plugins this check CANNOT speak for.
+//
+// ⚠️ Saying so is the whole point. The line this gate prints — "plugin trees
+// match their pinned digests" — is true about what it checked, and a reader
+// takes it as true about their plugins. A `local` install has no digest to
+// check against (it has no repository and no commit; `source: local` is the
+// lock admitting provenance was not available), so it is skipped — and a skip
+// nobody is told about turns a true sentence into a false impression.
+//
+// It is not an error. A dev tree is MEANT to be edited in place, which is the
+// one thing this gate exists to catch everywhere else.
+func locallyInstalled(plugins []lockfile.Plugin) []string {
+	var out []string
+	for _, p := range plugins {
+		if p.Source == "local" {
+			out = append(out, p.Name)
+		}
+	}
+	return out
+}
+
 // hasPinnedPlugins reports whether anything here was checkable at all, so a
 // project with no git-sourced plugins does not get a line claiming a check it
 // never ran — the count this gate prints is how a reader knows what was
