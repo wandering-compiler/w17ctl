@@ -133,8 +133,36 @@ func GenerateClientViaConsole(root, console, protoDir, lockPath string) error {
 	if err := stream.CloseSend(); err != nil {
 		return err
 	}
-	_, err = core.RecvGeneratedFiles(stream, generatedFileWriter(root, true))
-	return err
+	// Record what this run wrote, then prune each client tree of generated
+	// files it did NOT write — the rule codegen applies to every generated
+	// root. The stream carries the COMPLETE client set, so a file of the
+	// surface a client used to name, or of a method since removed, is an
+	// orphan. Only the clients' own output roots are swept, and only files
+	// carrying the CLIENT generator's banner: a hand-written file survives, and
+	// so does any other generator's output a client root happens to contain
+	// (`.` is a legal client root) — this run never emits those.
+	kept := map[string]bool{}
+	write := generatedFileWriter(root, true)
+	if _, err = core.RecvGeneratedFiles(stream, func(f *codegenpb.GeneratedFile) error {
+		kept[filepath.ToSlash(filepath.Clean(f.GetRelativePath()))] = true
+		return write(f)
+	}); err != nil {
+		return err
+	}
+	var roots []string
+	for _, c := range view.GetClients() {
+		if r := c.GetOutputRoot(); r != "" {
+			roots = append(roots, r)
+		}
+	}
+	n, err := pruneOrphansMarked(root, roots, kept, hasClientMarker, core.Stdout)
+	if err != nil {
+		return fmt.Errorf("prune client trees: %w", err)
+	}
+	if n > 0 {
+		fmt.Fprintf(core.Stdout, "client generate: pruned %d stale generated file(s)\n", n)
+	}
+	return nil
 }
 
 // GuideViaConsole fetches the w17 PLATFORM self-description (w17/specs/*) from

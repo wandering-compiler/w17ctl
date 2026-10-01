@@ -71,11 +71,11 @@ var (
 // the authored tree, not the generated bundles (reported by a consumer).
 //
 // ⚠️ A FLOOR, not a ceiling. The code being generated comes from the CONSOLE,
-// which can be newer than the client; this only catches a pin older than the
-// client itself. That is the case that actually bit, but a console ahead of
-// w17ctl can still emit a symbol no pin this check accepts would carry —
-// closing THAT needs the console to declare its own sdk/go version, which it
-// does not today.
+// which can be newer than the client, so on its own this only catches a pin
+// older than the client itself. A console ahead of w17ctl now declares its own
+// floor (LockView.sdk_floor, set at deploy) and codegen checks against the
+// higher of the two — see effectiveSdkFloor. A console that declares nothing
+// leaves this one in charge.
 var SdkFloor = ""
 
 // ClientCtx is the default per-call deadline for console RPCs.

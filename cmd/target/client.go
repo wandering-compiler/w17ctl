@@ -23,6 +23,8 @@ import (
 // migrated with the rest of the codegen path.)
 type ClientCmd struct {
 	Add      ClientAddCmd      `cmd:"" help:"Wizard — append a new generated-client entry to the project's lock. Prompts for framework, language, output_root, and wire format."`
+	Set      ClientSetCmd      `cmd:"" help:"Change an existing generated-client entry, found by its output root — only the flags given (e.g. --rest-surface identity)."`
+	Remove   ClientRemoveCmd   `cmd:"" help:"Drop the generated-client entry at an output root. The tree already on disk is yours to delete."`
 	List     ClientListCmd     `cmd:"" help:"List the generated-client entries declared in the lock."`
 	Generate ClientGenerateCmd `cmd:"" help:"Generate the FE client tree(s) declared in generated_code.clients[] (formerly the standalone w17client binary)."`
 }
@@ -296,8 +298,92 @@ func (c *ClientListCmd) Run() error {
 		return nil
 	}
 	for _, cl := range clients {
-		fmt.Fprintf(core.Stdout, "%s/%s at %s (wire=%s)\n",
-			cl.GetFramework(), cl.GetLanguage(), cl.GetOutputRoot(), cl.GetWire())
+		fmt.Fprintf(core.Stdout, "%s/%s at %s (wire=%s, rest_surface=%s)\n",
+			cl.GetFramework(), cl.GetLanguage(), cl.GetOutputRoot(), cl.GetWire(), surfaceLabel(cl.GetRestSurface()))
 	}
+	return nil
+}
+
+// surfaceLabel renders an empty rest_surface as what it means.
+func surfaceLabel(s string) string {
+	if s == "" {
+		return "(whole project)"
+	}
+	return s
+}
+
+// ClientSetCmd implements `w17ctl target client set <output-root>` — the edit
+// `add` could not make. Switching an entry to another rest_surface used to
+// mean editing the signed lock by hand (a consumer, 2026-10-01). Only the
+// flags GIVEN change; `--rest-surface ""` clears the scoping.
+type ClientSetCmd struct {
+	OutputRoot  string  `arg:"" name:"output-root" help:"The entry's output root, as 'target client list' prints it."`
+	RestSurface *string `name:"rest-surface" placeholder:"NAME" help:"Serve this (w17.rest_api) surface, by its name. \"\" clears it (the whole project)."`
+	Framework   *string `name:"framework" placeholder:"NAME" help:"One of: core, react, react-native, vue."`
+	Language    *string `name:"language" placeholder:"NAME" help:"One of: typescript, javascript."`
+	Wire        *string `name:"wire" placeholder:"NAME" help:"One of: json, protobuf, unspecified."`
+	LockPath    string  `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
+	Console     string  `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+}
+
+func (c *ClientSetCmd) Run() error {
+	in := &codegenpb.SetClientStubIntent{OutputRoot: c.OutputRoot}
+	if c.RestSurface != nil {
+		v := strings.TrimSpace(*c.RestSurface)
+		in.RestSurface = &v
+	}
+	// The tokens are checked HERE as well as on the console, so a typo is
+	// answered with the list before any network round trip.
+	if c.Framework != nil {
+		v, err := parseClientFramework(*c.Framework)
+		if err != nil {
+			return fmt.Errorf("client set: %w", err)
+		}
+		in.Framework = &v
+	}
+	if c.Language != nil {
+		v, err := parseClientLanguage(*c.Language)
+		if err != nil {
+			return fmt.Errorf("client set: %w", err)
+		}
+		in.Language = &v
+	}
+	if c.Wire != nil {
+		v, err := parseClientWire(*c.Wire)
+		if err != nil {
+			return fmt.Errorf("client set: %w", err)
+		}
+		in.Wire = &v
+	}
+	if in.RestSurface == nil && in.Framework == nil && in.Language == nil && in.Wire == nil {
+		return fmt.Errorf("client set: nothing to change — give at least one of --rest-surface, --framework, --language, --wire")
+	}
+	if err := core.EditLockOnDisk("client set", c.Console, c.LockPath, &codegenpb.LockEditIntent{
+		Intent: &codegenpb.LockEditIntent_SetClientStub{SetClientStub: in},
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintf(core.Stdout, "client set: %s updated (%s) — run `w17ctl target client generate` to regenerate it; files the old setting produced are pruned then\n",
+		c.OutputRoot, c.LockPath)
+	return nil
+}
+
+// ClientRemoveCmd implements `w17ctl target client remove <output-root>`.
+type ClientRemoveCmd struct {
+	OutputRoot string `arg:"" name:"output-root" help:"The entry's output root, as 'target client list' prints it."`
+	LockPath   string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
+	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+}
+
+func (c *ClientRemoveCmd) Run() error {
+	if err := core.EditLockOnDisk("client remove", c.Console, c.LockPath, &codegenpb.LockEditIntent{
+		Intent: &codegenpb.LockEditIntent_RemoveClientStub{
+			RemoveClientStub: &codegenpb.RemoveClientStubIntent{OutputRoot: c.OutputRoot},
+		},
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintf(core.Stdout, "client remove: %s is no longer generated (%s) — the tree already on disk is yours to delete\n",
+		c.OutputRoot, c.LockPath)
 	return nil
 }

@@ -423,6 +423,7 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
 	// the full write set before touching disk.
 	var writes []*codegenpb.GeneratedFile
 	var deletes, warnings []string
+	var sdkReqs []*codegenpb.SdkRequirement
 	for {
 		op, recvErr := stream.Recv()
 		if errors.Is(recvErr, io.EOF) {
@@ -445,6 +446,8 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
 			deletes = append(deletes, o.Delete)
 		case *codegenpb.GeneratedOp_Warning:
 			warnings = append(warnings, o.Warning)
+		case *codegenpb.GeneratedOp_SdkRequirement:
+			sdkReqs = append(sdkReqs, o.SdkRequirement)
 		}
 	}
 
@@ -549,7 +552,7 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
 	// Pin the placeholder sdk/go require to a resolvable version so the generated
 	// project builds immediately. Non-fatal: on a proxy/network hiccup the files
 	// are already written, so advise the manual fix rather than fail codegen.
-	if err := resolveSdkGoPins(root, servicesDir, w17StubsDir, genDir, priorSdkPins, core.Stdout); err != nil {
+	if err := resolveSdkGoPins(root, servicesDir, w17StubsDir, genDir, priorSdkPins, view.GetSdkFloor(), sdkReqs, core.Stdout); err != nil {
 		// Two failures, two answers. A stale pin is a REFUSAL — the generated
 		// code was written against a newer surface and the build cannot work
 		// — so codegen stops and the reader has one thing to do. Everything
@@ -753,6 +756,25 @@ func sdkGoRequiredVersion(goModPath, sdkMod string) string {
 	return ""
 }
 
+// sdkGoReplaced reports whether the go.mod at path replaces sdkMod — its
+// require version is then not what the module builds against.
+func sdkGoReplaced(goModPath, sdkMod string) bool {
+	data, err := os.ReadFile(goModPath)
+	if err != nil {
+		return false
+	}
+	f, err := modfile.Parse(goModPath, data, nil)
+	if err != nil {
+		return false
+	}
+	for _, r := range f.Replace {
+		if r.Old.Path == sdkMod {
+			return true
+		}
+	}
+	return false
+}
+
 // sdkVersionFromModules returns the first RESOLVED sdk/go version already
 // present in the project ("" when every module carries a placeholder). This is
 // the offline fast path: the hand-written module keeps its pin across a regen
@@ -821,12 +843,13 @@ func writeSdkPin(goModPath, sdkMod, ver string) error {
 // against the live monorepo checkout, and re-pinning would churn the committed
 // co-dev go.mods for no gain (sdkGoNeedsPin also skips any module that replaces
 // sdk/go, as a second guard).
-func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[string]string, stdout io.Writer) error {
+func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[string]string, consoleFloor string, reqs []*codegenpb.SdkRequirement, stdout io.Writer) error {
 	if strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/") != "" {
 		return nil // co-dev: the local replace resolves the placeholder
 	}
 	sdkMod := core.SdkModuleBase + "/sdk/go"
 	dirs := sdkGoModuleDirs(root, servicesDir, w17Stubs, genDir)
+	floor, floorSource := effectiveSdkFloor(consoleFloor, reqs...)
 
 	// Keep only modules carrying an unresolvable sdk/go placeholder with no local
 	// replace overriding it.
@@ -837,6 +860,27 @@ func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[stri
 		}
 	}
 	if len(targets) == 0 {
+		// Nothing to pin is not nothing to CHECK. A project that keeps a
+		// deliberate pin (`w17ctl sdk pin`, lock.sdk_version) gets every go.mod
+		// written at that version, so no module carries a placeholder — and
+		// this function used to return here, which skipped the floor entirely
+		// for exactly the projects that had once been told to fix their pin.
+		// A consumer measured it: refused on day one, pinned, and on day two a
+		// newer console's code exited 0 and failed in the build image.
+		//
+		// Only modules Go resolves FROM the pin: a module that replaces
+		// sdk/go with a local checkout builds against that checkout, and its
+		// `require` line is a number Go never fetches — refusing it would be
+		// a refusal about nothing (Copilot review of #129).
+		var resolved []string
+		for _, d := range dirs {
+			if !sdkGoReplaced(filepath.Join(root, d, "go.mod"), sdkMod) {
+				resolved = append(resolved, d)
+			}
+		}
+		if ver := sdkVersionFromModules(root, resolved, sdkMod); ver != "" {
+			return checkSdkFloorAgainst(ver, "project", floor, floorSource)
+		}
 		return nil
 	}
 
@@ -861,7 +905,7 @@ func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[stri
 	// `undefined:` this whole check exists to replace. Pinning consistently
 	// first means the refusal below is the only thing the reader has to act on,
 	// and `w17ctl sdk update` starts from a tree that makes sense.
-	floorErr := checkSdkFloor(ver, how)
+	floorErr := checkSdkFloorAgainst(ver, how, floor, floorSource)
 	for _, d := range targets {
 		// Prefer this module's own prior pin over a project-wide answer, so a
 		// deliberately divergent module isn't silently unified.
@@ -870,7 +914,7 @@ func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[stri
 			v = p
 		}
 		if floorErr == nil {
-			if err := checkSdkFloor(v, how); err != nil {
+			if err := checkSdkFloorAgainst(v, how, floor, floorSource); err != nil {
 				floorErr = err
 			}
 		}
@@ -934,7 +978,41 @@ var ErrSdkFloor = errors.New("sdk/go pin predates this client")
 // check exists to catch a stale pin, not to become a second validator of what
 // a pin may look like.
 func checkSdkFloor(ver, how string) error {
-	floor := core.SdkFloor
+	return checkSdkFloorAgainst(ver, how, core.SdkFloor, floorFromClient)
+}
+
+// The two places a floor can come from, worded for the refusal.
+const (
+	floorFromClient  = "this w17ctl was published with"
+	floorFromConsole = "the console generated this code against"
+)
+
+// effectiveSdkFloor is the highest of the floor this client was published
+// with, the one the console declared (LockView.sdk_floor), and any the
+// generated code declared (an activated plugin's requires_sdk, carried as a
+// GeneratedOp). The code comes from the console and the plugins, both of which
+// can be newer than the client — the case core.SdkFloor's own comment says it
+// cannot see. Anything that declares nothing leaves the others in charge.
+func effectiveSdkFloor(consoleFloor string, reqs ...*codegenpb.SdkRequirement) (floor, source string) {
+	floor, source = core.SdkFloor, floorFromClient
+	raise := func(v, from string) {
+		if !semver.IsValid(v) {
+			return
+		}
+		if !semver.IsValid(floor) || semver.Compare(v, floor) > 0 {
+			floor, source = v, from
+		}
+	}
+	raise(consoleFloor, floorFromConsole)
+	for _, r := range reqs {
+		raise(r.GetVersion(), r.GetSource()+" needs")
+	}
+	return floor, source
+}
+
+// checkSdkFloorAgainst is checkSdkFloor over an explicit floor and the words
+// for where it came from.
+func checkSdkFloorAgainst(ver, how, floor, source string) error {
 	if floor == "" || ver == "" {
 		return nil // local / co-dev build, or nothing resolved to compare
 	}
@@ -945,14 +1023,13 @@ func checkSdkFloor(ver, how string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: "+
-		"the project pins %s %s (from %s), which predates the %s this w17ctl was "+
-		"published with (%s)\n"+
+		"the project pins %s %s (from %s), which predates the %s %s (%s)\n"+
 		"why: codegen has just written code against the NEWER surface, so the "+
 		"build will fail inside the build image with `undefined: …` and nothing "+
 		"there will point back at the pin\n"+
 		"fix: `w17ctl sdk update` (then `w17ctl sdk pin <version>` if you keep a "+
 		"deliberate pin), and re-run codegen",
-		ErrSdkFloor, core.SdkModuleBase+"/sdk/go", ver, how, core.SdkModuleBase+"/sdk/go", floor)
+		ErrSdkFloor, core.SdkModuleBase+"/sdk/go", ver, how, core.SdkModuleBase+"/sdk/go", source, floor)
 }
 
 // priorPin returns the snapshotted version for one of targets ("" when the
@@ -1672,7 +1749,14 @@ func ConnectionDomain(name string) string {
 // shape. The leading `.{0,16}` bounds the match to a comment prefix at line
 // start (`//`, `#`, `--`, `<!--`, `/*` + space), so prose that merely mentions
 // the phrase mid-line never matches.
-var generatedMarkerRe = regexp.MustCompile(`(?m)^.{0,16}Code generated .*DO NOT EDIT`)
+//
+// The FE client generator writes its own banner (`// Generated by
+// wandering-compiler client generator (C1).`), and that is the second
+// alternative. Without it no client file was ever recognised as generated, so
+// neither codegen nor `target client generate` pruned a client tree: a client
+// switched to another rest_surface kept every file of the old surface beside
+// the new one (a consumer, 2026-10-01).
+var generatedMarkerRe = regexp.MustCompile(`(?m)^.{0,16}(Code generated .*DO NOT EDIT|Generated by wandering-compiler client generator)`)
 
 // hasGeneratedMarker reports whether the file's head carries the
 // generated-code banner. Only the first 4 KiB is read — the banner is a
@@ -1700,6 +1784,35 @@ func hasGeneratedMarker(path string) bool {
 // write-if-missing scaffolds (in the write set) are never touched. Returns the
 // number of files removed.
 func pruneOrphans(root string, roots []string, kept map[string]bool, stdout io.Writer) (int, error) {
+	return pruneOrphansMarked(root, roots, kept, hasGeneratedMarker, stdout)
+}
+
+// clientMarkerRe is the FE client generator's banner ALONE — not the general
+// `Code generated … DO NOT EDIT`.
+var clientMarkerRe = regexp.MustCompile(`(?m)^.{0,16}Generated by wandering-compiler client generator`)
+
+// hasClientMarker reports whether the file's head carries the FE client
+// generator's own banner. `target client generate` prunes with THIS, not with
+// hasGeneratedMarker: its write set is only the client trees, and a client's
+// output_root may contain other generated roots (`.` is a legal client root,
+// and so is `web` beside grpc_clients at `web/grpc`) — the general banner
+// would make every service, pb and grpc-client file there an "orphan" of a
+// run that never emits them.
+func hasClientMarker(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	head := make([]byte, 4096)
+	n, _ := f.Read(head)
+	return clientMarkerRe.Match(head[:n])
+}
+
+// pruneOrphansMarked is pruneOrphans with the "is this ours" test supplied: a
+// caller whose write set covers only some generators must sweep only what
+// those generators mark.
+func pruneOrphansMarked(root string, roots []string, kept map[string]bool, marked func(string) bool, stdout io.Writer) (int, error) {
 	removed := 0
 	for _, r := range roots {
 		// The clean roots are SERVER-SUPPLIED (view.GetCleanPaths()); guard each
@@ -1727,7 +1840,7 @@ func pruneOrphans(root string, roots []string, kept map[string]bool, stdout io.W
 				return nil
 			}
 			relSlash := filepath.ToSlash(rel)
-			if kept[relSlash] || !hasGeneratedMarker(p) {
+			if kept[relSlash] || !marked(p) {
 				return nil
 			}
 			if rmErr := os.Remove(p); rmErr != nil {

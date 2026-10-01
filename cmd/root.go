@@ -20,6 +20,7 @@ import (
 	codegencmd "github.com/wandering-compiler/w17ctl/cmd/codegen"
 	compatcmd "github.com/wandering-compiler/w17ctl/cmd/compat"
 	connectioncmd "github.com/wandering-compiler/w17ctl/cmd/connection"
+	consolecmd "github.com/wandering-compiler/w17ctl/cmd/console"
 	dbcmd "github.com/wandering-compiler/w17ctl/cmd/db"
 	domaincmd "github.com/wandering-compiler/w17ctl/cmd/domain"
 	envcmd "github.com/wandering-compiler/w17ctl/cmd/env"
@@ -76,10 +77,11 @@ var root struct {
 	// same screen. An adopter reported it: someone expecting a browser does
 	// not read "Email:" on stdin as normal progress, and someone reading only
 	// --help concludes there is no unattended path when there is one.
-	Login  logincmd.Cmd  `cmd:"" help:"Log in to a console — email + password over gRPC (AuthService.SignIn), no browser. Prompts on stdin; --email + the W17_PASSWORD env var make it unattended for CI. Stores the bearer + org memberships in ~/.w17/auth.yaml. 'login grpcs://api.w17.app:50051' (or an enterprise self-host URL)."`
-	Logout logoutcmd.Cmd `cmd:"" help:"Log out of a console — drop its stored credential from ~/.w17/auth.yaml. Defaults to the active console."`
-	Whoami whoamicmd.Cmd `cmd:"" help:"Show the stored identity + organizations for the active console (--all for every logged-in console)."`
-	Org    orgcmd.Cmd    `cmd:"" help:"Organizations on the active console — list the ones you belong to (list) and pick the default (use <slug>). The default org scopes subsequent commands."`
+	Login   logincmd.Cmd   `cmd:"" help:"Log in to a console — email + password over gRPC (AuthService.SignIn), no browser. Prompts on stdin; --email + the W17_PASSWORD env var make it unattended for CI. Stores the bearer + org memberships in ~/.w17/auth.yaml. 'login grpcs://api.w17.app:50051' (or an enterprise self-host URL)."`
+	Logout  logoutcmd.Cmd  `cmd:"" help:"Log out of a console — drop its stored credential from ~/.w17/auth.yaml. Defaults to the active console."`
+	Whoami  whoamicmd.Cmd  `cmd:"" help:"Show the stored identity + organizations for the active console (--all for every logged-in console)."`
+	Org     orgcmd.Cmd     `cmd:"" help:"Organizations on the active console — list the ones you belong to (list) and pick the default (use <slug>). The default org scopes subsequent commands."`
+	Console consolecmd.Cmd `cmd:"" help:"Consoles you are logged into — list them and pick the active one (use <url>). Two are normal: a local console for development, and the one holding the signing key for publishing. 'login' makes whatever it authenticated against active, so this is how it moves back."`
 
 	// --- Project setup ---
 	Init       initcmd.Cmd       `cmd:"" help:"Wizard — bootstrap a new w17 project. Prompts for project name + generated-code paths, registers the project with the console, writes a signed w17/lock.yaml. Refuses on existing lock."`

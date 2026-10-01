@@ -128,6 +128,10 @@ func store(host, token, userID, email string, orgs []core.AuthOrg) error {
 		User:  &authstore.User{ID: userID, Email: email},
 		Orgs:  toStoreOrgs(orgs),
 	}
+	// Read BEFORE the pointer moves, and used after the prune below — a login
+	// to a second console takes the active one with it, and until `console use`
+	// existed there was no way back but editing the YAML.
+	wasActive := st.DefaultInstance
 	st.SetInstance(inst)
 	st.SetDefaultInstance(host) // the just-logged-in instance becomes active
 	// Login is the one moment this store is already being rewritten, so it is
@@ -143,7 +147,39 @@ func store(host, token, userID, email string, orgs []core.AuthOrg) error {
 		return err
 	}
 	printResult(host, inst)
+	reportTheActiveConsoleMoved(st, wasActive, host)
 	return nil
+}
+
+// reportTheActiveConsoleMoved says out loud that this login took the active
+// console with it.
+//
+// The behaviour is unchanged — the just-logged-in console becomes active, which
+// is right for the first login and for the common case of one console. What was
+// missing is that it is SILENT, and the shape it is silent about is the normal
+// one: production holds the plugin signing key, a local console carries codegen,
+// dev locks, `plugin dev` and e2e. Logging in to publish moved the pointer, and
+// the next ordinary `codegen` asked production to sign a development lock and
+// registered a throwaway project in the production registry. Nothing failed.
+//
+// ⚠️ It runs AFTER the dead-loopback prune, and checks the old console is still
+// stored. Logging into production while the local console happens to be down
+// drops that credential (an ephemeral port another project's console may later
+// occupy), and advising `console use` on a credential this command just deleted
+// would be worse than saying nothing.
+func reportTheActiveConsoleMoved(st *authstore.Store, wasActive, host string) {
+	if wasActive == "" || wasActive == host {
+		return
+	}
+	if st.Instance(wasActive) == nil {
+		fmt.Fprintf(core.Stdout, "login: the active console is now %s\n", host)
+		return
+	}
+	fmt.Fprintf(core.Stdout,
+		"login: the active console is now %s (was %s)\n"+
+			"  every command without --console or W17_CONSOLE_ADDR now talks to it, including codegen\n"+
+			"  switch back: w17ctl console use %s\n",
+		host, wasActive, wasActive)
 }
 
 func toStoreOrgs(orgs []core.AuthOrg) []*authstore.Org {

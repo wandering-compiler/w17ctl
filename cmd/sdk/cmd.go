@@ -87,10 +87,20 @@ func (c *UpdateCmd) Run() error {
 	// run rewrites every generated module's go.mod from the lock, putting
 	// the old version back. Someone would then be looking at an update that
 	// "did not take" with no reason visible anywhere.
-	fmt.Fprintf(core.Stdout,
-		"\nsdk update: the LOCK still records the old version — codegen re-emits generated go.mod files from it,\n"+
-			"  so run `w17ctl sdk pin <version>` to make this stick past the next codegen.\n")
+	fmt.Fprint(core.Stdout, pinAdvice(resolved))
 	return nil
+}
+
+// pinAdvice names the version to pin. "<version>" sent a consumer to go.mod
+// to find it, where the first sdk/go version they met was the zero
+// placeholder of a `replace` block — which they pinned (#87).
+func pinAdvice(resolved string) string {
+	pin := "<version>"
+	if resolved != "" {
+		pin = resolved
+	}
+	return fmt.Sprintf("\nsdk update: the LOCK still records the old version — codegen re-emits generated go.mod files from it,\n"+
+		"  so run `w17ctl sdk pin %s` to make this stick past the next codegen.\n", pin)
 }
 
 // PinCmd implements `w17ctl sdk pin <version>` — the half `update` cannot do.

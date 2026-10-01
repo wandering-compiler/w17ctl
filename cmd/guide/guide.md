@@ -76,6 +76,18 @@ a project whose history matters; leave it off for the prototype.
 A **person** runs `w17ctl login <console>` once; the bearer and the chosen
 organization live in `~/.w17/auth.yaml` and every later command reads them.
 
+⚠️ **Two consoles are normal, and `login` makes the one it just authenticated
+against the ACTIVE one.** Publishing a plugin release needs the console holding
+the signing key; codegen, dev locks, `plugin dev` and e2e belong on a local one.
+So a login to publish moves the pointer, and the next plain `w17ctl codegen`
+would sign a development lock on the console you published from — it does not
+fail, it happens somewhere else. `login` says so when it moves it.
+
+`w17ctl console list` shows what you are logged into and marks the active one;
+`w17ctl console use <url>` moves it back. A `--console` flag or
+`W17_CONSOLE_ADDR` beats the pointer for a single command, which is how a
+publish names production without changing anything.
+
 A **CI job or a deployment has no terminal to do that on**, so it presents a
 token instead. Two variables, and both are required:
 
@@ -171,6 +183,8 @@ compiler directly — you drive `w17ctl`.
 | Check compatibility of a change | `w17ctl compat report …` |
 | Manage deploy environments | `w17ctl env …` |
 | Log in to a console | `w17ctl login` |
+| See which consoles you are logged into | `w17ctl console list` |
+| Choose which console commands talk to | `w17ctl console use <url>` |
 | Remove generated output | `w17ctl clean` |
 
 ## Required vs nullable — two axes, not two words
