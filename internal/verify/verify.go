@@ -27,6 +27,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
+	"github.com/wandering-compiler/sdk/go/tooling/migrate"
 )
 
 // Run recomputes the committed ACL + eventbus locks server-side and
@@ -225,6 +226,23 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 				pluginList(names), errors.Join(errs...))
 		}
 		return fmt.Errorf("verify: drift detected — re-run `w17ctl codegen` and commit the locks: %w", errors.Join(errs...))
+	}
+	// The rendered seeds are derived from the fixtures just as the locks are
+	// from the proto, and they drift the same silent way: codegen rewrites
+	// `fixtures/<domain>/acl-roles.json` with a new permission, nobody
+	// re-renders, and the seeded roles lack it — an endpoint answering
+	// PERMISSION_DENIED with nothing pointing at the seed (a consumer, twice).
+	//
+	// Its own refusal with its own fix, NOT one more line in the drift list
+	// above: that list's headline says "re-run codegen", which is the one
+	// thing that does not repair a render.
+	stale, err := migrate.StaleRenders(filepath.Join(root, "w17", "fixtures"))
+	if err != nil {
+		return fmt.Errorf("verify: rendered fixtures: %w", err)
+	}
+	if len(stale) > 0 {
+		return fmt.Errorf("verify: the rendered fixture seeds under w17/fixtures are older than the fixtures they came from:\n%s",
+			migrate.FormatStaleRenders(stale))
 	}
 	fmt.Fprintf(out, "verify: ok (%d lock(s) in sync with proto)\n", checked)
 	return nil

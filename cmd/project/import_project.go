@@ -110,7 +110,7 @@ func (c *ImportFromCmd) Run() error {
 		if listErr != nil {
 			return fmt.Errorf("import succeeded but the lock could not be re-pinned (list migrations): %w", listErr)
 		}
-		if err := schemahub.PinLockTargets(c.Console, c.LockPath, target, listResp.GetMigrations()); err != nil {
+		if _, err := schemahub.PinLockTargets(c.Console, c.LockPath, target, listResp.GetMigrations()); err != nil {
 			return fmt.Errorf("import succeeded but the lock could not be re-pinned (%s): %w", c.LockPath, err)
 		}
 		fmt.Fprintf(core.Stdout, "lock: re-pinned %s (the imported connections now have a fetch target)\n", c.LockPath)

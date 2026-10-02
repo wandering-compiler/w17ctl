@@ -170,6 +170,10 @@ func printInstance(active bool, inst *authstore.Instance) {
 // there — so the console is asked instead, which is also the only source that
 // can say whether the token still works. No `login` is offered on any path
 // here: for this caller it is not a fix, it is a wrong turn.
+// listMyOrgs is the console call reportMachineAccount makes; a var so a test
+// can answer it without a console.
+var listMyOrgs = core.ListMyOrgs
+
 func (c *Cmd) reportMachineAccount() error {
 	addr, aerr := core.ResolveConsoleAddr("")
 	fmt.Fprintf(core.Stdout, "Acting as a machine account: %s is set in this environment.\n", core.EnvTokenVar)
@@ -190,7 +194,7 @@ func (c *Cmd) reportMachineAccount() error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	orgs, err := core.ListMyOrgs(ctx, addr, core.EnvToken())
+	orgs, err := listMyOrgs(ctx, addr, core.EnvToken())
 	if err != nil {
 		// Returned, not printed: the top-level handler decorates an auth
 		// refusal with the causes only this machine can see — including
@@ -206,9 +210,18 @@ func (c *Cmd) reportMachineAccount() error {
 		fmt.Fprintln(core.Stdout, "  organizations: none — an org-scoped role grants this token nothing")
 		return nil
 	}
+	// The ROLE is the answer to the question this is run for: a refused call
+	// is a role that does not include it far more often than a bad token. A
+	// pipeline minting migrations needs ci-push, a deploy fetching them
+	// deploy-fetch — and before this printed the role, a consumer could not
+	// tell from the client which one a token held (2026-10-01).
 	fmt.Fprintf(core.Stdout, "  organizations (%d):\n", len(orgs))
 	for _, o := range orgs {
-		fmt.Fprintf(core.Stdout, "    - %s\n", o.Slug)
+		role := o.Role
+		if role == "" {
+			role = "(no role reported)"
+		}
+		fmt.Fprintf(core.Stdout, "    - %s — role %s\n", o.Slug, role)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"os"
 )
 
 // DefaultConsoleAddr is the compile-time default w17ctl falls back to
@@ -32,6 +33,13 @@ var DefaultConsoleAddr string
 //
 //  1. flagValue — kong's --console flag, also auto-populated from the
 //     W17_CONSOLE_ADDR env var via the kong `env` tag.
+//     1b. W17_CONSOLE_ADDR read directly, for the commands that have NO
+//     --console flag (whoami, org, init, …). Before it was read here those
+//     commands ignored it and fell through to the active instance or the
+//     compiled default — so a CI job's `whoami` asked a console its token
+//     was not minted for, and pointing a one-off command elsewhere meant
+//     moving the pointer (`console use`), which the guide promised the
+//     variable made unnecessary.
 //  2. the console you're logged into — the authstore active instance URL.
 //     `w17ctl login <host>` is the explicit, recorded choice of console, so
 //     subsequent commands follow it without a flag/env or a matching compiled
@@ -46,14 +54,13 @@ var DefaultConsoleAddr string
 // the client treats the lock as opaque bytes and can't dial the console to
 // learn where the console is). It still rides the lock as a stored field.
 func ResolveConsoleAddr(flagValue string) (string, error) {
-	if flagValue != "" {
-		return flagValue, nil
-	}
-	if addr := ActiveInstanceURL(); addr != "" {
-		return addr, nil
-	}
-	if DefaultConsoleAddr != "" {
-		return DefaultConsoleAddr, nil
+	// Resolve the winner, then validate IT — whichever source it came from.
+	// A web-style address stored by a login or compiled in as the default
+	// fails the same way one passed as a flag does (review of #152).
+	for _, addr := range []string{flagValue, os.Getenv(EnvConsoleAddrVar), ActiveInstanceURL(), DefaultConsoleAddr} {
+		if addr != "" {
+			return addr, CheckConsoleAddr(addr)
+		}
 	}
 	return "", fmt.Errorf("no console address configured — log in with `w17ctl login <host>`, pass --console HOST:PORT, set W17_CONSOLE_ADDR, or rebuild with -ldflags \"-X github.com/wandering-compiler/platform/w17ctl/internal/core.DefaultConsoleAddr=...\"")
 }

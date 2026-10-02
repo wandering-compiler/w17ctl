@@ -28,6 +28,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/guidestamp"
 	"github.com/wandering-compiler/w17ctl/internal/scaffold"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
+	"github.com/wandering-compiler/sdk/go/tooling/migrate"
 	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
 )
 
@@ -608,6 +609,12 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
 	// Non-fatal and silent unless there is something to report — a codegen
 	// that nags on every run is a codegen whose output stops being read.
 	noticeStaleGuide(root)
+	// This run may just have rewritten an authoring fixture — the declared
+	// roles' `acl-roles.json` follows the ACL lock — and the rendered seed
+	// the binary applies does not follow it on its own. Said here, the moment
+	// it becomes true, rather than when an endpoint answers PERMISSION_DENIED
+	// in a stack seeded from yesterday's render (a consumer, twice).
+	noticeStaleRenders(root)
 	// Keep `w17/.gitignore` current. This runs from CODEGEN, not just `init`,
 	// because the patterns track the compiler: a project initialised before a
 	// pattern existed would otherwise never receive it, and the loop a
@@ -2003,6 +2010,19 @@ func PinFingerprintOf(path string) string { return pinFingerprintOf(path) }
 // pins anything itself.
 func ReadDepVersions(root, genDir string) (*codegenpb.DepVersions, error) {
 	return readDepVersions(root, genDir)
+}
+
+// noticeStaleRenders prints the rendered fixture seeds that no longer match
+// their fixtures, with the command that fixes it. Non-fatal — codegen did its
+// job; `verify` is where this fails a build. Silent when there is nothing to
+// compare (no render manifest yet) or nothing stale.
+func noticeStaleRenders(root string) {
+	stale, err := migrate.StaleRenders(filepath.Join(root, "w17", "fixtures"))
+	if err != nil || len(stale) == 0 {
+		return
+	}
+	fmt.Fprintf(core.Stdout, "codegen: %d rendered fixture seed(s) no longer match their fixtures:\n%s\n",
+		len(stale), migrate.FormatStaleRenders(stale))
 }
 
 // noticeStaleGuide prints one line when the project's root AGENTS.md was

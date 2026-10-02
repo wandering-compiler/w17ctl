@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -161,6 +162,13 @@ func RunSchemaPush(args SchemaPushArgs) error {
 	// The create-vs-update decision (auto probe of whether a schema is already
 	// stored, --initial force) is resolved SERVER-side now — the client just
 	// ships the mode + the IR bytes.
+	// Can this run pin what it is about to store? Asked first: a mint that
+	// stores and then cannot pin leaves history the lock does not point at.
+	if !args.NoLock && args.LockPath != "" {
+		if err := CheckCanPinLock(args.Console, args.LockPath, args.ProjectID); err != nil {
+			return fmt.Errorf("migrate generate: %w", err)
+		}
+	}
 	resp, err := cl.PushSchema(ctx, &w17registrypb.PushSchemaRequest{
 		ProjectId:       args.ProjectID,
 		Ir:              ir,
@@ -199,10 +207,33 @@ func RunSchemaPush(args SchemaPushArgs) error {
 		fmt.Fprintln(core.Stdout, "lock: skipped (no path)")
 		return nil
 	}
-	if err := PinLockTargets(args.Console, args.LockPath, args.ProjectID, migrations); err != nil {
+	// Pin EVERY connection to the console's current head — not only the
+	// connections this run stored for. A lock that missed an earlier pin (a
+	// CI mint that stored its migrations and then failed at EditLock) would
+	// otherwise catch up only for the connections the NEXT change happened to
+	// touch, and print "lock: pinned" over the rest (a consumer, 2026-10-02;
+	// review of #153). The heads include what this run just stored.
+	listResp, listErr := cl.ListMigrations(ctx, &w17registrypb.ListMigrationsRequest{ProjectId: args.ProjectID})
+	if listErr != nil {
+		return fmt.Errorf("list migrations to pin lock: %w", listErr)
+	}
+	// …followed by what this run stored, so a console answering with an
+	// empty or partial list still pins at least what was just minted.
+	// PinLockTargets keeps the last entry per connection.
+	pinFrom := append(listResp.GetMigrations(), migrations...)
+	if len(pinFrom) == 0 {
+		fmt.Fprintln(core.Stdout, "lock: nothing to pin (no migration stored for this project yet)")
+		return nil
+	}
+	changed, err := PinLockTargets(args.Console, args.LockPath, args.ProjectID, pinFrom)
+	if err != nil {
 		return fmt.Errorf("pin lock %s: %w", args.LockPath, err)
 	}
-	fmt.Fprintf(core.Stdout, "lock: pinned %s\n", args.LockPath)
+	if changed {
+		fmt.Fprintf(core.Stdout, "lock: pinned %s\n", args.LockPath)
+	} else {
+		fmt.Fprintf(core.Stdout, "lock: unchanged — %s already pins the console's latest migrations\n", args.LockPath)
+	}
 	return nil
 }
 
@@ -218,7 +249,7 @@ func RunSchemaPush(args SchemaPushArgs) error {
 // connection in place — all server-side via the PinTargets EditLock intent
 // (the client holds no lock types). The client reads/writes the lock file as
 // OPAQUE signed bytes; the flock serialises concurrent pushes' read-edit-write.
-func PinLockTargets(console, path, projectID string, migrations []*w17registrypb.Migration) error {
+func PinLockTargets(console, path, projectID string, migrations []*w17registrypb.Migration) (bool, error) {
 	// Group migrations by connection; pick the last (latest)
 	// per connection. Console returns oldest → newest; the last
 	// occurrence is the head.
@@ -227,7 +258,7 @@ func PinLockTargets(console, path, projectID string, migrations []*w17registrypb
 		latest[m.GetConnection()] = m
 	}
 	if len(latest) == 0 {
-		return nil
+		return false, nil
 	}
 
 	// Q58-console-1: serialise the read → EditLock → write below across
@@ -235,7 +266,7 @@ func PinLockTargets(console, path, projectID string, migrations []*w17registrypb
 	// first's pins. Held until this function returns.
 	release, lockErr := lockfile.ForUpdate(path)
 	if lockErr != nil {
-		return lockErr
+		return false, lockErr
 	}
 	defer release()
 
@@ -243,7 +274,7 @@ func PinLockTargets(console, path, projectID string, migrations []*w17registrypb
 	// creates a fresh signed lock stamped with project_id).
 	lockBytes, readErr := os.ReadFile(path)
 	if readErr != nil && !os.IsNotExist(readErr) {
-		return readErr
+		return false, readErr
 	}
 
 	targets := make([]*codegenpb.PinTarget, 0, len(latest))
@@ -261,9 +292,37 @@ func PinLockTargets(console, path, projectID string, migrations []*w17registrypb
 		},
 	})
 	if err != nil {
+		return false, err
+	}
+	// Same bytes back = the lock already pinned every head. Said so rather
+	// than "pinned": a consumer's rerun printed "lock: pinned" over a lock
+	// that had not moved, and read it as done (2026-10-02).
+	if bytes.Equal(newBytes, lockBytes) {
+		return false, nil
+	}
+	return true, lockfile.WriteAtomic(path, newBytes, 0o644)
+}
+
+// CheckCanPinLock asks the console to sign a no-op pin of the lock at path —
+// the same RPC, credential and lock the pin after a mint will use — and
+// discards the result. Run BEFORE a mint: a mint that stores its migrations
+// and then cannot pin leaves history the lock does not point at (a CI role
+// without EditLock did exactly that, 2026-10-02). Refusing here stores
+// nothing. Writes nothing.
+func CheckCanPinLock(console, path, projectID string) error {
+	lockBytes, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return lockfile.WriteAtomic(path, newBytes, 0o644)
+	_, err = core.EditLock(console, lockBytes, &codegenpb.LockEditIntent{
+		Intent: &codegenpb.LockEditIntent_PinTargets{
+			PinTargets: &codegenpb.PinTargetsIntent{ProjectId: projectID},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("this run could store migrations but not pin %s to them, so nothing was stored: %w", path, err)
+	}
+	return nil
 }
 
 // PrintFindingsErr prints decision-needed findings + returns a

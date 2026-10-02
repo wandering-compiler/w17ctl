@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	_ "embed"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -115,6 +116,26 @@ func splitConsoleScheme(addr string) (scheme, target string) {
 		}
 	}
 	return "", addr
+}
+
+// CheckConsoleAddr refuses an address that names a console by a web-style
+// scheme with no port — `https://api.w17.app`. The scheme is only a
+// readability prefix and is stripped; what is left has no port, so gRPC dials
+// 443, where the console's WEB front answers with a 404 in text/plain. That
+// arrived as "rpc error: code = Unimplemented … unexpected HTTP status code
+// 404" (found verifying rc.60, 2026-10-01), which names nothing the reader
+// did. A bare host:port, a host with a port behind a scheme, and a resolver
+// target (dns://, unix://) all pass untouched.
+func CheckConsoleAddr(addr string) error {
+	scheme, target := splitConsoleScheme(addr)
+	if scheme == "" || target == "" {
+		return nil
+	}
+	if _, _, err := net.SplitHostPort(target); err == nil {
+		return nil
+	}
+	return fmt.Errorf("console address %q has no port — that is a web address, and a console is dialed on its gRPC port\n"+
+		"  fix: use host:port, e.g. grpcs://%s:50051", addr, strings.TrimSuffix(target, "/"))
 }
 
 // consoleTLSConfig builds the client tls.Config for a dial to addr. Default is

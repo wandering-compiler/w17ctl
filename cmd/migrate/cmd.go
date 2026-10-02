@@ -127,9 +127,11 @@ func (c *GenerateCmd) deriveFromProject() error {
 		return fmt.Errorf("migrate generate: no .proto files under %s — pass --proto explicitly", protoRoot)
 	}
 	sort.Strings(c.Protos)
-	// The proto root has to be on the import path for the files to resolve
-	// each other; a hand-written invocation passes it as -I.
-	c.Imports = append(c.Imports, protoRoot)
+	// No import path is added. The console compiles the IR from the uploaded
+	// proto tree and resolves imports itself; the client-side -I is ignored
+	// with a warning (schema.LoadIRBytes) — and adding one here made EVERY
+	// derived run print that warning about a flag nobody passed (a consumer,
+	// 2026-10-02).
 	return nil
 }
 

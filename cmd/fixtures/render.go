@@ -55,6 +55,14 @@ func (c *RenderCmd) Run() error {
 		return err
 	}
 	if len(seeds) == 0 {
+		// Nothing to render is still something to prune. Deleting the LAST
+		// fixture in scope must remove its seed and its manifest entry too,
+		// or the stale report this command is the advertised fix for
+		// ("the fixture it was rendered from no longer exists") could never
+		// be cleared. Needs no schema and no console: it only deletes.
+		if err := c.pruneEmptyScope(); err != nil {
+			return err
+		}
 		fmt.Fprintf(core.Stdout, "fixtures render: no fixtures under %s\n", c.FixturesDir)
 		return nil
 	}
@@ -89,6 +97,16 @@ func (c *RenderCmd) Run() error {
 	}
 	defer func() { _ = conn.Close() }()
 
+	// The provenance of every seed this run writes — which fixture, at which
+	// bytes — so `verify`, `codegen` and `<binary> fixtures apply` can tell a
+	// render older than its fixture. Read-modify-write: a `--domain` /
+	// `--group` render leaves the other entries as they were, exactly as it
+	// leaves those seeds.
+	manifest, err := c.loadManifest()
+	if err != nil {
+		return err
+	}
+
 	written := map[string]bool{}
 	for _, s := range seeds {
 		body, rerr := os.ReadFile(s.path)
@@ -108,6 +126,14 @@ func (c *RenderCmd) Run() error {
 			return fmt.Errorf("fixtures render: write %s/%s: %w", s.domain, s.name(), err)
 		}
 		written[s.domain+"/"+s.name()] = true
+		srcRel, rerr := filepath.Rel(c.FixturesDir, s.path)
+		if rerr != nil {
+			return fmt.Errorf("fixtures render: %w", rerr)
+		}
+		manifest.Seeds[s.domain+"/"+s.name()] = migrate.RenderedSource{
+			Source: filepath.ToSlash(srcRel),
+			SHA256: migrate.FixtureDigest(body),
+		}
 		// A fixture that HAS rows and renders NOTHING is a failure, not a
 		// result. It means every model in it resolved to nothing under this
 		// domain — almost always because the file is in the wrong directory:
@@ -138,11 +164,80 @@ func (c *RenderCmd) Run() error {
 			return perr
 		}
 		for _, p := range pruned {
+			delete(manifest.Seeds, p)
 			fmt.Fprintf(core.Stdout, "fixtures render: removed %s (no fixture behind it)\n", p)
 		}
 	}
+	if err := migrate.WriteRenderManifest(c.Out, manifest); err != nil {
+		return fmt.Errorf("fixtures render: write %s: %w", migrate.RenderManifestName, err)
+	}
 	fmt.Fprintf(core.Stdout, "fixtures render: %d fixture(s) → %s\n", len(seeds), c.Out)
 	return nil
+}
+
+// pruneEmptyScope is the prune half of a render whose scope holds no
+// fixtures: every rendered seed in scope goes, with its manifest entry. The
+// manifest is rewritten only when one already existed — a project that never
+// rendered gains no file from a render that rendered nothing.
+func (c *RenderCmd) pruneEmptyScope() error {
+	if !c.Prune {
+		return nil
+	}
+	pruned, err := pruneRenderedSeeds(c.Out, c.Domain, c.Group, map[string]bool{})
+	if err != nil {
+		return err
+	}
+	for _, p := range pruned {
+		fmt.Fprintf(core.Stdout, "fixtures render: removed %s (no fixture behind it)\n", p)
+	}
+	if _, ok, err := migrate.ReadRenderManifest(c.Out); err != nil || !ok {
+		return err
+	}
+	manifest, err := c.loadManifest()
+	if err != nil {
+		return err
+	}
+	for key := range manifest.Seeds {
+		dom, rest, _ := strings.Cut(key, "/")
+		group := ""
+		if i := strings.LastIndex(rest, "/"); i >= 0 {
+			group = rest[:i]
+		}
+		if (c.Domain == "" || dom == c.Domain) && (c.Group == "" || group == c.Group) {
+			delete(manifest.Seeds, key)
+		}
+	}
+	if err := migrate.WriteRenderManifest(c.Out, manifest); err != nil {
+		return fmt.Errorf("fixtures render: write %s: %w", migrate.RenderManifestName, err)
+	}
+	return nil
+}
+
+// loadManifest reads the existing render manifest (or starts one) and points
+// it at this run's authoring root, relative to the rendered root so the check
+// works from any working directory.
+func (c *RenderCmd) loadManifest() (*migrate.RenderManifest, error) {
+	m, ok, err := migrate.ReadRenderManifest(c.Out)
+	if err != nil {
+		return nil, fmt.Errorf("fixtures render: %w", err)
+	}
+	if !ok {
+		m = &migrate.RenderManifest{Seeds: map[string]migrate.RenderedSource{}}
+	}
+	absOut, err := filepath.Abs(c.Out)
+	if err != nil {
+		return nil, err
+	}
+	absSrc, err := filepath.Abs(c.FixturesDir)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(absOut, absSrc)
+	if err != nil {
+		return nil, fmt.Errorf("fixtures render: %w", err)
+	}
+	m.SourceRoot = filepath.ToSlash(rel)
+	return m, nil
 }
 
 // resolveProtos returns the schema file set to render against: an explicit

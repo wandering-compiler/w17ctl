@@ -124,6 +124,13 @@ func pushSchemaIdempotent(ctx context.Context, cl w17registrypb.ProjectRegistryC
 	initiative := storageclient.ResolveCurrentInitiative(console, projectID, explicitInitiative)
 	fmt.Fprintf(core.Stdout, "push: %s\n", initiative.Describe())
 
+	// Can this push pin what it is about to store? Asked first: a mint that
+	// stores and then cannot pin leaves history the lock does not point at.
+	if !noLock && lockPath != "" {
+		if err := schemahub.CheckCanPinLock(console, lockPath, projectID); err != nil {
+			return fmt.Errorf("push: %w", err)
+		}
+	}
 	resp, err := cl.PushSchema(ctx, &w17registrypb.PushSchemaRequest{
 		ProjectId:       projectID,
 		Ir:              ir,
@@ -149,27 +156,29 @@ func pushSchemaIdempotent(ctx context.Context, cl w17registrypb.ProjectRegistryC
 	if noLock || lockPath == "" {
 		return nil
 	}
-	// Pin the lock to each connection's CURRENT head. When this push
-	// stored new migrations, `migrations` already carries them. When
-	// the schema was unchanged (0 stored), pin from the console's
-	// existing heads instead — otherwise a lock that lost its pin
-	// (committed unpinned, hand-reverted, or regenerated) never
-	// recovers without a schema change, and `w17ctl migrate fetch` then
-	// skips every connection with "no target pinned". A no-op re-push
-	// should leave the lock correctly pinned, not stuck unpinned.
-	pinFrom := migrations
-	if len(pinFrom) == 0 {
-		listResp, listErr := cl.ListMigrations(ctx, &w17registrypb.ListMigrationsRequest{ProjectId: projectID})
-		if listErr != nil {
-			return fmt.Errorf("list migrations to pin lock: %w", listErr)
-		}
-		pinFrom = listResp.GetMigrations()
+	// Pin EVERY connection to the console's current head, not only the ones
+	// this push stored for: a lock that lost or missed a pin (committed
+	// unpinned, reverted, a CI mint that failed at EditLock) must catch up
+	// for all of them, or `migrate fetch` skips the stragglers and the deploy
+	// targets old migrations under "lock pinned" (review of #153). The heads
+	// include what this push just stored.
+	listResp, listErr := cl.ListMigrations(ctx, &w17registrypb.ListMigrationsRequest{ProjectId: projectID})
+	if listErr != nil {
+		return fmt.Errorf("list migrations to pin lock: %w", listErr)
 	}
-	if err := schemahub.PinLockTargets(console, lockPath, projectID, pinFrom); err != nil {
+	// …followed by what this run stored, so a console answering with an
+	// empty or partial list still pins at least what was just minted.
+	// PinLockTargets keeps the last entry per connection.
+	pinFrom := append(listResp.GetMigrations(), migrations...)
+	changed, err := schemahub.PinLockTargets(console, lockPath, projectID, pinFrom)
+	if err != nil {
 		return fmt.Errorf("pin lock %s: %w", lockPath, err)
 	}
-	if len(pinFrom) > 0 {
+	switch {
+	case changed:
 		fmt.Fprintf(core.Stdout, "push: lock pinned %s\n", lockPath)
+	case len(pinFrom) > 0:
+		fmt.Fprintf(core.Stdout, "push: lock unchanged — %s already pins the console's latest migrations\n", lockPath)
 	}
 	return nil
 }

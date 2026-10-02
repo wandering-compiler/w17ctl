@@ -82,6 +82,19 @@ Mint wherever your release starts: on merge to the default branch (what
 `init --ci` generates), or on the move to a release branch if you deploy from
 one — that keeps the history to what actually ships.
 
+The whole path, with setups from a solo MVP to a regulated company, is
+`w17/specs/migrations.md` (`w17ctl guide` writes it). Read it before your first
+deploy.
+
+### Reusing a business method from another one
+
+Call it through the server `Register…Server` returned (`s.self.Method(ctx, req)`),
+never as a direct Go call on your implementation — a direct call skips the
+wrapper that publishes the callee's `(w17.event_emit)`, and nothing fails.
+Inside a `distx.Run`, a nested transaction joins the open one and the callee's
+events wait for the commit. `w17/specs/composition-and-transactions.md` is the
+whole picture, with a checklist of the silent failures.
+
 ### Some changes need a person's decision — in the pull request
 
 A schema change the planner will not classify on its own (a type change that

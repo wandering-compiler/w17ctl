@@ -8,6 +8,7 @@ package org
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"time"
 
@@ -30,14 +31,31 @@ type ListCmd struct {
 	Refresh bool `name:"refresh" help:"Re-fetch memberships from the console and update the local cache."`
 }
 
+// targetInstance is the stored console an `org` command acts on: the one
+// W17_CONSOLE_ADDR names when it is set — the variable points ONE command at
+// another console without moving the pointer, as everywhere else — else the
+// active one. nil, with the line to print, when there is no credential for it.
+func targetInstance(st *authstore.Store) (*authstore.Instance, string) {
+	if addr := os.Getenv(core.EnvConsoleAddrVar); addr != "" {
+		if inst := st.Instance(addr); inst != nil {
+			return inst, ""
+		}
+		return nil, fmt.Sprintf("Not logged in to %s (named by %s). Run `w17ctl login %s`.", addr, core.EnvConsoleAddrVar, addr)
+	}
+	if inst := st.ActiveInstance(); inst != nil {
+		return inst, ""
+	}
+	return nil, "Not logged in. Run `w17ctl login <console-url>`."
+}
+
 func (c *ListCmd) Run() error {
 	st, err := authstore.LoadDefault()
 	if err != nil {
 		return err
 	}
-	inst := st.ActiveInstance()
+	inst, why := targetInstance(st)
 	if inst == nil {
-		fmt.Fprintln(core.Stdout, "Not logged in. Run `w17ctl login <console-url>`.")
+		fmt.Fprintln(core.Stdout, why)
 		return nil
 	}
 	if c.Refresh {
@@ -69,9 +87,9 @@ func (c *UseCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	inst := st.ActiveInstance()
+	inst, why := targetInstance(st)
 	if inst == nil {
-		fmt.Fprintln(core.Stdout, "Not logged in. Run `w17ctl login <console-url>`.")
+		fmt.Fprintln(core.Stdout, why)
 		return nil
 	}
 	o := inst.Org(c.Slug)

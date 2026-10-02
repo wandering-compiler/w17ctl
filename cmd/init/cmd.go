@@ -86,6 +86,12 @@ func (c *Cmd) Run() error {
 
 	addr := c.W17URL
 	if addr == "" {
+		// The variable that points one command at a console (see
+		// core.ResolveConsoleAddr) — init has its own --w17-url, so it reads
+		// it here, between that flag and the logged-in console.
+		addr = os.Getenv(core.EnvConsoleAddrVar)
+	}
+	if addr == "" {
 		// The wizard doesn't prompt for the console URL (it's operator
 		// environment, not project state). Prefer the console the user is
 		// logged into — `w17ctl login <host>` is the explicit choice, so a
@@ -97,6 +103,9 @@ func (c *Cmd) Run() error {
 	}
 	if addr == "" {
 		return fmt.Errorf("init: no console URL — log in with `w17ctl login <host>`, pass --w17-url, set W17_URL env, or rebuild w17ctl with -ldflags \"-X github.com/wandering-compiler/platform/w17ctl/internal/core.DefaultConsoleAddr=...\"")
+	}
+	if err := core.CheckConsoleAddr(addr); err != nil {
+		return fmt.Errorf("init: --w17-url: %w", err)
 	}
 
 	// Which org owns the project. The console scopes the registration to the
