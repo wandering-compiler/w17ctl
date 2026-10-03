@@ -334,8 +334,8 @@ func (c *BuildCmd) lossyMode() (string, error) {
 // snapshotFn snapshots the named stores before a destructive sync, into the
 // same branch-scoped store `db snapshot` and the branch-switch reconcile use —
 // so what it keeps is restorable by a command that already exists.
-func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiative, schemaHash, undoes string) func([]string) error {
-	return func(conns []string) error {
+func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiative, schemaHash string) func([]string, []byte) error {
+	return func(conns []string, record []byte) error {
 		wanted := map[string]bool{}
 		for _, c := range conns {
 			wanted[c] = true
@@ -371,6 +371,16 @@ func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiativ
 		// change it is the way back from. Without it the consistency guard
 		// refuses the return trip: the schema has moved by then, which is the
 		// whole reason the savepoint was taken.
+		//
+		// "Where it is going" is the hash of the bytes the checkpoint will
+		// actually be advanced to — `record`, which is the console's
+		// checkpoint when it sent one, not necessarily the head this run
+		// compiled. A sync that will not advance (nil record) is going
+		// nowhere: no return-trip pin.
+		undoes := ""
+		if record != nil {
+			undoes = schemaHashOf(record)
+		}
 		if err := snapstore.New(root).SaveNamedUndoing(ctx, initiative, name, schemaHash, undoes, snapConns); err != nil {
 			// A snapshot is taken by the database's OWN client tools, and a
 			// machine without them cannot take one. Said plainly, because the
@@ -582,13 +592,14 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 		return err
 	}
 	logf := func(format string, args ...any) { fmt.Fprintf(core.Stdout, format+"\n", args...) }
-	if err := runDevDiffApplyLossy(sc, project, actor, initiative, currentBytes, applierFor,
+	recorded, err := runDevDiffApplyLossy(sc, project, actor, initiative, currentBytes, applierFor,
 		specConnections(specs), c.CompilerVersion, logf, mode,
 		c.snapshotFn(root, specs, initiative,
-			checkpointLockHash(sc, project, actor, initiative), schemaHashOf(currentBytes))); err != nil {
+			checkpointLockHash(sc, project, actor, initiative)), c.ephemeralStores)
+	if err != nil {
 		return fmt.Errorf("stack build: dev diff-apply: %w", err)
 	}
-	fmt.Fprintf(core.Stdout, "stack build: dev diff-apply complete (%s/%s, checkpoint advanced)\n", initiative, actor)
+	fmt.Fprintf(core.Stdout, "stack build: dev diff-apply complete (%s/%s, %s)\n", initiative, actor, recorded)
 
 	// Declared roles are applied with the schema, not with the data. They
 	// only ever reached a local database through the reconcile's fresh arm,
@@ -617,12 +628,13 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 //     failed apply leaves the checkpoint at the last good state, so the
 //     next build re-attempts the same diff).
 func runDevDiffApply(sc *storageclient.StorageClients, project, actor, initiative string, currentBytes []byte, applierFor migrate.ApplierFor, conns []string, compilerVersion string, logf func(string, ...any)) error {
-	return runDevDiffApplyLossy(sc, project, actor, initiative, currentBytes, applierFor, conns, compilerVersion, logf, plan.LossyApply, nil)
+	_, err := runDevDiffApplyLossy(sc, project, actor, initiative, currentBytes, applierFor, conns, compilerVersion, logf, plan.LossyApply, nil, false)
+	return err
 }
 
 // runDevDiffApplyLossy is runDevDiffApply with the answer to a destructive
 // plan, and the snapshot to take when the answer is to keep what it removes.
-func runDevDiffApplyLossy(sc *storageclient.StorageClients, project, actor, initiative string, currentBytes []byte, applierFor migrate.ApplierFor, conns []string, compilerVersion string, logf func(string, ...any), lossyMode string, snapshot func([]string) error) error {
+func runDevDiffApplyLossy(sc *storageclient.StorageClients, project, actor, initiative string, currentBytes []byte, applierFor migrate.ApplierFor, conns []string, compilerVersion string, logf func(string, ...any), lossyMode string, snapshot func([]string, []byte) error, throwaway bool) (string, error) {
 	// The checkpoint the console records carries the compiler that produced
 	// it, and an empty one is refused by the column's own constraint. The
 	// flag's default fills this in for a command line; a caller that BUILDS a
@@ -632,47 +644,80 @@ func runDevDiffApplyLossy(sc *storageclient.StorageClients, project, actor, init
 	if compilerVersion == "" {
 		compilerVersion = "dev"
 	}
-	ckpt, err := sc.GetCheckpoint(project, actor, initiative)
-	if err != nil {
-		return fmt.Errorf("read checkpoint: %w", err)
-	}
-	// The checkpoint IR is NOT the diff base. That has been the LIVE
-	// DATABASE since rc.40 — `DevPlanAndApplyLossy` reads what the stores
-	// hold and the console plans against that reading.
+	// The checkpoint IR is the diff base for ONE kind of store only.
 	//
-	// What these bytes feed is `ClassifyCompat`: the destructive-change
-	// warning, "this sync would drop a column that was here last time".
-	// So advancing the checkpoint changes what a LATER run of the same
-	// (project, user, initiative) WARNS about — never what SQL runs.
+	// Every store this client can read is planned from what it HOLDS (the
+	// live database, since rc.40). A schema-ful store it cannot read (MySQL,
+	// SQLite) is planned from these bytes — the record of what the last sync
+	// applied (pass #49 M1); before that it was planned as already converged
+	// and never changed. They also feed `ClassifyCompat`, the
+	// destructive-change warning. Passed through as opaque bytes (nil for a
+	// brand-new initiative), never decoded.
 	//
-	// The comment here used to say "the diff BASE", left over from when
-	// it was, and a consumer reading it reasonably concluded that a CI
-	// run advancing a checkpoint against a throwaway database was moving
-	// something load-bearing. It is not. Passed through as opaque bytes
-	// (nil/empty for a brand-new initiative), never decoded.
+	// So advancing the checkpoint is load-bearing again (an earlier version
+	// of this comment said it never was), and a THROWAWAY run (`w17ctl
+	// test`: stores created seconds ago, destroyed after) must neither read
+	// it nor advance it. Read, it describes the developer's long-lived
+	// stores, not these — an unobservable store would be planned as an ALTER
+	// of a table it does not have. Advanced, it records changes that reached
+	// only the throwaway stores, and the developer's own unobservable store
+	// is then planned from a record it never matched.
 	var baseBytes []byte
-	if ckpt != nil {
-		baseBytes = ckpt.GetIrSchema()
+	if !throwaway {
+		ckpt, err := sc.GetCheckpoint(project, actor, initiative)
+		if err != nil {
+			return "", fmt.Errorf("read checkpoint: %w", err)
+		}
+		if ckpt != nil {
+			baseBytes = ckpt.GetIrSchema()
+		}
 	}
 
 	// currentBytes is the opaque compiled IR (the client never decodes it) —
 	// the plan/compat RPCs + the checkpoint advance all consume it verbatim.
 	ctx, cancel := context.WithTimeout(context.Background(), 120e9)
 	defer cancel()
-	if _, err := plan.DevPlanAndApplyLossy(ctx, baseBytes, currentBytes, applierFor, conns, logf, lossyMode, snapshot); err != nil {
+	res, err := plan.DevSync(ctx, baseBytes, currentBytes, applierFor, conns, logf, lossyMode, snapshot)
+	if err != nil {
 		// Nil-checkpoint "already exists": the store was bootstrapped from
 		// db/init (full schema on a fresh volume) but has no dev checkpoint
 		// yet, so the first diff-apply — base nil → full create — collides
 		// with db/init's tables. Steer to the one w17ctl recovery instead of
 		// surfacing the raw driver error.
 		if len(baseBytes) == 0 && strings.Contains(err.Error(), "already exists") {
-			return errStoreAlreadyBootstrapped(err)
+			return "", errStoreAlreadyBootstrapped(err)
 		}
-		return err
+		return "", err
 	}
 
-	return adoptCheckpoint(sc, project, actor, initiative, currentBytes, compilerVersion)
+	if throwaway {
+		return recordedThrowaway, nil
+	}
+	// What to record is the console's call, not this client's: it returns
+	// the checkpoint to store — the head for what was applied, the previous
+	// record for every connection this run left out — and the bytes go to
+	// storage unread. Recording the head instead claimed a change for a store
+	// that never got it (PR #173 review).
+	//
+	// An older console returns none. If this run left out a change it
+	// planned, recording the head would lose that change for good, so the
+	// checkpoint stays where it was and the next sync plans it again. No
+	// released console plans a bucket for a connection it was not shown, so
+	// against those the head is recorded as before. SyncResult.Record makes
+	// that call in one place.
+	record := res.Record(currentBytes)
+	if record == nil {
+		return recordedWithheld, nil
+	}
+	return recordedAdvanced, adoptCheckpoint(sc, project, actor, initiative, record, compilerVersion)
 }
+
+// What a dev sync recorded, for the line that reports it.
+const (
+	recordedAdvanced  = "checkpoint advanced"
+	recordedThrowaway = "throwaway stores — checkpoint left as it was"
+	recordedWithheld  = "checkpoint NOT advanced — a connection without a target still has changes pending"
+)
 
 // specConnections names the connections this run is pointed at, which is what
 // the checkpoint guard has to inspect. The plan cannot supply them: when the

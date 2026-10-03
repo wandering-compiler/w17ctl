@@ -81,12 +81,20 @@ func describeLoss(l *codegenpb.LossyChange) string {
 	case "drop_column":
 		return "the column " + l.GetObject() + " is dropped, with every value in it"
 	case "retype_column":
-		detail := l.GetDetail()
-		if detail != "" {
-			detail = " (" + detail + ")"
+		// The console says what the change DOES, consequence included — it
+		// is the side that knows the op. Appending "is retyped …, which can
+		// fail or truncate" here described a decided DELETE of the rows a
+		// narrowed choice list no longer allows as a cast (T1-1 pass #49
+		// A49-11). A table-level decision (a primary-key change) carries the
+		// table alone.
+		subject := "the column " + l.GetObject()
+		if !strings.Contains(l.GetObject(), ".") {
+			subject = "the table " + l.GetObject()
 		}
-		return "the column " + l.GetObject() + " is retyped" + detail +
-			", which rewrites every value and can fail or truncate"
+		if detail := l.GetDetail(); detail != "" {
+			return subject + ": " + detail
+		}
+		return subject + " is retyped, which rewrites every value and can fail or truncate"
 	default:
 		return l.GetKind() + " " + l.GetObject()
 	}

@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	codegencmd "github.com/wandering-compiler/w17ctl/cmd/codegen"
 	initcmd "github.com/wandering-compiler/w17ctl/cmd/init"
@@ -176,7 +179,176 @@ func devScaffold(dir, name string, feats []string) error {
 		fmt.Fprintf(core.Stdout, "  no rest preset — generating without a public surface, "+
 			"so this run exercises the tiers and not the endpoints\n")
 	}
+	return devScaffoldMcpAndAdmin(dir, domain, name, feats)
+}
+
+// devScaffoldMcpAndAdmin publishes the plugin's MCP and admin presets too,
+// when it ships them.
+//
+// ⚠️ A preset no surface publishes is a preset nothing checks. The scaffold
+// used to write the REST registry only, so a plugin's admin pages were never
+// merged onto an `(w17.admin_api)` and the admin parser's guards over them —
+// readonly_fields against what the update writes, detail.fields against what
+// it persists — never ran here. auth rc.11 shipped an UpdateOrgMembership
+// those guards refused, `plugin dev --all-features` said it generated, and
+// the first consumer with the admin preset on could not run codegen at all.
+//
+// Admin needs a way to sign in. A plugin whose admin preset carries `auth`
+// supplies it and the surface is complete; one that ships pages but no auth
+// (it expects another plugin to sign people in) cannot be published on its
+// own, and the run says what that leaves unchecked.
+func devScaffoldMcpAndAdmin(dir, domain, name string, feats []string) error {
+	hasMCP, err := manifestHasPreset(dir, "mcp")
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	if hasMCP {
+		if err := os.WriteFile(filepath.Join(domain, "mcp.proto"),
+			[]byte(mcpProto(name)), 0o644); err != nil {
+			return fmt.Errorf("plugin dev: %w", err)
+		}
+	}
+	hasAdmin, err := manifestHasPreset(dir, "admin")
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	if !hasAdmin {
+		return nil
+	}
+	auth, err := manifestAdminAuth(dir)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	if auth == nil {
+		fmt.Fprintf(core.Stdout, "  admin preset without its own sign-in — its pages are NOT published "+
+			"here, so the admin guards over them are not exercised by this run\n")
+		return nil
+	}
+	// The sign-in has to EXIST in this activation, not just be declared: the
+	// preset's own feature and the features its two methods are gated on. A
+	// partial activation (`--features rbac`) has no sign-in, and publishing an
+	// admin surface there would fail the run on something the plugin is not
+	// wrong about. Which features those are is read off the plugin's own
+	// files; whether the activation is valid stays the console's call.
+	missing, err := adminSignInMissing(dir, auth, feats)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(core.Stdout, "  admin sign-in needs %s, not in this activation — its pages are NOT "+
+			"published here, so the admin guards over them are not exercised by this run\n",
+			strings.Join(missing, ", "))
+		return nil
+	}
+	if err := os.WriteFile(filepath.Join(domain, "admin.proto"),
+		[]byte(adminProto()), 0o644); err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
 	return nil
+}
+
+// adminAuthPreset is the sign-in a plugin's admin preset wires.
+type adminAuthPreset struct {
+	LoginMethod string `yaml:"login_method"`
+	UserLookup  string `yaml:"user_lookup"`
+	Feature     string `yaml:"feature"`
+}
+
+// manifestAdminAuth returns presets.admin.auth, or nil when the plugin ships
+// none.
+func manifestAdminAuth(dir string) (*adminAuthPreset, error) {
+	body, err := os.ReadFile(filepath.Join(dir, "plugin.yaml"))
+	if err != nil {
+		return nil, fmt.Errorf("reading the manifest: %w", err)
+	}
+	var m struct {
+		Presets struct {
+			Admin struct {
+				Auth *adminAuthPreset `yaml:"auth"`
+			} `yaml:"admin"`
+		} `yaml:"presets"`
+	}
+	if err := yaml.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("reading the manifest: %w", err)
+	}
+	a := m.Presets.Admin.Auth
+	if a == nil || a.LoginMethod == "" || a.UserLookup == "" {
+		return nil, nil
+	}
+	return a, nil
+}
+
+// adminSignInMissing returns the features the admin sign-in needs that `feats`
+// lacks: the preset's own, plus each referenced method's
+// `(w17.contrib.plugin_feature_rpc)` from the plugin's protos.
+func adminSignInMissing(dir string, a *adminAuthPreset, feats []string) ([]string, error) {
+	need := []string{}
+	if a.Feature != "" {
+		need = append(need, a.Feature)
+	}
+	for _, ref := range []string{a.LoginMethod, a.UserLookup} {
+		f, err := rpcFeature(dir, ref)
+		if err != nil {
+			return nil, err
+		}
+		if f != "" {
+			need = append(need, f)
+		}
+	}
+	have := map[string]bool{}
+	for _, f := range feats {
+		have[f] = true
+	}
+	var missing []string
+	seen := map[string]bool{}
+	for _, f := range need {
+		if !have[f] && !seen[f] {
+			missing = append(missing, f)
+			seen[f] = true
+		}
+	}
+	return missing, nil
+}
+
+// rpcFeature returns the feature `<Service>.<Method>` is gated on in the
+// plugin's protos, "" when it is not gated (or not found — the console then
+// reports the ref).
+func rpcFeature(dir, ref string) (string, error) {
+	service, method, ok := strings.Cut(ref, ".")
+	if !ok {
+		return "", nil
+	}
+	rpcRe := regexp.MustCompile(`(?m)^\s*rpc\s+` + regexp.QuoteMeta(method) + `\s*\(`)
+	gateRe := regexp.MustCompile(`plugin_feature_rpc\)\s*=\s*"([^"]+)"`)
+	svcRe := regexp.MustCompile(`(?m)^\s*service\s+` + regexp.QuoteMeta(service) + `\s*\{`)
+	var found string
+	err := filepath.WalkDir(filepath.Join(dir, "proto"), func(p string, d os.DirEntry, werr error) error {
+		if werr != nil || d.IsDir() || !strings.HasSuffix(p, ".proto") || found != "" {
+			return werr
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		src := string(body)
+		svc := svcRe.FindStringIndex(src)
+		if svc == nil {
+			return nil
+		}
+		at := rpcRe.FindStringIndex(src[svc[1]:])
+		if at == nil {
+			return nil
+		}
+		rest := src[svc[1]+at[1]:]
+		if next := regexp.MustCompile(`(?m)^\s*rpc\s`).FindStringIndex(rest); next != nil {
+			rest = rest[:next[0]]
+		}
+		if g := gateRe.FindStringSubmatch(rest); g != nil {
+			found = g[1]
+		}
+		return nil
+	})
+	return found, err
 }
 
 // manifestHasPreset reports whether the plugin declares a preset of that kind.
@@ -261,6 +433,39 @@ option (w17.rest_api) = {
   prefix:      "/api/v1",
   description: "plugin dev — one plugin, generated as itself.",
   include: [ { plugin: "` + name + `" } ]
+};
+`
+}
+
+func mcpProto(name string) string {
+	return `syntax = "proto3";
+
+package plugindev.app;
+
+import "w17/mcp.proto";
+
+// The plugin's MCP preset, published — see devScaffoldMcpAndAdmin.
+option (w17.mcp_api) = {
+  name:        "default",
+  version:     "v1",
+  description: "plugin dev — the plugin's MCP tools.",
+  include:     [ "` + name + `" ]
+};
+`
+}
+
+func adminProto() string {
+	return `syntax = "proto3";
+
+package plugindev.app;
+
+import "w17/admin.proto";
+
+// The admin surface the plugin's admin preset merges its pages, widgets and
+// sign-in onto (presets.admin is on by default) — see devScaffoldMcpAndAdmin.
+option (w17.admin_api) = {
+  name:   "admin",
+  prefix: "/admin"
 };
 `
 }

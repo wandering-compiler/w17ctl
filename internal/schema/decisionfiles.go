@@ -22,10 +22,25 @@ type DecisionState struct {
 	// Sent were applied to Plan: current base, well-formed, unambiguous.
 	Sent []migdecisions.File
 	// Stale are Sent files the console says decide nothing (their change was
-	// undone before release). Plan was made without them.
+	// undone before release, or the column changed again — see
+	// ForAnotherChange). Plan was made without them.
 	Stale []migdecisions.File
 	// Plan is the final dry run, with Sent minus Stale.
 	Plan *w17registrypb.PushSchemaResponse
+}
+
+// ForAnotherChange reports whether f — a stale or id-less file — has a key
+// the plan still needs decided, under a different change: the column
+// changed again after the decision was written (M2), so the open question is
+// a new one. Matching the console's key string is all it takes; what the
+// change IS stays the console's.
+func (d *DecisionState) ForAnotherChange(f migdecisions.File) bool {
+	for _, o := range d.Plan.GetFindings() {
+		if o.GetDecideKey() == f.Key && migdecisions.FindingIdent(o) != f.Ident() {
+			return true
+		}
+	}
+	return false
 }
 
 // Current reports whether f was written against this state's base.
@@ -93,7 +108,7 @@ func ResolveDecisions(root string, args SchemaPushArgs) (*DecisionState, error) 
 		unused[k] = true
 	}
 	for _, f := range st.Sent {
-		if unused[f.Key] {
+		if unused[f.Ident()] {
 			st.Stale = append(st.Stale, f)
 		}
 	}
@@ -127,6 +142,10 @@ func ApplyDecisionFiles(root string, args *SchemaPushArgs) error {
 		fmt.Fprintf(core.Stdout, "decision consumed by an earlier release, ignored: %s (%s)\n", relTo(root, f.Path), f.Key)
 	}
 	for _, f := range st.Stale {
+		if st.ForAnotherChange(f) {
+			fmt.Fprintf(core.Stdout, "decision made for a different change of %s, ignored: %s — `w17ctl migrate check --write` asks again\n", f.Key, relTo(root, f.Path))
+			continue
+		}
 		fmt.Fprintf(core.Stdout, "decision not needed any more, ignored: %s (%s)\n", relTo(root, f.Path), f.Key)
 	}
 	var current []migdecisions.File

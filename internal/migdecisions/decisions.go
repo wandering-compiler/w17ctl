@@ -33,6 +33,20 @@
 // commit back leaves it there). Such a file is reported as consumed and is
 // inert; `migrate check --write` deletes it.
 //
+// # A decision is bound to the change it was made for
+//
+// The base says WHEN a decision applies; the finding id says to WHAT. Each
+// file records the console's id for the finding it decides (`id:`), and is
+// sent as `<finding>@<id>=<choice>`. The console applies it only to the
+// finding with that id: when the same column changes differently before a
+// release — same key, same base, a change nobody reviewed — the file decides
+// nothing; `check` says it was made for a different change and `--write`
+// asks again. The id also tells apart two tables sharing a bare name, which
+// share a `finding:` key: each gets its own file. A file without `id:`
+// (written before ids existed) is never sent — it could approve a different
+// change — and `--write` asks again; the choice it held is quoted in the new
+// file (pass #49 M2 / C49-10).
+//
 // The client holds no knowledge of WHAT a decision means: the key, the
 // offered options and the change summary all come from the console's
 // finding, and the console parses and validates the decision itself.
@@ -72,6 +86,20 @@ type File struct {
 	// Base is the stored schema the decision was made against
 	// ("none" = no schema yet); see the package doc.
 	Base string
+	// ID is the console's id of the finding — the CHANGE — this decides,
+	// copied from Finding.finding_id. Opaque here.
+	ID string
+	// Change is the file's `change:` line, for messages only.
+	Change string
+	// Table is the file's `table:` line — the console's table_fqn when the
+	// file was written; "" for a file that predates it. Never sent; it only
+	// tells two tables that share a key apart when --write replaces a file.
+	Table string
+	// Unbound: a file without `id:`, written before decisions recorded the
+	// change they decide. Never sent (Problem is set); `--write` asks again.
+	// Choice holds what it chose, when it chose one, so the new file can
+	// quote it.
+	Unbound bool
 	// Undecided: a well-formed file still waiting for a person to keep
 	// exactly one option. Problem says how many are left.
 	Undecided bool
@@ -80,19 +108,43 @@ type File struct {
 	Problem string
 }
 
+// Ident is the decision's identity — the change it decides: the finding key
+// bound to the finding id, as the console reads it (`<key>@<id>`) and as it
+// names an unused one back.
+func (f File) Ident() string {
+	return Bind(f.Key, f.ID)
+}
+
+// FindingIdent is a console finding's identity, in the form Ident uses.
+func FindingIdent(f *w17registrypb.Finding) string {
+	return Bind(f.GetDecideKey(), f.GetFindingId())
+}
+
+// Bind joins a decision key and a finding id the way the console's decide
+// grammar takes a bound key; an empty id leaves the key as it is.
+func Bind(key, id string) string {
+	if id == "" {
+		return key
+	}
+	return key + "@" + id
+}
+
 // Flag renders the file as the decision the console receives.
 func (f File) Flag() string {
 	if f.Choice == "custom" {
-		return f.Key + "=custom:" + f.CustomPath
+		return f.Ident() + "=custom:" + f.CustomPath
 	}
-	return f.Key + "=" + f.Choice
+	return f.Ident() + "=" + f.Choice
 }
 
-// onDisk is the file's YAML shape. Only `finding` and `choose` are read back;
-// the rest is for the person deciding.
+// onDisk is the file's YAML shape. `finding`, `id`, `base` and `choose` are
+// read back; `change` only for messages; the rest is for the person deciding.
 type onDisk struct {
 	Finding string      `yaml:"finding"`
+	ID      string      `yaml:"id"`
 	Base    string      `yaml:"base"`
+	Change  string      `yaml:"change"`
+	Table   string      `yaml:"table"`
 	Choose  []yaml.Node `yaml:"choose"`
 }
 
@@ -151,18 +203,34 @@ func readOne(path string) File {
 		f.Problem = "no `base:` — the file does not say which schema it was decided against; rewrite it with `w17ctl migrate check --rewrite`"
 		return f
 	}
-	switch len(d.Choose) {
+	f.ID = strings.TrimSpace(d.ID)
+	f.Change = strings.TrimSpace(d.Change)
+	f.Table = strings.TrimSpace(d.Table)
+	readChoice(&f, d.Choose)
+	if f.ID == "" {
+		// Not sent: a key-only decision could approve a different change of
+		// the same column than the one it was written for (M2).
+		f.Unbound, f.Undecided = true, false
+		f.Problem = "no `id:` — written before a decision recorded WHICH change it decides, so it could approve a different one; `w17ctl migrate check --write` asks again"
+	}
+	return f
+}
+
+// readChoice sets f's Choice / CustomPath from `choose:`, or Undecided and
+// Problem when it does not hold exactly one usable option.
+func readChoice(f *File, choose []yaml.Node) {
+	switch len(choose) {
 	case 0:
 		f.Undecided = true
 		f.Problem = "no option left under `choose:` — a database owner keeps exactly one"
-		return f
+		return
 	case 1:
 	default:
 		f.Undecided = true
-		f.Problem = fmt.Sprintf("%d options left under `choose:` — a database owner deletes all but the one chosen", len(d.Choose))
-		return f
+		f.Problem = fmt.Sprintf("%d options left under `choose:` — a database owner deletes all but the one chosen", len(choose))
+		return
 	}
-	n := d.Choose[0]
+	n := choose[0]
 	switch n.Kind {
 	case yaml.ScalarNode:
 		f.Choice = strings.TrimSpace(n.Value)
@@ -175,17 +243,18 @@ func readOne(path string) File {
 	if f.Choice == "" {
 		f.Problem = "the option under `choose:` is neither a strategy nor `custom: <file.sql>`"
 	}
-	return f
 }
 
-// Duplicates groups the usable files by key and returns the keys decided by
-// more than one file. Same choice = redundant (keep one, delete the rest);
-// different choices = a conflict only a person can settle.
+// Duplicates groups the usable files by the change they decide (Ident) and
+// returns the changes decided by more than one file. Same choice = redundant
+// (keep one, delete the rest); different choices = a conflict only a person
+// can settle. Two files with one `finding:` key but different ids decide two
+// changes (two tables sharing a bare name) and are not duplicates.
 func Duplicates(files []File) (redundant [][]File, conflicting [][]File) {
 	byKey := map[string][]File{}
 	for _, f := range files {
 		if f.Problem == "" {
-			byKey[f.Key] = append(byKey[f.Key], f)
+			byKey[f.Ident()] = append(byKey[f.Ident()], f)
 		}
 	}
 	keys := make([]string, 0, len(byKey))
@@ -221,15 +290,15 @@ func Applicable(files []File) []File {
 	_, conflicting := Duplicates(files)
 	skip := map[string]bool{}
 	for _, g := range conflicting {
-		skip[g[0].Key] = true
+		skip[g[0].Ident()] = true
 	}
 	seen := map[string]bool{}
 	var out []File
 	for _, f := range files {
-		if f.Problem != "" || skip[f.Key] || seen[f.Key] {
+		if f.Problem != "" || skip[f.Ident()] || seen[f.Ident()] {
 			continue
 		}
-		seen[f.Key] = true
+		seen[f.Ident()] = true
 		out = append(out, f)
 	}
 	return out
@@ -298,12 +367,15 @@ var optionHelp = map[string]string{
 var unsafeName = regexp.MustCompile(`[^a-z0-9]+`)
 
 // FileName is `<UTC time>-<commit>-<key>-<hash>.yaml`; commit may be empty.
-// The slug is for people and is not injective (`a_b.c` and `a.b_c` slug
-// alike), so a short hash of the exact key keeps two questions written in
-// one run from landing on one file.
-func FileName(now time.Time, commit, key string) string {
+// ident is the finding's identity (FindingIdent: key, `@`, finding id). The
+// slug is the key alone, for people, and is not injective (`a_b.c` and
+// `a.b_c` slug alike — and two tables sharing a bare name share a key), so a
+// short hash of the whole identity keeps two questions written in one run
+// from landing on one file.
+func FileName(now time.Time, commit, ident string) string {
+	key, _, _ := strings.Cut(ident, "@")
 	slug := strings.Trim(unsafeName.ReplaceAllString(strings.ToLower(key), "-"), "-")
-	sum := sha256.Sum256([]byte(key))
+	sum := sha256.Sum256([]byte(ident))
 	parts := []string{now.UTC().Format("20060102T1504Z")}
 	if commit != "" {
 		parts = append(parts, commit)
@@ -312,9 +384,31 @@ func FileName(now time.Time, commit, key string) string {
 	return strings.Join(parts, "-") + ".yaml"
 }
 
+// ReplacedFor picks, from files --write is replacing, the ones the new
+// question for f should quote: same `finding:` key AND same table. Two tables
+// sharing a bare name share a key, and a file must not claim to replace a
+// choice made for the other table. A file that records no table (written
+// before `table:`) cannot be placed, so it is quoted in every question of
+// its key — Render says so. Plain string comparison of what the console sent.
+func ReplacedFor(f *w17registrypb.Finding, files []File) []File {
+	var out []File
+	for _, e := range files {
+		if e.Key != f.GetDecideKey() {
+			continue
+		}
+		if e.Table == "" || f.GetTableFqn() == "" || e.Table == f.GetTableFqn() {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // Render writes the file a reviewer edits for one finding, against base (the
-// console's, "" for no schema yet).
-func Render(f *w17registrypb.Finding, base, commit, branch string) []byte {
+// console's, "" for no schema yet). earlier are files this one replaces — made
+// for a different change of the same key, or without an id — whose choice is
+// quoted as a comment, never carried over: the owner chooses again, for the
+// change in front of them.
+func Render(f *w17registrypb.Finding, base, commit, branch string, earlier ...File) []byte {
 	var b bytes.Buffer
 	b.WriteString("# A database owner decides this — delete every option under `choose:`\n")
 	b.WriteString("# but ONE, then approve. `w17ctl migrate generate` applies it at release\n")
@@ -329,7 +423,27 @@ func Render(f *w17registrypb.Finding, base, commit, branch string) []byte {
 	if len(where) > 0 {
 		fmt.Fprintf(&b, "# Found by `w17ctl migrate check` on %s.\n", strings.Join(where, ", "))
 	}
+	for _, e := range earlier {
+		chose := "nothing yet"
+		if e.Choice == "custom" {
+			chose = "custom: " + e.CustomPath
+		} else if e.Choice != "" {
+			chose = e.Choice
+		}
+		was := ""
+		if e.Change != "" {
+			was = " (" + e.Change + ")"
+		}
+		fmt.Fprintf(&b, "# Replaces %s, which chose %s for a different change%s. Not applied here —\n# choose again for the change below.\n", filepath.Base(e.Path), chose, was)
+		if e.Table == "" {
+			b.WriteString("# (It records no table, so it may have been made for another table sharing\n# this finding key.)\n")
+		}
+	}
 	fmt.Fprintf(&b, "finding: %s\n", f.GetDecideKey())
+	fmt.Fprintf(&b, "id: %s   # the change this decides — another change of the column needs a new decision\n", f.GetFindingId())
+	if t := f.GetTableFqn(); t != "" {
+		fmt.Fprintf(&b, "table: %s\n", t)
+	}
 	fmt.Fprintf(&b, "base: %s   # the stored schema this is decided against — a release consumes it\n", BaseName(base))
 	if p, c := f.GetPrevSummary(), f.GetCurrSummary(); p != "" || c != "" {
 		fmt.Fprintf(&b, "change: %s\n", quote(strings.TrimSpace(p+" → "+c)))

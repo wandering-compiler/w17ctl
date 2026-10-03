@@ -127,15 +127,20 @@ func (c *CheckCmd) Run() error {
 // report is one check's verdict on the plan and the decision files.
 type report struct {
 	open      []*w17registrypb.Finding // still needing a decision
-	fileFor   map[string]bool          // open keys that have a current-base file
+	fileFor   map[string]bool          // open findings (by identity) that have a current-base file
 	waiting   []migdecisions.File      // undecided files whose finding is open
 	consumed  []migdecisions.File      // another base: inert, reported
-	deletable []migdecisions.File      // --write removes: stale, redundant, undecided with no finding
-	tidy      []string                 // what keeps the check at 3, one line each
-	byHand    bool                     // some tidy item only a person (or --rewrite) can settle
-	written   []string
-	removed   []string
-	changed   []string // connections a push would migrate
+	deletable []migdecisions.File      // --write removes: stale, redundant, undecided with no finding, made for another change
+	// replaced: deletable files made for a different change of a key that is
+	// open now (or without an id) — quoted in the file --write writes for the
+	// same key AND table (migdecisions.ReplacedFor), so the owner sees what was chosen before.
+	replaced []migdecisions.File
+	tidy     []string        // what keeps the check at 3, one line each
+	byWrite  map[string]bool // tidy lines --write settles
+	byHand   bool            // some tidy item only a person (or --rewrite) can settle
+	written  []string
+	removed  []string
+	changed  []string // connections a push would migrate
 	// notGenerated lists why --generated fails.
 	notGenerated []string
 	base         string
@@ -144,47 +149,78 @@ type report struct {
 	root         string
 }
 
+// fixable records a tidy line --write settles by deleting f.
+func (r *report) fixable(f migdecisions.File, line string) {
+	r.deletable = append(r.deletable, f)
+	r.tidy = append(r.tidy, line)
+	r.byWrite[line] = true
+}
+
+// replace records a file --write deletes and asks again for: it was made for
+// a different change of a key that is open now (M2), or it records no change
+// at all.
+func (r *report) replace(f migdecisions.File, line string) {
+	r.fixable(f, line)
+	r.replaced = append(r.replaced, f)
+}
+
 func assess(root string, st *schema.DecisionState) *report {
-	r := &report{fileFor: map[string]bool{}, changed: st.Plan.GetChangedConnections(), base: st.Base, root: root}
+	r := &report{fileFor: map[string]bool{}, byWrite: map[string]bool{},
+		changed: st.Plan.GetChangedConnections(), base: st.Base, root: root}
 	r.commit, r.branch = gitShortHead(root), storageclient.GitCurrentBranchFn()
 	r.open = st.Plan.GetFindings()
 	r.consumed = st.Consumed
+	// A file answers an open question only when it was made for THAT change:
+	// same key AND same finding id (M2). Two tables sharing a bare name share
+	// a key and differ by id (C49-10).
 	open := map[string]bool{}
 	for _, f := range r.open {
-		open[f.GetDecideKey()] = true
+		open[migdecisions.FindingIdent(f)] = true
 	}
 	var current []migdecisions.File
 	for _, f := range st.Files {
 		if st.Current(f) {
 			current = append(current, f)
-			if open[f.Key] {
-				r.fileFor[f.Key] = true
+			if open[f.Ident()] && !f.Unbound {
+				r.fileFor[f.Ident()] = true
 			}
 		}
 	}
 	for _, f := range st.Files {
+		p := rel(root, f.Path)
 		switch {
 		case f.Base != "" && !st.Current(f):
 			// consumed — reported by print, never a failure
-		case f.Undecided && open[f.Key]:
+		case f.Unbound && st.ForAnotherChange(f):
+			r.replace(f, fmt.Sprintf("%s: records no `id:`, so it cannot say which change of %s it decides — it could approve a different one than the change open now; `w17ctl migrate check --write` asks again", p, f.Key))
+		case f.Unbound:
+			r.fixable(f, fmt.Sprintf("%s: records no `id:` and no change of %s needs a decision any more — `w17ctl migrate check --write` deletes it", p, f.Key))
+		case f.Undecided && open[f.Ident()]:
 			r.waiting = append(r.waiting, f)
+		case f.Undecided && st.ForAnotherChange(f):
+			r.replace(f, fmt.Sprintf("%s: waits for a choice on a different change of %s than the one open now — `w17ctl migrate check --write` asks again", p, f.Key))
 		case f.Undecided:
-			r.deletable = append(r.deletable, f)
-			r.tidy = append(r.tidy, fmt.Sprintf("%s: waits for a choice on %s, which no change needs any more — delete it", rel(root, f.Path), f.Key))
+			r.fixable(f, fmt.Sprintf("%s: waits for a choice on %s, which no change needs any more — delete it", p, f.Key))
 		case f.Problem != "":
 			r.byHand = true
-			r.tidy = append(r.tidy, fmt.Sprintf("%s: %s — fix it by hand, or start over with `w17ctl migrate check --rewrite`", rel(root, f.Path), f.Problem))
+			r.tidy = append(r.tidy, fmt.Sprintf("%s: %s — fix it by hand, or start over with `w17ctl migrate check --rewrite`", p, f.Problem))
 		}
 	}
 	for _, f := range st.Stale {
-		r.deletable = append(r.deletable, f)
-		r.tidy = append(r.tidy, fmt.Sprintf("%s: decides %s, which no change needs any more — delete it", rel(root, f.Path), f.Key))
+		if st.ForAnotherChange(f) {
+			was := ""
+			if f.Change != "" {
+				was = " (" + f.Change + ")"
+			}
+			r.replace(f, fmt.Sprintf("%s: decides a different change of %s%s than the one open now, so it is NOT applied — `w17ctl migrate check --write` asks again", rel(root, f.Path), f.Key, was))
+			continue
+		}
+		r.fixable(f, fmt.Sprintf("%s: decides %s, which no change needs any more — delete it", rel(root, f.Path), f.Key))
 	}
 	redundant, conflicting := migdecisions.Duplicates(current)
 	for _, g := range redundant {
 		for _, f := range g[1:] {
-			r.deletable = append(r.deletable, f)
-			r.tidy = append(r.tidy, fmt.Sprintf("%s: a second file deciding %s the same way — delete it", rel(root, f.Path), f.Key))
+			r.fixable(f, fmt.Sprintf("%s: a second file deciding %s the same way — delete it", rel(root, f.Path), f.Key))
 		}
 	}
 	for _, g := range conflicting {
@@ -203,6 +239,16 @@ func assess(root string, st *schema.DecisionState) *report {
 // Conflicts, broken files and undecided files whose question is open stay:
 // they hold a person's choice, or the question waiting for one.
 func (r *report) repair(root, dir string, st *schema.DecisionState) error {
+	// A file must say which CHANGE it decides. A console that does not
+	// identify its findings predates that; a file written from it could
+	// approve a different change of the same column later (M2), so write
+	// none rather than one (and delete nothing more: --write's deletions
+	// wait for a console that can say what replaces them).
+	for _, f := range r.open {
+		if f.GetFindingId() == "" {
+			return fmt.Errorf("migrate check --write: the console does not identify the change behind %s (its findings carry no finding_id — it predates decisions bound to a change); update the console, then run this again", f.GetDecideKey())
+		}
+	}
 	for _, f := range append(append([]migdecisions.File(nil), r.consumed...), r.deletable...) {
 		if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
 			return err
@@ -212,7 +258,7 @@ func (r *report) repair(root, dir string, st *schema.DecisionState) error {
 	r.consumed, r.deletable = nil, nil
 	var keep []string
 	for _, t := range r.tidy {
-		if strings.Contains(t, "— delete it") {
+		if r.byWrite[t] {
 			continue
 		}
 		keep = append(keep, t)
@@ -223,14 +269,15 @@ func (r *report) repair(root, dir string, st *schema.DecisionState) error {
 	}
 	now := time.Now()
 	for _, f := range r.open {
-		if r.fileFor[f.GetDecideKey()] {
+		ident := migdecisions.FindingIdent(f)
+		if r.fileFor[ident] {
 			continue
 		}
-		p := filepath.Join(dir, migdecisions.FileName(now, r.commit, f.GetDecideKey()))
-		if err := os.WriteFile(p, migdecisions.Render(f, st.Base, r.commit, r.branch), 0o644); err != nil {
+		p := filepath.Join(dir, migdecisions.FileName(now, r.commit, ident))
+		if err := os.WriteFile(p, migdecisions.Render(f, st.Base, r.commit, r.branch, migdecisions.ReplacedFor(f, r.replaced)...), 0o644); err != nil {
 			return err
 		}
-		r.fileFor[f.GetDecideKey()] = true
+		r.fileFor[ident] = true
 		r.written = append(r.written, rel(root, p))
 		if written, rerr := migdecisions.Load(dir); rerr == nil {
 			for _, w := range written {
@@ -280,10 +327,10 @@ func (r *report) print() {
 	}
 	for _, f := range r.open {
 		where := "no decision file yet — `w17ctl migrate check --write`"
-		if r.fileFor[f.GetDecideKey()] {
+		if r.fileFor[migdecisions.FindingIdent(f)] {
 			where = "decision file waiting for a database owner to keep ONE option"
 		}
-		fmt.Fprintf(w, "needs a decision: %s — %s (%s)\n", f.GetDecideKey(), f.GetRationale(), where)
+		fmt.Fprintf(w, "needs a decision: %s%s — %s (%s)\n", f.GetDecideKey(), r.tableNote(f), f.GetRationale(), where)
 	}
 	for _, t := range r.tidy {
 		fmt.Fprintf(w, "decision file: %s\n", t)
@@ -292,6 +339,20 @@ func (r *report) print() {
 		fmt.Fprintf(w, "not generated: %s\n", n)
 	}
 	writeStepSummary(r)
+}
+
+// tableNote names f's table when another open finding shares its key — two
+// tables with one bare name (C49-10) — so the two questions read apart.
+func (r *report) tableNote(f *w17registrypb.Finding) string {
+	if f.GetTableFqn() == "" {
+		return ""
+	}
+	for _, o := range r.open {
+		if o != f && o.GetDecideKey() == f.GetDecideKey() {
+			return " (table " + f.GetTableFqn() + ")"
+		}
+	}
+	return ""
 }
 
 // tidyAdvice names what gets out of exit 3 for THIS state: --write when it
@@ -309,7 +370,7 @@ func (r *report) verdict() error {
 		return checkExitError{exitTidyDecisions, "decision files in " + migdecisions.Dir + " need tidying — " + r.tidyAdvice()}
 	case len(r.open) > 0:
 		for _, f := range r.open {
-			if !r.fileFor[f.GetDecideKey()] {
+			if !r.fileFor[migdecisions.FindingIdent(f)] {
 				return checkExitError{exitNeedsDecision, fmt.Sprintf("%d schema change(s) need a decision — run `w17ctl migrate check --write`, commit %s, and have a database owner keep ONE option in each file", len(r.open), migdecisions.Dir)}
 			}
 		}
@@ -339,10 +400,10 @@ func writeStepSummary(r *report) {
 		b.WriteString("❌ **Schema changes need a database owner's decision.**\n\n")
 		for _, f := range r.open {
 			next := "no decision file yet — run `w17ctl migrate check --write` and commit `" + migdecisions.Dir + "`"
-			if r.fileFor[f.GetDecideKey()] {
+			if r.fileFor[migdecisions.FindingIdent(f)] {
 				next = "its decision file waits for a database owner to keep ONE option"
 			}
-			fmt.Fprintf(&b, "- `%s` — %s (%s)\n", f.GetDecideKey(), f.GetRationale(), next)
+			fmt.Fprintf(&b, "- `%s`%s — %s (%s)\n", f.GetDecideKey(), r.tableNote(f), f.GetRationale(), next)
 		}
 	case len(r.notGenerated) > 0:
 		b.WriteString("❌ **Migrations are not generated for this proto.** Run `w17ctl migrate generate` and commit `w17/lock.yaml`.\n\n")
