@@ -46,6 +46,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -132,6 +133,49 @@ func Plugin(src, dest string) (Stats, error) {
 	}
 	st.Plugins = 1
 	return st, nil
+}
+
+// privateDocRef matches a path into the platform's private docs. The
+// platform's plugins are published to a PUBLIC registry and authored in a
+// private monorepo, so a comment pointing at docs/todos/… or docs/decisions/…
+// points its reader at nothing — and names internal documents in public
+// (2026-10-04: 18 files of auth, cluster and payment did). Say the reason in
+// the comment instead.
+//
+// Checked by Catalogue — the platform's own publish — and NOT by Plugin: an
+// author outside this repository renders, installs (`plugin update --from`)
+// and develops (`plugin dev`) through Plugin, and their own repository may
+// well have a docs/specs/ to cite.
+var privateDocRef = regexp.MustCompile(`docs/(todos|decisions|specs|runbooks|audit|archive)/`)
+
+// refusePrivateDocRefs refuses a rendered catalogue that cites the private docs,
+// naming every place so the author can fix them in one pass.
+func refusePrivateDocRefs(root string) error {
+	var hits []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		body, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		rel, _ := filepath.Rel(root, path)
+		for i, line := range strings.Split(string(body), "\n") {
+			if privateDocRef.MatchString(line) {
+				hits = append(hits, fmt.Sprintf("%s:%d", filepath.ToSlash(rel), i+1))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("plugin render: %w", err)
+	}
+	if len(hits) > 0 {
+		return fmt.Errorf("plugin render: the published tree cites the platform's private docs, which no reader of the "+
+			"registry can open — state the reason in place instead (%d): %s", len(hits), strings.Join(hits, ", "))
+	}
+	return nil
 }
 
 // renderSrc walks a plugin's authored Go and writes its inert form.
@@ -300,6 +344,10 @@ func Catalogue(pluginsDir, dest string, notes []string) (Stats, error) {
 		total.Tests += st.Tests
 	}
 
+	// The whole tree the registry receives: every plugin and the root notes.
+	if err := refusePrivateDocRefs(dest); err != nil {
+		return total, err
+	}
 	if total.Plugins == 0 {
 		return total, fmt.Errorf(
 			"plugin render: %s holds no plugin (a directory with a plugin.yaml) — "+
