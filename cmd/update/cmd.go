@@ -39,9 +39,27 @@ type Cmd struct {
 	Dir     string `help:"Install into this directory instead of the one this binary is running from." placeholder:"PATH"`
 	Stable  bool   `help:"Refuse prereleases. Off by default while this binary is itself a prerelease — see the note in --help."`
 	DryRun  bool   `name:"dry-run" help:"Resolve the release that WOULD be installed and print it, changing nothing."`
+
+	Check   bool   `name:"check" help:"Report what is behind — this binary, the project's sdk/go, every installed plugin — and change nothing. Run from a project; outside one only the binary is checked."`
+	All     bool   `name:"all" help:"Bring everything up: the project's sdk/go (update + pin), every installed plugin, then this binary. Run from a project."`
+	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (for --check / --all: the SDK floor it generates against, and the lock it re-signs)."`
 }
 
 func (c *Cmd) Run() error {
+	if c.Check && c.All {
+		return fmt.Errorf("update: --check reports and --all applies; pass one")
+	}
+	if c.Check {
+		return c.runCheck()
+	}
+	if c.All {
+		return c.runAll()
+	}
+	return c.runSelf()
+}
+
+// runSelf is the original `w17ctl update`: this binary, through the installer.
+func (c *Cmd) runSelf() error {
 	dir := c.Dir
 	if dir == "" {
 		exe, err := os.Executable()

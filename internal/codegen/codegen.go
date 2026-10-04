@@ -538,7 +538,7 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
 	for _, f := range writes {
 		kept[filepath.ToSlash(f.GetRelativePath())] = true
 	}
-	if n, pErr := pruneOrphans(root, view.GetCleanPaths(), kept, core.Stdout); pErr != nil {
+	if n, pErr := pruneOrphans(root, view.GetCleanPaths(), kept, servicesDir, core.Stdout); pErr != nil {
 		return fmt.Errorf("prune orphans: %w", pErr)
 	} else if n > 0 {
 		fmt.Fprintf(core.Stdout, "codegen: pruned %d stale generated file(s)\n", n)
@@ -1790,8 +1790,43 @@ func hasGeneratedMarker(path string) bool {
 // root), locally produced artifacts (go.sum / go.work.sum — no marker), and
 // write-if-missing scaffolds (in the write set) are never touched. Returns the
 // number of files removed.
-func pruneOrphans(root string, roots []string, kept map[string]bool, stdout io.Writer) (int, error) {
-	return pruneOrphansMarked(root, roots, kept, hasGeneratedMarker, stdout)
+func pruneOrphans(root string, roots []string, kept map[string]bool, servicesDir string, stdout io.Writer) (int, error) {
+	return pruneOrphansMarked(root, roots, kept, func(p string) bool {
+		return hasGeneratedMarker(p) || stagedPluginFile(root, servicesDir, p)
+	}, stdout)
+}
+
+// stagedPluginFile reports whether `p` lives in a bundle's staged plugin tree.
+//
+// That tree is staging's alone — every file in it is a copy of a plugin's
+// source, written by codegen — so a file there that this run did not write is
+// an orphan whether or not it carries a header. It has to be decided by PATH:
+// staged copies carried no generated header until 2026-10-03, so every copy
+// staged before that (a feature since switched off, a file the plugin has
+// since deleted) would otherwise stay in a committed bundle for good — one
+// project held 25 test files nothing had produced for two weeks, and a
+// switched-off feature's handler left behind does not compile.
+//
+// ANCHORED at the project's services dir (the lock's services_dir): a match
+// anywhere deeper — a `services/x/src/plugins/y/` inside some node_modules or
+// vendor tree under a service — is not staging's, and the path rule deletes
+// without asking the file anything.
+func stagedPluginFile(root, servicesDir, p string) bool {
+	if servicesDir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	prefix := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(servicesDir)), "/") + "/"
+	rest, ok := strings.CutPrefix(filepath.ToSlash(rel), prefix)
+	if !ok {
+		return false
+	}
+	// <service>/src/plugins/<activation>/<file…>
+	parts := strings.SplitN(rest, "/", 5)
+	return len(parts) == 5 && parts[1] == "src" && parts[2] == "plugins" && parts[0] != "" && parts[3] != "" && parts[4] != ""
 }
 
 // clientMarkerRe is the FE client generator's banner ALONE — not the general

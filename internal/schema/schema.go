@@ -66,9 +66,6 @@ func DefaultLoadIRBytesWithDescriptors(ctx context.Context, paths, imports []str
 // compiled-in default — core.ResolveConsoleAddr; the lock's w17_url is not
 // a source).
 func compileIRBytesViaConsole(ctx context.Context, paths, imports []string, console string, includeDescriptors bool) ([]byte, error) {
-	if len(paths) == 0 {
-		return nil, fmt.Errorf("no --proto paths given")
-	}
 	// ⚠️ `--import` IS IGNORED, and saying so is the point of this block.
 	//
 	// The flag is on eight commands and its help promises "additional proto
@@ -88,6 +85,15 @@ func compileIRBytesViaConsole(ctx context.Context, paths, imports []string, cons
 		fmt.Fprintf(core.Stderr, "w17ctl: --import is ignored (%d path(s)): the console compiles the IR "+
 			"and resolves imports from the uploaded proto tree and its own w17 vocabulary. "+
 			"Protos your project imports must live under its proto dir.\n", len(imports))
+	}
+	// A directory is not a root. Sent as one it became "." and the console
+	// built the plugin protos alone — a push from that planned a DROP TABLE
+	// for every other table of the project (2026-10-04). Checked before
+	// anything is dialled: it is the caller's mistake, whatever the console.
+	for _, p := range paths {
+		if info, serr := os.Stat(p); serr == nil && info.IsDir() {
+			return nil, fmt.Errorf("--proto %s is a directory; name proto files, or leave --proto out to build the whole project", p)
+		}
 	}
 	root, err := core.FindProjectRoot()
 	if err != nil {
@@ -134,7 +140,8 @@ func compileIRBytesViaConsole(ctx context.Context, paths, imports []string, cons
 
 	// roots = the entry --proto files as wire names (relative to the proto
 	// root) — the server loads only these + their transitive imports, so a
-	// subset push builds exactly its reachable tables.
+	// subset push builds exactly its reachable tables. No paths = no roots =
+	// the whole project.
 	roots := make([]string, 0, len(paths))
 	for _, p := range paths {
 		abs, aerr := filepath.Abs(p)

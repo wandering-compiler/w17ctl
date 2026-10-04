@@ -59,6 +59,8 @@ type DevCmd struct {
 	Keep    bool   `name:"keep" help:"Leave the project on disk and print its path, for looking at what was generated. Implied when --out is given."`
 	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. It does the generating, so this is required in practice — falls back to the binary's compile-time default."`
 	Org     string `name:"org" placeholder:"SLUG" help:"Organization that owns the throwaway project. Empty = your default or your only membership."`
+
+	SignInFrom string `name:"sign-in-from" placeholder:"DIR" help:"A plugin tree that supplies admin sign-in, for a plugin whose admin pages expect another plugin to sign people in. Empty = the sibling auth plugin (../auth) when there is one."`
 }
 
 func (c *DevCmd) Run() error {
@@ -75,6 +77,13 @@ func (c *DevCmd) Run() error {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
 	feats, err := devFeatures(abs, c.Features, c.AllFeatures)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+
+	// Resolved BEFORE the chdir below: a relative --sign-in-from is relative to
+	// where the command was run, not to the throwaway project.
+	signIn, err := resolveSignIn(abs, name, c.SignInFrom)
 	if err != nil {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
@@ -97,7 +106,7 @@ func (c *DevCmd) Run() error {
 	}
 	defer restore()
 
-	if err := devScaffold(abs, name, feats); err != nil {
+	if err := devScaffold(abs, name, feats, signIn); err != nil {
 		return err
 	}
 
@@ -106,9 +115,17 @@ func (c *DevCmd) Run() error {
 	if err := inst.Run(); err != nil {
 		return fmt.Errorf("plugin dev: install: %w", err)
 	}
+	if signIn != nil {
+		fmt.Fprintf(core.Stdout, "plugin dev: installing %s for admin sign-in ...\n", signIn.name)
+		if err := (&InstallCmd{Source: signIn.dir, Console: c.Console}).Run(); err != nil {
+			return fmt.Errorf("plugin dev: install %s for sign-in: %w", signIn.name, err)
+		}
+	}
 
 	fmt.Fprintln(core.Stdout, "plugin dev: generating ...")
-	gen := &codegencmd.Cmd{Console: c.Console, Force: true, Gofmt: "embedded"}
+	// No update check: the throwaway project is the command's own, and a
+	// prompt in the middle of a plugin run would be about a project nobody keeps.
+	gen := &codegencmd.Cmd{Console: c.Console, Force: true, Gofmt: "embedded", NoUpdateCheck: true}
 	if err := gen.Run(); err != nil {
 		return fmt.Errorf("plugin dev: codegen: %w\n"+
 			"  this is the step a plugin that has never been activated fails at: the proto has "+
@@ -127,7 +144,7 @@ func (c *DevCmd) Run() error {
 // plugin with its features, and a REST registry including the plugin's presets
 // so its endpoints exist on a surface. Anything else a project has is not
 // needed to find out whether a plugin generates.
-func devScaffold(dir, name string, feats []string) error {
+func devScaffold(dir, name string, feats []string, signIn *signInPlugin) error {
 	initc := &initcmd.Cmd{
 		LockPath: filepath.Join("w17", "lock.yaml"),
 		Name:     "plugindev",
@@ -155,7 +172,7 @@ func devScaffold(dir, name string, feats []string) error {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(domain, "w17.proto"),
-		[]byte(domainProto(name, feats)), 0o644); err != nil {
+		[]byte(domainProto(name, feats, signIn)), 0o644); err != nil {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
 	// ⚠️ ONLY IF THE PLUGIN HAS A REST PRESET. Found by the dev lane's first
@@ -179,7 +196,7 @@ func devScaffold(dir, name string, feats []string) error {
 		fmt.Fprintf(core.Stdout, "  no rest preset — generating without a public surface, "+
 			"so this run exercises the tiers and not the endpoints\n")
 	}
-	return devScaffoldMcpAndAdmin(dir, domain, name, feats)
+	return devScaffoldMcpAndAdmin(dir, domain, name, feats, signIn)
 }
 
 // devScaffoldMcpAndAdmin publishes the plugin's MCP and admin presets too,
@@ -197,7 +214,7 @@ func devScaffold(dir, name string, feats []string) error {
 // supplies it and the surface is complete; one that ships pages but no auth
 // (it expects another plugin to sign people in) cannot be published on its
 // own, and the run says what that leaves unchecked.
-func devScaffoldMcpAndAdmin(dir, domain, name string, feats []string) error {
+func devScaffoldMcpAndAdmin(dir, domain, name string, feats []string, signIn *signInPlugin) error {
 	hasMCP, err := manifestHasPreset(dir, "mcp")
 	if err != nil {
 		return fmt.Errorf("plugin dev: %w", err)
@@ -220,9 +237,16 @@ func devScaffoldMcpAndAdmin(dir, domain, name string, feats []string) error {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
 	if auth == nil {
-		fmt.Fprintf(core.Stdout, "  admin preset without its own sign-in — its pages are NOT published "+
-			"here, so the admin guards over them are not exercised by this run\n")
-		return nil
+		// Pages that expect ANOTHER plugin to sign people in — what a consumer
+		// does is activate that plugin beside it, so the run does the same.
+		if signIn == nil {
+			fmt.Fprintf(core.Stdout, "  admin preset without its own sign-in, and no plugin to sign in "+
+				"with (--sign-in-from) — its pages are NOT published here, so the admin guards over "+
+				"them are not exercised by this run\n")
+			return nil
+		}
+		fmt.Fprintf(core.Stdout, "  admin pages sign in through %s, activated beside it\n", signIn.name)
+		return os.WriteFile(filepath.Join(domain, "admin.proto"), []byte(adminProto()), 0o644)
 	}
 	// The sign-in has to EXIST in this activation, not just be declared: the
 	// preset's own feature and the features its two methods are gated on. A
@@ -245,6 +269,90 @@ func devScaffoldMcpAndAdmin(dir, domain, name string, feats []string) error {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
 	return nil
+}
+
+// signInPlugin is a second plugin activated only to sign people in to an admin
+// surface whose pages the plugin under test contributes.
+type signInPlugin struct {
+	dir, name string
+	feats     []string
+}
+
+// resolveSignIn decides whether the run needs a sign-in plugin and which.
+//
+// Only a plugin whose admin preset ships pages and no sign-in needs one —
+// cluster's backoffice pages are the case: they expect the project's auth to
+// sign operators in, so without a second plugin they were never published by
+// this command, and no example activates cluster at all. Those pages had never
+// been generated by anything. The sign-in plugin is the sibling `auth` tree
+// when there is one (this repository's layout), or --sign-in-from; it is
+// activated with its own defaults, and a sign-in it cannot supply under them
+// is reported rather than guessed around.
+func resolveSignIn(dir, name, from string) (*signInPlugin, error) {
+	hasAdmin, err := manifestHasPreset(dir, "admin")
+	if err != nil || !hasAdmin {
+		return nil, err
+	}
+	own, err := manifestAdminAuth(dir)
+	if err != nil || own != nil {
+		return nil, err
+	}
+	src, auto := from, false
+	if src == "" {
+		sibling := filepath.Join(filepath.Dir(dir), "auth")
+		if _, statErr := os.Stat(filepath.Join(sibling, "plugin.yaml")); statErr != nil {
+			return nil, nil
+		}
+		src, auto = sibling, true
+	}
+	// A sibling picked AUTOMATICALLY that cannot sign in is not the author's
+	// mistake — they named nothing. The run then behaves as it did before this
+	// lookup existed: the pages stay unpublished and the scaffold says so. Only
+	// an explicit --sign-in-from is held to it.
+	sp, err := loadSignIn(src, name)
+	if err != nil {
+		if auto {
+			fmt.Fprintf(core.Stdout, "  %s beside it cannot sign in to admin (%v)\n", src, err)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("--sign-in-from %s: %w", src, err)
+	}
+	return sp, nil
+}
+
+// loadSignIn reads the plugin at src as a sign-in provider.
+func loadSignIn(src, name string) (*signInPlugin, error) {
+	abs, err := filepath.Abs(src)
+	if err != nil {
+		return nil, err
+	}
+	signName, err := pluginfetch.NameInDir(abs)
+	if err != nil {
+		return nil, err
+	}
+	if signName == name {
+		return nil, nil
+	}
+	auth, err := manifestAdminAuth(abs)
+	if err != nil {
+		return nil, err
+	}
+	if auth == nil {
+		return nil, fmt.Errorf("plugin %q ships no admin sign-in (presets.admin.auth)", signName)
+	}
+	_, defaults, err := manifestFeatures(abs)
+	if err != nil {
+		return nil, err
+	}
+	missing, err := adminSignInMissing(abs, auth, defaults)
+	if err != nil {
+		return nil, err
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("%q signs in only with %s, which its defaults do not turn on",
+			signName, strings.Join(missing, ", "))
+	}
+	return &signInPlugin{dir: abs, name: signName, feats: defaults}, nil
 }
 
 // adminAuthPreset is the sign-in a plugin's admin preset wires.
@@ -379,10 +487,23 @@ func manifestHasPreset(dir, kind string) (bool, error) {
 	return false, nil
 }
 
-func domainProto(name string, feats []string) string {
-	var quoted []string
-	for _, f := range feats {
-		quoted = append(quoted, "\""+f+"\"")
+func domainProto(name string, feats []string, signIn *signInPlugin) string {
+	entry := func(n string, fs []string) string {
+		var quoted []string
+		for _, f := range fs {
+			quoted = append(quoted, "\""+f+"\"")
+		}
+		return `    {
+      source_name:   "` + n + `"
+      registered_as: "` + n + `"
+      channels:   [ { key: "events", value: "app" } ]
+      auth_input: { header_name: "Authorization", scheme: "Bearer" }
+      features:   { names: [ ` + strings.Join(quoted, ", ") + ` ] }
+    }`
+	}
+	entries := entry(name, feats)
+	if signIn != nil {
+		entries += ",\n" + entry(signIn.name, signIn.feats)
 	}
 	return `syntax = "proto3";
 
@@ -398,13 +519,7 @@ import "w17/module.proto";
 
 option (w17.domain) = {
   plugins: [
-    {
-      source_name:   "` + name + `"
-      registered_as: "` + name + `"
-      channels:   [ { key: "events", value: "app" } ]
-      auth_input: { header_name: "Authorization", scheme: "Bearer" }
-      features:   { names: [ ` + strings.Join(quoted, ", ") + ` ] }
-    }
+` + entries + `
   ]
 };
 

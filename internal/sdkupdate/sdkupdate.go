@@ -431,6 +431,10 @@ func proxyGet(ctx context.Context, mod, suffix string) ([]byte, error) {
 }
 
 // latestVersion resolves mod@latest via the proxy.
+// LatestVersion is the proxy's @latest for sdk/go — the version a bare
+// `w17ctl sdk update` would move to.
+func LatestVersion(ctx context.Context) (string, error) { return latestVersion(ctx, SdkModule) }
+
 func latestVersion(ctx context.Context, mod string) (string, error) {
 	body, err := proxyGet(ctx, mod, "@latest")
 	if err != nil {

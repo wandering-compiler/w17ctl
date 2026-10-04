@@ -141,8 +141,8 @@ func refuseLocalUpdate(name, source string) error {
 			"update it to\n"+
 			"  why: a local install records no repository and no commit — `source: local` is "+
 			"the lock saying provenance was not available, not a pin to move\n"+
-			"  fix: re-run `w17ctl plugin install <dir>` after editing the tree, or install a "+
-			"published version to leave the dev loop", name)
+			"  fix: `w17ctl plugin update %s --from <dir>` takes the tree again after editing it, "+
+			"or install a published version to leave the dev loop", name, name)
 }
 
 // installedFromLock reads the installed-plugin set from the lock at lockPath
@@ -572,9 +572,7 @@ func (c *InstallCmd) Run() error {
 			manifest.GetName(), name, name,
 		)
 	}
-	for _, w := range manifest.GetWarnings() {
-		fmt.Fprintf(core.Stdout, "plugin install: warning: %s\n", w)
-	}
+	printManifestWarnings("plugin install", manifest)
 
 	// Record the install in the lock via the InstallPlugin EditLock intent
 	// (the server appends + re-signs; the client ships opaque lock bytes).
@@ -678,6 +676,7 @@ type UpdateCmd struct {
 	Name    string `arg:"" optional:"" name:"name" help:"Installed plugin to refresh. Mutually exclusive with --all."`
 	All     bool   `name:"all" help:"Update every plugin recorded in lock.plugins[]."`
 	To      string `name:"to" placeholder:"vX.Y.Z" help:"For a git-sourced plugin: the release to move to. Omitted, the highest published one is used (release candidates included). Refused with --all, which spans plugins whose version lines are independent."`
+	From    string `name:"from" placeholder:"DIR" help:"Take the plugin again from a plugin tree on disk (the directory holding plugin.yaml) instead of a release — the loop for testing a tree before it is tagged. Records source: local. One plugin at a time; refused with --all and --to."`
 	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default. Serves the plugin catalogue + validates the manifest."`
 }
 
@@ -687,6 +686,9 @@ func (c *UpdateCmd) Run() error {
 	}
 	if !c.All && c.Name == "" {
 		return fmt.Errorf("plugin update: pass a plugin name or --all")
+	}
+	if c.From != "" && (c.All || c.To != "") {
+		return fmt.Errorf("plugin update: --from takes ONE plugin from a directory; it does not combine with --all or --to")
 	}
 	if c.To != "" && c.All {
 		return fmt.Errorf(
@@ -755,12 +757,14 @@ func (c *UpdateCmd) Run() error {
 		// silently replacing a dev tree with whatever the catalogue serves
 		// under that name. The tree the author was working on would be gone
 		// and the lock would say it had been updated.
-		if lerr := refuseLocalUpdate(name, existing.Source); lerr != nil {
-			removeStaging()
-			return lerr
+		if c.From == "" {
+			if lerr := refuseLocalUpdate(name, existing.Source); lerr != nil {
+				removeStaging()
+				return lerr
+			}
 		}
 		isGit := existing.Source == "git" || existing.Source == "internal" || existing.Source == ""
-		if !isGit {
+		if c.From == "" && !isGit {
 			// A source nothing here can refresh (a `url:` entry). Skip with a
 			// warning rather than abort, so --all still updates what it can.
 			// "catalogue" used to be one of the answers here, and it is not a
@@ -787,6 +791,28 @@ func (c *UpdateCmd) Run() error {
 		// which the registry serves. The `else` that used to be here asked the
 		// CONSOLE for the bytes: a retired RPC, and the one refresh path with
 		// no digest and no signature to verify.
+		if c.From != "" {
+			// A tree on disk, rendered the way a consumer receives it — the
+			// same path `plugin install <dir>` takes. Whatever the plugin was
+			// installed from before, it is `local` from here on, and the lock
+			// says so instead of keeping a release pin nobody fetched.
+			manifestData, fetched, err = updateFromDir(c.From, name, staging)
+			if err != nil {
+				_ = os.RemoveAll(staging)
+				removeStaging()
+				return err
+			}
+			swaps = append(swaps, stagedSwap{target: target, staging: staging})
+			manifest, merr := inspectManifest(cl, manifestData, c.From+"/plugin.yaml", installed, fetched)
+			if merr != nil {
+				removeStaging()
+				return catalogueError("plugin update", merr)
+			}
+			printManifestWarnings("plugin update", manifest)
+			pending = append(pending, &codegenpb.PluginVersion{Name: name, Version: manifest.GetVersion(), Source: "local"})
+			fmt.Fprintf(core.Stdout, "plugin update: %s → %s (from %s)\n", name, manifest.GetVersion(), c.From)
+			continue
+		}
 		manifestData, fetched, err = updateFromGit(c.To, name, existing, staging)
 		if pinned, isPinned := asCommitPinned(err); isPinned && c.All {
 			// A sweep skips what it cannot move and keeps going, exactly as
@@ -825,9 +851,7 @@ func (c *UpdateCmd) Run() error {
 			removeStaging()
 			return fmt.Errorf("plugin update: manifest name %q does not match catalog dir %q", manifest.GetName(), name)
 		}
-		for _, w := range manifest.GetWarnings() {
-			fmt.Fprintf(core.Stdout, "plugin update: warning: %s\n", w)
-		}
+		printManifestWarnings("plugin update", manifest)
 
 		// Queue the version bump for the batched EditLock.
 		pending = append(pending, updateIntent(name, manifest.GetVersion(), isGit, existing, fetched))
@@ -877,6 +901,37 @@ func (c *UpdateCmd) Run() error {
 	}
 	fmt.Fprintln(core.Stdout, "plugin update: lock re-signed")
 	return nil
+}
+
+// updateFromDir renders the plugin tree at dir into staging and checks it is
+// the plugin being updated: the manifest names a plugin, not the directory.
+// printManifestWarnings shows what the console said about a manifest it
+// accepted. Every path that takes a plugin in says it, because a warning shown
+// on one of them only is a warning the other paths' callers never read — CI
+// renders every example through `update --from`.
+func printManifestWarnings(verb string, manifest interface{ GetWarnings() []string }) {
+	for _, w := range manifest.GetWarnings() {
+		fmt.Fprintf(core.Stdout, "%s: warning: %s\n", verb, w)
+	}
+}
+
+func updateFromDir(dir, name, staging string) ([]byte, pluginfetch.Fetched, error) {
+	got, err := pluginfetch.NameInDir(dir)
+	if err != nil {
+		return nil, pluginfetch.Fetched{}, fmt.Errorf("plugin update: --from %s: %w", dir, err)
+	}
+	if got != name {
+		return nil, pluginfetch.Fetched{}, fmt.Errorf("plugin update: --from %s holds plugin %q, not %q", dir, got, name)
+	}
+	fetched, err := pluginfetch.FromDir(dir, staging)
+	if err != nil {
+		return nil, pluginfetch.Fetched{}, err
+	}
+	data, err := os.ReadFile(filepath.Join(staging, "plugin.yaml"))
+	if err != nil {
+		return nil, pluginfetch.Fetched{}, fmt.Errorf("plugin update: read rendered manifest: %w", err)
+	}
+	return data, fetched, nil
 }
 
 func isPluginURL(s string) bool {

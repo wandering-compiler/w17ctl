@@ -200,6 +200,26 @@ the role is the first place to look, not the token.
    rest, admin, events, rpc, mcp, cli). Use it instead of guessing annotations.
 4. **When unsure, ask the CLI.** Every command has `w17ctl <command> --help`.
 
+## Staying current
+
+**w17 is in alpha (v0): any release may carry a breaking fix, so the advice is to
+stay current — w17ctl, the project's sdk/go and every plugin.** `w17ctl update
+--check` reports what is behind; `w17ctl update --all` updates all of it, each
+through the command that owns it (`sdk update` + `sdk pin`, `plugin update
+--all`, then the binary itself).
+
+`w17ctl codegen` asks first, at a terminal:
+
+- **REQUIRED** — the project pins an sdk/go older than the floor the code is
+  generated against. The generated code would not build, so the choice is to
+  update now or stop; there is no "continue".
+- **available** — something is newer but the project still builds. In alpha you
+  are offered the update and may continue without it; from v1 it is one line.
+
+CI is never asked. There, a stale pin is refused exactly as before — with the
+command that fixes it — which is why the update belongs on a developer's machine
+and in a commit, not in the pipeline. `--no-update-check` skips the question.
+
 ## What w17ctl is
 
 `w17ctl` is the single CLI + entrypoint for this project. It is a thin client:
@@ -237,6 +257,8 @@ compiler directly — you drive `w17ctl`.
 | Install an UNRELEASED plugin tree (testing a fix) | `w17ctl plugin install <repo>#<plugin>@<40-hex-sha>` |
 | **Activate** it — installing does NOT | name it in `(w17.domain).plugins` in the domain's `w17.proto`, then `w17ctl codegen --force` |
 | Generate all code | `w17ctl codegen` |
+| Is anything behind? (w17ctl, sdk/go, plugins) | `w17ctl update --check` |
+| Bring all of it up to date | `w17ctl update --all` (sdk update + pin, every plugin, then the binary) |
 | Check for generated-vs-proto drift (CI) | `w17ctl verify` |
 | Plan / list migrations | `w17ctl migrate generate` / `migrate list` |
 | Will a mint need a decision? (every PR) | `w17ctl migrate check` (`--write` to create the decision files) |

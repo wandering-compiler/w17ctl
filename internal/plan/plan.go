@@ -420,8 +420,22 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 				Schema:     t.Schema,
 				Name:       t.Name,
 				PrimaryKey: t.PrimaryKey,
-				Checks:     t.Checks,
-				CheckDefs:  t.CheckDefs,
+				// The key CONSTRAINT's name: `<table>_pkey` is only
+				// Postgres's default, and a key change that drops a name
+				// that does not exist fails with 42P16 (pass #49 B49-6).
+				PrimaryKeyName: t.PrimaryKeyName,
+				Checks:         t.Checks,
+				CheckDefs:      t.CheckDefs,
+			}
+			// The UNIQUE constraints, with presence: only a reader that
+			// LOOKED sends the message, so the console can tell "none"
+			// from "not read" (pass #49 B49-10).
+			if t.UniquesRead {
+				ot.UniqueConstraints = &codegenpb.ObservedUniqueConstraints{}
+				for _, u := range t.Uniques {
+					ot.UniqueConstraints.Items = append(ot.UniqueConstraints.Items,
+						&codegenpb.ObservedUniqueConstraint{Name: u.Name, Columns: u.Columns})
+				}
 			}
 			// The live MEMBER SETS ride the wire next to the check names.
 			// Without them the server-side member comparison is inert for
@@ -454,9 +468,21 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 					Name: fk.Name, Columns: fk.Columns,
 					TargetTable: fk.TargetTable, TargetColumn: fk.TargetColumn,
 					OnDelete: fk.OnDelete,
+					// A target's identity is (schema, name), and a
+					// composite key is all of its columns (pass #49
+					// B49-12 / B49-15).
+					TargetSchema: fk.TargetSchema, TargetColumns: fk.TargetColumns,
 				})
 			}
 			store.Tables = append(store.Tables, ot)
+		}
+		// The native enum types with their labels: a column names its type,
+		// the labels it admits live here, and without them a label the
+		// author added never reached the database (pass #49 A49-1).
+		for _, et := range live.EnumTypes {
+			store.EnumTypes = append(store.EnumTypes, &codegenpb.ObservedEnumType{
+				Schema: et.Schema, Name: et.Name, Type: et.Type, Labels: et.Labels,
+			})
 		}
 		out = append(out, store)
 	}

@@ -75,6 +75,9 @@ type Lock struct {
 	// list/install/update commands use to cross-reference + dedup; the WRITE
 	// rides the EditLock plugin intents).
 	Plugins []Plugin `yaml:"plugins"`
+	// SdkVersion is the sdk/go version the console pinned for this project
+	// (`w17ctl sdk pin`); empty when the project does not pin one.
+	SdkVersion string `yaml:"sdk_version"`
 	// GeneratedCode carries the paths the project chose at init. Read
 	// offline so a command can derive what the operator would otherwise
 	// have to retype — `migrate generate` used to demand every --proto by

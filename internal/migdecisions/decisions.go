@@ -222,7 +222,7 @@ func readChoice(f *File, choose []yaml.Node) {
 	switch len(choose) {
 	case 0:
 		f.Undecided = true
-		f.Problem = "no option left under `choose:` — a database owner keeps exactly one"
+		f.Problem = "no option left under `choose:` — a database owner keeps (or uncomments) exactly one"
 		return
 	case 1:
 	default:
@@ -360,7 +360,7 @@ func insideRoot(root, rel string) (string, error) {
 var optionHelp = map[string]string{
 	"safe":            "apply as planned; existing data is not at risk",
 	"lossless_using":  "convert existing values in place — the migration fails if a value does not convert",
-	"needs_confirm":   "apply the planned change as is — you confirm the existing data fits it",
+	"needs_confirm":   "apply the planned change as is — `why:` above says what it does to existing data",
 	"drop_and_create": "⚠ DROPS the column's existing data and recreates it",
 }
 
@@ -454,15 +454,29 @@ func Render(f *w17registrypb.Finding, base, commit, branch string, earlier ...Fi
 	if p := f.GetProposed(); p != "" {
 		fmt.Fprintf(&b, "proposed: %s\n", p)
 	}
+	// Deciding is deleting every option but one — so a file written with ONE
+	// option would be decided before anybody read it, and CI would apply it.
+	// A lone option is written commented out: choosing it is uncommenting it.
+	opts := f.GetOptions()
+	lone := len(opts) == 1
+	if lone {
+		b.WriteString("# One option: uncomment it to choose it. As written, nothing is decided.\n")
+	}
 	b.WriteString("choose:\n")
-	for _, o := range f.GetOptions() {
+	for _, o := range opts {
+		prefix := "  - "
+		if lone {
+			prefix = "  # - "
+		}
 		if h := optionHelp[o]; h != "" {
-			fmt.Fprintf(&b, "  - %-16s # %s\n", o, h)
+			fmt.Fprintf(&b, "%s%-16s # %s\n", prefix, o, h)
 		} else {
-			fmt.Fprintf(&b, "  - %s\n", o)
+			fmt.Fprintf(&b, "%s%s\n", prefix, o)
 		}
 	}
-	b.WriteString("  # - custom: path/to/your.sql   # your own SQL instead (path from the project root)\n")
+	if !f.GetCustomRefused() {
+		b.WriteString("  # - custom: path/to/your.sql   # your own SQL instead (path from the project root)\n")
+	}
 	return b.Bytes()
 }
 

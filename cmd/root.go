@@ -68,7 +68,7 @@ var root struct {
 	// --- Getting started (read me first — no project state; safe before init) ---
 	Guide   guidecmd.Cmd   `cmd:"" help:"Write AGENTS.md — the AI-agent usage guide for driving w17ctl (golden rules + canonical workflow + task→command cheat-sheet). Coding agents read AGENTS.md into context automatically. Runs in an empty dir before 'init'; --stdout to print, --force to refresh."`
 	Version versioncmd.Cmd `cmd:"" help:"Print this binary's version, commit and build date, plus the console address compiled into it. A released binary reports its release; a locally built one reports \"dev\" rather than inventing a number. --check also asks which release is newest."`
-	Update  updatecmd.Cmd  `cmd:"" help:"Upgrade this binary in place. Invokes the canonical installer rather than resolving the release itself — one place knows which release is newest, and it verifies the download against the release's SHA256SUMS. Prereleases are included while this binary is itself one; --stable opts out, --dry-run only reports."`
+	Update  updatecmd.Cmd  `cmd:"" help:"Upgrade this binary in place. Invokes the canonical installer rather than resolving the release itself — one place knows which release is newest, and it verifies the download against the release's SHA256SUMS. Prereleases are included while this binary is itself one; --stable opts out, --dry-run only reports. --check reports the project's sdk/go and plugins too; --all updates all of them."`
 
 	// --- Authentication (console identity, machine-local ~/.w17/auth.yaml) ---
 	// ⚠️ This help describes SignIn — email + password over gRPC, no browser.
@@ -174,6 +174,10 @@ var exitFn = os.Exit
 // Run parses args against the command tree, runs the per-command lock-integrity
 // guard, and dispatches. It is the single entrypoint main() calls.
 func Run(args []string) {
+	// codegen checks for updates first, through the update command — which
+	// reaches the plugin commands, which import codegen; so the link is made
+	// here, where every command is already in scope.
+	codegencmd.PreGenerate = updatecmd.PreGenerate
 	parser := kong.Must(&root,
 		kong.Name("w17ctl"),
 		kong.Description("w17 platform developer CLI — codegen, migrations, scaffolding, secrets, and the local stack. Drill into a section with `w17ctl <command> --help`."),
