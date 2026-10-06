@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"io"
 
@@ -12,15 +13,46 @@ import (
 	w17registrypb "github.com/wandering-compiler/sdk/go/pb/w17registry"
 )
 
-// consolerpcpb.CodegenClient (the console rpc-gateway's re-hosted codegen
-// surface, `w17lock.console.rpc.Codegen`) carries the SAME method set + signatures
-// as the compiler's codegenpb.CodegenServiceClient — it re-declares the WHOLE
-// CodegenService surface and reuses the identical codegenpb (w17compiler) types
-// — so it satisfies that interface by type identity. This compile-time assertion
-// is what lets DialCodegen return the gateway client transparently: every w17ctl
-// codegen consumer keeps its codegenpb.CodegenServiceClient seam unchanged while
-// dialing console-app (the legacy cmd/console daemon is retired).
-var _ codegenpb.CodegenServiceClient = (consolerpcpb.CodegenClient)(nil)
+// CodegenConsole is the console's codegen surface as w17ctl uses it — the
+// console-app rpc gateway's re-hosted `w17lock.console.rpc.Codegen`, narrowed
+// to the methods some w17ctl command calls.
+//
+// It used to be the compiler's whole codegenpb.CodegenServiceClient, which the
+// console client satisfied because the console re-declared the entire
+// CodegenService. That stopped being true when codegen moved onto the cluster
+// (docs/specs/console/codegen-on-the-cluster.md): GenerateProject and the
+// per-generator Generate* RPCs left the console, and the stream now runs on a
+// codegen worker that DialWorker reaches. Naming the surface by what is CALLED
+// keeps every remaining console call compiling against the console client,
+// and keeps a bufconn server of the native CodegenService a valid test double
+// (it serves a superset).
+//
+// Placement (PlaceGenerate) is not here: it is console-only and reached
+// through PlacerFn — see worker.go.
+type CodegenConsole interface {
+	DescribeLock(ctx context.Context, in *codegenpb.DescribeLockRequest, opts ...grpc.CallOption) (*codegenpb.LockView, error)
+	EditLock(ctx context.Context, in *codegenpb.EditLockRequest, opts ...grpc.CallOption) (*codegenpb.EditLockResponse, error)
+	VerifyLock(ctx context.Context, in *codegenpb.VerifyLockRequest, opts ...grpc.CallOption) (*codegenpb.VerifyResult, error)
+	VerifyAcl(ctx context.Context, in *codegenpb.VerifyRequest, opts ...grpc.CallOption) (*codegenpb.VerifyResult, error)
+	VerifyEventbus(ctx context.Context, in *codegenpb.VerifyRequest, opts ...grpc.CallOption) (*codegenpb.VerifyResult, error)
+	CompileIR(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[codegenpb.CompileIRRequest, codegenpb.CompileIRResponse], error)
+	Classify(ctx context.Context, in *codegenpb.ClassifyIRRequest, opts ...grpc.CallOption) (*codegenpb.ClassifyIRResponse, error)
+	Plan(ctx context.Context, in *codegenpb.PlanIRRequest, opts ...grpc.CallOption) (*codegenpb.PlanIRResponse, error)
+	DumpFixtures(ctx context.Context, in *codegenpb.DumpFixturesRequest, opts ...grpc.CallOption) (*codegenpb.DumpFixturesResponse, error)
+	GenerateClient(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[codegenpb.GenerateClientRequest, codegenpb.GeneratedFile], error)
+	GeneratePluginPb(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[codegenpb.GeneratePluginPbRequest, codegenpb.GeneratedFile], error)
+	InspectPluginManifest(ctx context.Context, in *codegenpb.InspectPluginManifestRequest, opts ...grpc.CallOption) (*codegenpb.InspectPluginManifestResponse, error)
+	SignPluginRelease(ctx context.Context, in *codegenpb.SignPluginReleaseRequest, opts ...grpc.CallOption) (*codegenpb.SignPluginReleaseResponse, error)
+	Guide(ctx context.Context, in *codegenpb.GuideRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[codegenpb.GeneratedFile], error)
+	AdmissionStatus(ctx context.Context, in *codegenpb.AdmissionStatusRequest, opts ...grpc.CallOption) (*codegenpb.AdmissionStatusResponse, error)
+}
+
+// The console client is what DialCodegen returns; the native client is what
+// the in-process test servers hand out. Both must keep satisfying the surface.
+var (
+	_ CodegenConsole = (consolerpcpb.CodegenClient)(nil)
+	_ CodegenConsole = (codegenpb.CodegenServiceClient)(nil)
+)
 
 // The console rpc-gateway's re-hosted deploy-registry clients carry the SAME
 // method sets + signatures as the public w17registrypb / applyfetchpb clients
@@ -43,15 +75,14 @@ var DialCodegenFn = realDialCodegen
 
 // DialCodegen dials the console's codegen surface at addr — the console-app
 // rpc gateway's re-hosted `w17lock.console.rpc.Codegen` (console runs the
-// compiler; G-selfhost-codegen). The returned client is typed as the compiler's
-// codegenpb.CodegenServiceClient (the gateway client satisfies it by identity),
-// so every consumer (codegen.Run, schema push, plan, compat, verify, plugin,
-// lock edit) targets the console with no per-site change.
-func DialCodegen(addr string) (codegenpb.CodegenServiceClient, *grpc.ClientConn, error) {
+// compiler; G-selfhost-codegen), typed as CodegenConsole. The connection also
+// carries placement (PlacerFn); the GenerateProject stream itself goes to a
+// codegen worker (DialWorker), never here.
+func DialCodegen(addr string) (CodegenConsole, *grpc.ClientConn, error) {
 	return DialCodegenFn(addr)
 }
 
-func realDialCodegen(addr string) (codegenpb.CodegenServiceClient, *grpc.ClientConn, error) {
+func realDialCodegen(addr string) (CodegenConsole, *grpc.ClientConn, error) {
 	// The codegen response carries every generated file in one message
 	// (handlers, bundles, AND the full pb stub set(s)), comfortably
 	// exceeding gRPC's 4 MiB default receive cap. Lift it so large
@@ -72,8 +103,7 @@ func realDialCodegen(addr string) (codegenpb.CodegenServiceClient, *grpc.ClientC
 		return nil, nil, err
 	}
 	// The gateway client (re-hosted Codegen) — NOT the native
-	// codegenpb.NewCodegenServiceClient. It satisfies codegenpb.CodegenServiceClient
-	// (see the assertion above), so the return type is unchanged.
+	// codegenpb.NewCodegenServiceClient: the console serves its own surface.
 	return consolerpcpb.NewCodegenClient(conn), conn, nil
 }
 

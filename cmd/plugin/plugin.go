@@ -40,7 +40,7 @@ import (
 // the version), and fetched may be its zero value where no tree was fetched
 // from a third party — the console reports that as unsigned, which is what it
 // is.
-func inspectManifest(cl codegenpb.CodegenServiceClient, manifestYAML []byte, source string,
+func inspectManifest(cl core.CodegenConsole, manifestYAML []byte, source string,
 	installed map[string]lockfile.Plugin, fetched pluginfetch.Fetched) (*codegenpb.InspectPluginManifestResponse, error) {
 	var inst []*codegenpb.InstalledPlugin
 	for _, p := range installed {
@@ -172,7 +172,7 @@ func lockProtoDir(console, root string) string {
 
 // dialCodegen resolves the console address + dials CodegenService for the
 // plugin commands. The caller closes the returned conn.
-func dialCodegen(console string) (codegenpb.CodegenServiceClient, *grpc.ClientConn, error) {
+func dialCodegen(console string) (core.CodegenConsole, *grpc.ClientConn, error) {
 	addr, err := core.ResolveConsoleAddr(console)
 	if err != nil {
 		return nil, nil, err
@@ -196,7 +196,7 @@ func dialCodegen(console string) (codegenpb.CodegenServiceClient, *grpc.ClientCo
 // Best effort by design. A registry that cannot be reached must not stop
 // `plugin list` from reporting what the LOCK says is installed — that half is
 // local, always available, and usually the half being asked about.
-func catalogue(_ codegenpb.CodegenServiceClient) ([]*codegenpb.CataloguePlugin, error) {
+func catalogue(_ core.CodegenConsole) ([]*codegenpb.CataloguePlugin, error) {
 	repo := pluginsRepo()
 	names, err := pluginfetch.PublishedPlugins(context.Background(), repo)
 	if err != nil {

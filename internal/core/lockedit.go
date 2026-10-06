@@ -136,7 +136,7 @@ func DescribeLockBestEffort(console string) *codegenpb.LockView {
 	return view
 }
 
-func dialLockConsole(console string) (codegenpb.CodegenServiceClient, *grpc.ClientConn, error) {
+func dialLockConsole(console string) (CodegenConsole, *grpc.ClientConn, error) {
 	addr, err := ResolveConsoleAddr(console)
 	if err != nil {
 		return nil, nil, err

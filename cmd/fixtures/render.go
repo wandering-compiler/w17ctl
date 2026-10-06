@@ -167,6 +167,17 @@ func (c *RenderCmd) Run() error {
 			delete(manifest.Seeds, p)
 			fmt.Fprintf(core.Stdout, "fixtures render: removed %s (no fixture behind it)\n", p)
 		}
+		// An entry whose fixture AND seed are both gone — a domain removed
+		// with its rendered directory — has no file for the sweep above to
+		// find, and used to stay in the manifest for good: verify then
+		// reported a stale render and advised the render that could not
+		// clear it (found building examples/auth-proof from a copy).
+		for key := range manifest.Seeds {
+			if !written[key] && seedKeyInScope(key, c.Domain, c.Group) {
+				delete(manifest.Seeds, key)
+				fmt.Fprintf(core.Stdout, "fixtures render: removed %s from %s (no fixture behind it)\n", key, migrate.RenderManifestName)
+			}
+		}
 	}
 	if err := migrate.WriteRenderManifest(c.Out, manifest); err != nil {
 		return fmt.Errorf("fixtures render: write %s: %w", migrate.RenderManifestName, err)
@@ -198,12 +209,7 @@ func (c *RenderCmd) pruneEmptyScope() error {
 		return err
 	}
 	for key := range manifest.Seeds {
-		dom, rest, _ := strings.Cut(key, "/")
-		group := ""
-		if i := strings.LastIndex(rest, "/"); i >= 0 {
-			group = rest[:i]
-		}
-		if (c.Domain == "" || dom == c.Domain) && (c.Group == "" || group == c.Group) {
+		if seedKeyInScope(key, c.Domain, c.Group) {
 			delete(manifest.Seeds, key)
 		}
 	}
@@ -404,4 +410,15 @@ func fixtureHasRows(body []byte) bool {
 		return false
 	}
 	return len(doc.Rows) > 0
+}
+
+// seedKeyInScope reports whether a manifest key (`<domain>/<group…>/<name>`)
+// falls inside a render scoped to domain and group ("" = every).
+func seedKeyInScope(key, domain, group string) bool {
+	dom, rest, _ := strings.Cut(key, "/")
+	g := ""
+	if i := strings.LastIndex(rest, "/"); i >= 0 {
+		g = rest[:i]
+	}
+	return (domain == "" || dom == domain) && (group == "" || g == group)
 }

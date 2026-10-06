@@ -47,7 +47,7 @@ func (c *SignCmd) Run() error {
 // worth pinning here is the ORDER — sign, write, re-digest, confirm over the
 // RELEASED tree — and dialling is the one part of it that has nothing to do
 // with that.
-func runSign(cl codegenpb.CodegenServiceClient, dir string, printOnly bool) error {
+func runSign(cl core.CodegenConsole, dir string, printOnly bool) error {
 	manifestPath := filepath.Join(dir, "plugin.yaml")
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -164,7 +164,7 @@ func shortDigest(d string) string {
 // second place that could forget to act on the verdict. This one wants MORE
 // than that path enforces — it requires VERIFIED where an install tolerates
 // UNSIGNED — so it adds a condition on top rather than opening its own door.
-func confirmVerifiable(cl codegenpb.CodegenServiceClient, manifest []byte, source, digest, signature string) error {
+func confirmVerifiable(cl core.CodegenConsole, manifest []byte, source, digest, signature string) error {
 	// PublishedDigest and NOT Digest, which stays empty on purpose.
 	//
 	// The tree in hand at signing time IS the published form — `plugin sign`

@@ -201,7 +201,7 @@ func GuideViaConsole(root, console string) error {
 // did not exist, and went looking for a gap that had already been closed
 // (a consumer, 2026-07-28). Refreshing where the compiler is contacted anyway
 // costs one RPC and removes the drift entirely.
-func refreshPlatformSpecs(cl codegenpb.CodegenServiceClient, root string) (int, error) {
+func refreshPlatformSpecs(cl core.CodegenConsole, root string) (int, error) {
 	ctx, cancel := core.ClientCtx()
 	defer cancel()
 	stream, err := cl.Guide(ctx, &codegenpb.GuideRequest{})

@@ -81,7 +81,7 @@ type BuildCmd struct {
 // tests can stub it. Force overwrites the existing git-ignored generated
 // tree; CodegenCmd resolves its own console address from the lock/env.
 var runCodegenFn = func() error {
-	return codegen.Run("", true, false, string(gofmtc.ModeEmbedded))
+	return codegen.Run("", true, false, string(gofmtc.ModeEmbedded), codegen.DefaultRetries)
 }
 
 func (c *BuildCmd) Run() error {

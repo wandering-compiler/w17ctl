@@ -227,6 +227,16 @@ func containedJoin(root, rel string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("server op path %q escapes or targets the project root", rel)
 	}
+	// Never inside the repository's own metadata. Generated output never
+	// belongs there, and a file written into .git/ (a hook, a config) would
+	// run on the developer's machine at their next git command — the payload
+	// a compromised codegen WORKER would aim for, now that the files come from
+	// a machine outside the console.
+	for _, seg := range strings.Split(filepath.ToSlash(filepath.Clean(rel)), "/") {
+		if strings.EqualFold(seg, ".git") {
+			return "", fmt.Errorf("server op path %q is inside .git/ — generated output never goes there", rel)
+		}
+	}
 	return dst, nil
 }
 
@@ -274,28 +284,27 @@ const w17StubsDir = "w17/stubs"
 
 // Run is the package-level codegen entrypoint (invoked by the cmd/codegen
 // kong command + stack build): it gathers the project's LOCAL inputs (proto
-// tree, signed lock, go.module, go.mod dep-versions, the current gen Go tree,
-// the co-dev env) and streams them to the console's
-// GenerateProject RPC, which now owns ALL codegen orchestration server-side
-// (surface detection, target derivation, composition, per-generator
-// sequencing, file routing, the supersede-sweep — thin-client refactor Step 2).
+// tree, lock, go.module, go.mod dep-versions, the current gen Go tree, the
+// co-dev env), has the console PLACE the run on the codegen cluster, and
+// streams the inputs to the granted worker's GenerateProject, which owns ALL
+// codegen orchestration server-side (surface detection, target derivation,
+// composition, per-generator sequencing, file routing, the supersede-sweep).
 // The client applies each streamed op under the project root with no
-// derivation: write / write-if-missing / delete, plus the two LOCAL-disk
-// merges it still owns (generated-go.mod replace preservation; the .po merge
-// moved server-side) and go.work sync.
-func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
+// derivation: write / write-if-missing / delete, plus the LOCAL-disk merges it
+// still owns (generated-go.mod replace preservation) and go.work sync — and
+// writes the lock the console signed when it placed the run.
+//
+// retries is how many times a run that lost its connection mid-stream is
+// placed and run again (DefaultRetries; see cluster.go for the whole
+// failure classification).
+func Run(console string, force bool, adoptGitignore bool, gofmt string, retries int) error {
 	gofmtMode, modeErr := gofmtc.ParseMode(gofmt)
 	if modeErr != nil {
 		return modeErr
 	}
-	// One window now covers the WHOLE server-side pipeline (pre-gen + main
-	// Generate + every declared generator + scaffold + sweep), where the
-	// former client gave each of those its own RPC deadline (60s main + 30s
-	// per seam-D = a cumulative budget well past 300s). Size this for a large
-	// project's full codegen incl. the docker-backed buf stub-gen, not a
-	// single RPC.
-	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
-	defer cancel()
+	if retries < 0 {
+		return fmt.Errorf("codegen: --retries must be 0 or more, got %d", retries)
+	}
 
 	root, err := findProjectRoot()
 	if err != nil {
@@ -306,19 +315,19 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
 	if err != nil {
 		return err
 	}
-	// Self-hosting codegen: dial console-app's gateway-rehosted Codegen
-	// (`w17lock.console.rpc.Codegen`) — GenerateProject + DescribeLock now run
-	// in the console, not the legacy cmd/console daemon (G-selfhost-codegen).
+	// The console: DescribeLock, placement (PlaceGenerate) and the platform
+	// reference refresh. The GenerateProject stream does NOT go here — it goes
+	// to the codegen worker the placement grants (cluster.go).
 	cl, conn, err := core.DialCodegen(addr)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", addr, err)
 	}
 	defer func() { _ = conn.Close() }()
 
-	// The raw signed lock.yaml IS the lock the client ships (uniform with every
-	// Generate* RPC — proto-wire lock retired). It feeds GenerateProject and the
-	// dir layout the client needs locally, which it reads back from the console's
-	// DescribeLock projection (§8.2 — the client holds no lock types).
+	// The raw lock.yaml IS the lock the client ships (uniform with every
+	// Generate* RPC — proto-wire lock retired). It feeds the placement and the
+	// run; the dir layout the client needs locally comes back from the
+	// console's DescribeLock projection (§8.2 — the client holds no lock types).
 	lockYaml, err := os.ReadFile(filepath.Join(root, "w17", "lock.yaml"))
 	if err != nil {
 		return fmt.Errorf("codegen: read lock: %w", err)
@@ -384,73 +393,56 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
 	// result into i18n.ts. The .po merge thus runs server-side now.
 	existingPo := readExistingPo(root, languagesDir)
 
-	stream, err := cl.GenerateProject(ctx)
-	if err != nil {
-		return formatCodegenError(err)
+	run := &clusterRun{
+		placer:     core.PlacerFn(conn),
+		lock:       lockYaml,
+		protoLines: countProtoLines(files),
+		header: &codegenpb.GenerateProjectRequest{
+			GoModule:    goModule,
+			GenDir:      genDir,
+			ServicesDir: servicesDir,
+			DepVersions: depVersions,
+			W17Path:     strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/"),
+			Force:       force,
+			GenGoMod:    string(genGoMod),
+			ExistingPo:  existingPo,
+			E2EInputs:   readE2eInputs(root, view.GetE2EDir()),
+			// This binary's own version, for the CI render. The console cannot
+			// know it — it is an ldflag on this binary — so a pipeline that
+			// pins "the version the developer ran" can only be built from here.
+			// Empty on a local build, and the render treats that as a real
+			// answer rather than inventing a number.
+			W17CtlVersion: core.Version,
+		},
+		files:    files,
+		genFiles: readGenGoFiles(root, genDir),
+		retries:  retries,
+		out:      core.Stdout,
+		root:     root,
 	}
-	// The header goes first and ALONE carries the non-file fields; the tree
-	// follows in chunks. One message cannot hold it: gRPC's default receive
-	// cap is 4 MiB and a project's protos reach that around 95k lines, where
-	// the call is refused outright rather than slowing down.
-	if err := stream.Send(&codegenpb.GenerateProjectRequest{
-		Lock:        lockYaml,
-		GoModule:    goModule,
-		GenDir:      genDir,
-		ServicesDir: servicesDir,
-		DepVersions: depVersions,
-		W17Path:     strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/"),
-		Force:       force,
-		LockYaml:    lockYaml,
-		GenGoMod:    string(genGoMod),
-		ExistingPo:  existingPo,
-		E2EInputs:   readE2eInputs(root, view.GetE2EDir()),
-		// This binary's own version, for the CI render. The console cannot
-		// know it — it is an ldflag on this binary — so a pipeline that
-		// pins "the version the developer ran" can only be built from here.
-		// Empty on a local build, and the render treats that as a real
-		// answer rather than inventing a number.
-		W17CtlVersion: core.Version,
-	}); err != nil {
-		return formatCodegenError(err)
-	}
-	if err := sendProtoChunks(stream, files, readGenGoFiles(root, genDir)); err != nil {
-		return formatCodegenError(err)
-	}
-	if err := stream.CloseSend(); err != nil {
-		return formatCodegenError(err)
-	}
-
-	// Buffer the whole op stream — the collision pre-scan (R-console-4) needs
-	// the full write set before touching disk.
-	var writes []*codegenpb.GeneratedFile
-	var deletes, warnings []string
-	var sdkReqs []*codegenpb.SdkRequirement
-	for {
-		op, recvErr := stream.Recv()
-		if errors.Is(recvErr, io.EOF) {
-			break
+	res, runErr := run.run()
+	if runErr != nil {
+		// Flush the warnings collected so far BEFORE surfacing the error:
+		// codegen streams advisories (e.g. "plugin X is active but its
+		// surface is unpublished — add include:[...]") ahead of a later
+		// stage that may hard-fail (e.g. an e2e test referencing that same
+		// unpublished method). Dropping them here would send the developer
+		// to chase the downstream error while hiding the line that fixes it.
+		if res != nil {
+			printCodegenWarnings(core.Stdout, res.warnings)
 		}
-		if recvErr != nil {
-			// Flush the warnings collected so far BEFORE surfacing the error:
-			// codegen streams advisories (e.g. "plugin X is active but its
-			// surface is unpublished — add include:[...]") ahead of a later
-			// stage that may hard-fail (e.g. an e2e test referencing that same
-			// unpublished method). Dropping them here would send the developer
-			// to chase the downstream error while hiding the line that fixes it.
-			printCodegenWarnings(core.Stdout, warnings)
-			return formatCodegenError(recvErr)
-		}
-		switch o := op.GetOp().(type) {
-		case *codegenpb.GeneratedOp_Write:
-			writes = append(writes, o.Write)
-		case *codegenpb.GeneratedOp_Delete:
-			deletes = append(deletes, o.Delete)
-		case *codegenpb.GeneratedOp_Warning:
-			warnings = append(warnings, o.Warning)
-		case *codegenpb.GeneratedOp_SdkRequirement:
-			sdkReqs = append(sdkReqs, o.SdkRequirement)
-		}
+		return runErr
 	}
+	// The lock the console signed when it placed the run lands with the rest
+	// of the output — last, as it did when the console signed at the end of
+	// the stream, and through the same write path (applyWriteOps always
+	// overwrites it).
+	writes := res.writes
+	writes = append(writes, &codegenpb.GeneratedFile{RelativePath: lockPath, Contents: res.signedLock})
+	deletes := res.deletes
+	warnings := res.placementWarnings
+	warnings = append(warnings, res.warnings...)
+	sdkReqs := res.sdkReqs
 
 	// Format what the console generated, and drop the files this project
 	// already holds in exactly that form.
@@ -502,7 +494,7 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string) error {
 	// `.env` stale — the operator would silently run on old values. Surface the
 	// divergence as a warning (the client owns the disk-diff the server can't).
 	warnings = append(warnings, envDriftWarnings(root, writes)...)
-	if len(writes) == 0 {
+	if len(res.writes) == 0 {
 		fmt.Fprintln(core.Stdout, "no files generated")
 	}
 	// Deletes after writes (the server's supersede-sweep ran last too).
