@@ -53,6 +53,7 @@ type Cmd struct {
 	Project string `name:"project" default:"myapp" placeholder:"NAME" help:"Project package-prefix placeholder in the rendered proto."`
 	Domain  string `name:"domain" default:"example" placeholder:"NAME" help:"Domain-name placeholder in the rendered proto."`
 	Module  string `name:"module" default:"example" placeholder:"NAME" help:"Module-name placeholder in the rendered proto."`
+	Groups  string `name:"groups" placeholder:"PATH" help:"Group directories between the domain and the module (e.g. engine or engine/core); shapes import paths only."`
 }
 
 // renderTemplateFn is a test seam for the render arm, which a fixed
@@ -76,11 +77,16 @@ func (c *Cmd) Run() error {
 	if err := scaffold.ValidateIdent("module", c.Module); err != nil {
 		return fmt.Errorf("template: %w", err)
 	}
+	groups, err := scaffold.GroupsPath(c.Groups)
+	if err != nil {
+		return fmt.Errorf("template: %w", err)
+	}
 
 	body, err := renderTemplateFn(s.name, s.body, scaffold.Ctx{
 		Project: scaffold.ProtoSafePackagePrefix(c.Project),
 		Domain:  c.Domain,
 		Module:  c.Module,
+		Groups:  groups,
 	})
 	if err != nil {
 		return fmt.Errorf("template %s: %w", c.Surface, err)

@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,10 +73,12 @@ func generatedFileWriter(root string, announce bool) func(*codegenpb.GeneratedFi
 	}
 }
 
-// GenerateClientViaConsole renders the FE client tree(s) on the console's
-// GenerateClient RPC (seam-D, thin-client refactor Step 3a) and writes
-// them under each client's output_root. Uploads the proto tree + the
-// signed lock (the generator reads generated_code.clients[] from it).
+// GenerateClientViaConsole renders the FE client tree(s) and writes them under
+// each client's output_root. The console describes the lock and PLACES the run
+// (PLACEMENT_OP_GENERATE_CLIENT); the generation itself runs on a codegen
+// worker, like `codegen` — the console serves no generating RPC. The worker is
+// sent the lock the console signed at placement: the FE generator verifies the
+// lock it stages, and a worker holds no key to sign one.
 func GenerateClientViaConsole(root, console, protoDir, lockPath string) error {
 	files, err := core.ReadProtoTree(root, protoDir)
 	if err != nil {
@@ -111,28 +114,7 @@ func GenerateClientViaConsole(root, console, protoDir, lockPath string) error {
 	// The on-disk .po catalogs (already merged) ride along so the FE generator
 	// bakes a populated i18n.ts — it stages only protos+lock otherwise.
 	poFiles := readExistingPo(root, view.GetLanguagesDir())
-	ctx, cancel := core.ClientCtx()
-	defer cancel()
-	stream, err := cl.GenerateClient(ctx)
-	if err != nil {
-		return err
-	}
-	// Header alone, then the tree in chunks: one message cannot hold it past
-	// ~95k lines of proto (see core.SendProtoChunks).
-	if err := stream.Send(&codegenpb.GenerateClientRequest{
-		Lock: lockBytes, GoModule: goModule, PoFiles: poFiles,
-	}); err != nil {
-		return err
-	}
-	if err := core.SendProtoChunks(files,
-		func(b []*codegenpb.ProtoFile) *codegenpb.GenerateClientRequest {
-			return &codegenpb.GenerateClientRequest{Files: b}
-		}, stream.Send); err != nil {
-		return err
-	}
-	if err := stream.CloseSend(); err != nil {
-		return err
-	}
+
 	// Record what this run wrote, then prune each client tree of generated
 	// files it did NOT write — the rule codegen applies to every generated
 	// root. The stream carries the COMPLETE client set, so a file of the
@@ -141,13 +123,62 @@ func GenerateClientViaConsole(root, console, protoDir, lockPath string) error {
 	// carrying the CLIENT generator's banner: a hand-written file survives, and
 	// so does any other generator's output a client root happens to contain
 	// (`.` is a legal client root) — this run never emits those.
+	//
+	// The files are COLLECTED while the run is live and written only once it
+	// has finished cleanly, the way `codegen` buffers its op stream: a worker
+	// lost mid-run (and re-run on a new placement), a compiler refusal or a
+	// broken stream leaves the client trees exactly as they were, instead of
+	// half-rewritten.
+	var got []*codegenpb.GeneratedFile
+	start := &codegenpb.PlaceGenerateStart{
+		Lock: lockBytes, ProtoLines: ProtoLines(files), Op: codegenpb.PlacementOp_PLACEMENT_OP_GENERATE_CLIENT,
+	}
+	err = RunOnWorker(core.PlacerFn(conn), start, core.Stdout,
+		func(ctx context.Context, worker codegenpb.CodegenServiceClient, signedLock []byte) error {
+			got = nil // a re-run starts afresh
+			stream, err := worker.GenerateClient(ctx)
+			if err != nil {
+				return err
+			}
+			// Header alone, then the tree in chunks: one message cannot hold
+			// it past ~95k lines of proto (see core.SendProtoChunks).
+			if err := stream.Send(&codegenpb.GenerateClientRequest{
+				Lock: signedLock, GoModule: goModule, PoFiles: poFiles,
+			}); err != nil {
+				return err
+			}
+			if err := core.SendProtoChunks(files,
+				func(b []*codegenpb.ProtoFile) *codegenpb.GenerateClientRequest {
+					return &codegenpb.GenerateClientRequest{Files: b}
+				}, stream.Send); err != nil {
+				return err
+			}
+			if err := stream.CloseSend(); err != nil {
+				return err
+			}
+			_, err = core.RecvGeneratedFiles(stream, func(f *codegenpb.GeneratedFile) error {
+				got = append(got, f)
+				return nil
+			})
+			return err
+		})
+	if err != nil {
+		return err
+	}
+	// Every path is checked before the first file is written, so a set the
+	// server got wrong is refused whole rather than half-applied.
+	for _, f := range got {
+		if _, err := pathguard.Join(root, f.GetRelativePath()); err != nil {
+			return fmt.Errorf("server file path %q escapes the project root: %w", f.GetRelativePath(), err)
+		}
+	}
 	kept := map[string]bool{}
 	write := generatedFileWriter(root, true)
-	if _, err = core.RecvGeneratedFiles(stream, func(f *codegenpb.GeneratedFile) error {
+	for _, f := range got {
 		kept[filepath.ToSlash(filepath.Clean(f.GetRelativePath()))] = true
-		return write(f)
-	}); err != nil {
-		return err
+		if err := write(f); err != nil {
+			return err
+		}
 	}
 	var roots []string
 	for _, c := range view.GetClients() {

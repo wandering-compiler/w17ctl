@@ -17,7 +17,7 @@ import (
 //
 // It writes `plugin.sig` beside the manifest and nothing else. Publishing the
 // tree, tagging it and pushing it stay where they already are
-// (scripts/publish-plugins.sh) — this command's whole job is to turn a
+// (the plugins repository's release, tools/release.sh) — this command's whole job is to turn a
 // directory into a signed directory, so it can be run on a mirror, on a
 // checkout, or in CI without any of them needing to know how signing works.
 //

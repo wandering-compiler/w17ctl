@@ -17,15 +17,18 @@ import (
 
 	admissioncmd "github.com/wandering-compiler/w17ctl/cmd/admission"
 	certs "github.com/wandering-compiler/w17ctl/cmd/certs"
+	cicmd "github.com/wandering-compiler/w17ctl/cmd/ci"
 	codegencmd "github.com/wandering-compiler/w17ctl/cmd/codegen"
 	compatcmd "github.com/wandering-compiler/w17ctl/cmd/compat"
 	connectioncmd "github.com/wandering-compiler/w17ctl/cmd/connection"
 	consolecmd "github.com/wandering-compiler/w17ctl/cmd/console"
 	dbcmd "github.com/wandering-compiler/w17ctl/cmd/db"
+	deploycmd "github.com/wandering-compiler/w17ctl/cmd/deploy"
 	domaincmd "github.com/wandering-compiler/w17ctl/cmd/domain"
 	envcmd "github.com/wandering-compiler/w17ctl/cmd/env"
 	fixturescmd "github.com/wandering-compiler/w17ctl/cmd/fixtures"
 	guidecmd "github.com/wandering-compiler/w17ctl/cmd/guide"
+	infracmd "github.com/wandering-compiler/w17ctl/cmd/infra"
 	initcmd "github.com/wandering-compiler/w17ctl/cmd/init"
 	initiativecmd "github.com/wandering-compiler/w17ctl/cmd/initiative"
 	logincmd "github.com/wandering-compiler/w17ctl/cmd/login"
@@ -92,6 +95,11 @@ var root struct {
 
 	// --- Codegen / deploy targets (lock's generated_code[] declarations) ---
 	Target targetcmd.Cmd `cmd:"" help:"Declare what codegen emits + how it deploys — the lock's generated_code entries: client (FE clients), grpc-client (Go client pkg), business (business bundle), binary (composed binaries), ci (CI configs), scale (PROD replicas). All edit the signed lock. See 'target --help'."`
+
+	// --- Infrastructure (where and how the project is deployed) ---
+	Infra  infracmd.Cmd  `cmd:"" help:"The project's infrastructure — swarm (your own servers), aws-ecs or gcp-cloudrun — its environments, edge, TLS, database backups and server setup. init / update prompt; show / remove. The next codegen renders deploy/<env>/."`
+	Ci     cicmd.Cmd     `cmd:"" help:"The automation that builds and deploys the declared infrastructure: GitHub workflows written by codegen into .github/workflows/w17-*.yaml. init / update prompt; show / remove."`
+	Deploy deploycmd.Cmd `cmd:"" help:"One person's shortcut for an MVP/PoC: mint the migrations, build the images, ship them over SSH and run the blue/green deploy on a swarm environment's server — no CI, no registry. Always warns; the recommended way is 'w17ctl ci init' and the deploy workflow."`
 
 	// --- Code generation ---
 	// codegen generates EVERYTHING (gRPC stubs + the ACL / eventbus /

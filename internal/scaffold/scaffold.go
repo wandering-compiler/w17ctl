@@ -19,6 +19,10 @@ type Ctx struct {
 	Project string // proto-safe package prefix (e.g. "my_saas")
 	Domain  string // lowercase ident (e.g. "users")
 	Module  string // lowercase ident; empty when rendering a domain-only template
+	// Groups is the directory path between the domain and the module, with a
+	// trailing slash ("engine/"), or "". Groups only shape on-disk paths: the
+	// proto package stays <prefix>.<domain>.<module>.
+	Groups string
 }
 
 // ProtoSafePackagePrefix returns the project name reshaped
@@ -380,7 +384,7 @@ package {{.Project}}.{{.Domain}}.{{.Module}};
 
 import "w17/db.proto";
 import "w17/field.proto";
-import "domains/{{.Domain}}/{{.Module}}/types/models.proto";
+import "domains/{{.Domain}}/{{.Groups}}{{.Module}}/types/models.proto";
 
 message GetNoteReq { int64 note_id = 1; }
 
@@ -432,7 +436,7 @@ package {{.Project}}.{{.Domain}}.{{.Module}};
 
 import "w17/db.proto";
 import "w17/field.proto";
-import "domains/{{.Domain}}/{{.Module}}/types/models.proto";
+import "domains/{{.Domain}}/{{.Groups}}{{.Module}}/types/models.proto";
 
 message CreateNoteReq {
   int64  owner_id = 1;
@@ -713,7 +717,7 @@ const ExampleBusinessProto = `syntax = "proto3";
 
 package {{.Project}}.{{.Domain}}.{{.Module}};
 
-import "domains/{{.Domain}}/{{.Module}}/types/models.proto";
+import "domains/{{.Domain}}/{{.Groups}}{{.Module}}/types/models.proto";
 
 // NotesService — hand-written facade. Business-layer
 // services have NO (w17.db.method) anywhere — every method
@@ -953,3 +957,20 @@ func PackagePrefixOfDomain(domainDir, domain string) string {
 }
 
 var packageDecl = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z0-9_.]+)\s*;`)
+
+// GroupsPath validates a group path ("engine", "engine/core", or "") and
+// returns it in Ctx.Groups form: each segment an identifier, with a trailing
+// slash, "" for none. Groups sit between a domain and its module
+// (proto/domains/<domain>/<groups…>/<module>/) and are organisational only.
+func GroupsPath(groups string) (string, error) {
+	groups = strings.Trim(groups, "/")
+	if groups == "" {
+		return "", nil
+	}
+	for _, g := range strings.Split(groups, "/") {
+		if err := ValidateIdent("group", g); err != nil {
+			return "", err
+		}
+	}
+	return groups + "/", nil
+}

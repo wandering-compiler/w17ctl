@@ -19,6 +19,14 @@ type Cmd struct {
 	Init    InitCmd    `cmd:"" help:"Mint a project age keypair: writes the private key to a gitignored key file, records the public recipient in the lock (re-signs), and gitignores the key dir. Idempotent-ish — refuses to clobber an existing key without --force."`
 	Encrypt EncryptCmd `cmd:"" help:"Encrypt a plain secrets file into a committable <file>.age for the lock's age recipient(s) (round-trips with the age CLI + the runtime resolver)."`
 	Backend BackendCmd `cmd:"" help:"Set the deploy-boundary materialiser the generated deploy artefacts target: plain (in-process / env_file) | sops (sops exec-env) | eso (ExternalSecret) | vault | cloud-csi. For sops it also writes a .sops.yaml for the lock's age recipients. Re-signs the lock."`
+
+	// The infrastructure's deploy env files (deploy/<env>/services/*/.env → .env.enc,
+	// sops dotenv + age). docs/decisions/infra-targets.md §4.3, §8.
+	Keygen KeygenCmd `cmd:"" help:"Mint the age key of a deploy environment: prints the private key ONCE (password manager + GitHub environment secret SOPS_AGE_KEY), writes the public key to deploy/.sops.yaml."`
+	Seal   SealCmd   `cmd:"" help:"Validate every deploy/<env>/services/*/.env against its .env.example and seal it to .env.enc (sops dotenv, age) — only the files whose values changed."`
+	Unseal UnsealCmd `cmd:"" help:"Decrypt deploy/<env>/services/*/.env.enc back to .env for editing."`
+	Check  CheckCmd  `cmd:"" help:"Without any private key: every .env.enc exists, carries exactly its .env.example's keys and is sealed for deploy/.sops.yaml's key. CI runs it."`
+	Rekey  RekeyCmd  `cmd:"" help:"Re-seal the data keys of an environment's .env.enc files for the keys deploy/.sops.yaml names (--add / --remove to rotate) — values untouched."`
 }
 
 // secretsBackends are the materialisers the lock's secrets.backend may

@@ -472,6 +472,9 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 					// composite key is all of its columns (pass #49
 					// B49-12 / B49-15).
 					TargetSchema: fk.TargetSchema, TargetColumns: fk.TargetColumns,
+					// SET NULL (col) and a bare SET NULL report one rule;
+					// the list tells them apart (PostgreSQL 15+).
+					DeleteSetColumns: fk.DeleteSetColumns, DeleteSetColumnsRead: fk.DeleteSetColumnsRead,
 				})
 			}
 			store.Tables = append(store.Tables, ot)

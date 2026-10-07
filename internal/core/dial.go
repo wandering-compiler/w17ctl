@@ -28,7 +28,10 @@ import (
 // (it serves a superset).
 //
 // Placement (PlaceGenerate) is not here: it is console-only and reached
-// through PlacerFn — see worker.go.
+// through PlacerFn — see worker.go. Neither is any GENERATING RPC
+// (GenerateProject, GenerateClient, GeneratePluginPb): they run on a codegen
+// worker the console places (codegen.RunOnWorker), and leaving them on this
+// interface would invite a caller to stream one to the console, which refuses.
 type CodegenConsole interface {
 	DescribeLock(ctx context.Context, in *codegenpb.DescribeLockRequest, opts ...grpc.CallOption) (*codegenpb.LockView, error)
 	EditLock(ctx context.Context, in *codegenpb.EditLockRequest, opts ...grpc.CallOption) (*codegenpb.EditLockResponse, error)
@@ -39,8 +42,6 @@ type CodegenConsole interface {
 	Classify(ctx context.Context, in *codegenpb.ClassifyIRRequest, opts ...grpc.CallOption) (*codegenpb.ClassifyIRResponse, error)
 	Plan(ctx context.Context, in *codegenpb.PlanIRRequest, opts ...grpc.CallOption) (*codegenpb.PlanIRResponse, error)
 	DumpFixtures(ctx context.Context, in *codegenpb.DumpFixturesRequest, opts ...grpc.CallOption) (*codegenpb.DumpFixturesResponse, error)
-	GenerateClient(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[codegenpb.GenerateClientRequest, codegenpb.GeneratedFile], error)
-	GeneratePluginPb(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[codegenpb.GeneratePluginPbRequest, codegenpb.GeneratedFile], error)
 	InspectPluginManifest(ctx context.Context, in *codegenpb.InspectPluginManifestRequest, opts ...grpc.CallOption) (*codegenpb.InspectPluginManifestResponse, error)
 	SignPluginRelease(ctx context.Context, in *codegenpb.SignPluginReleaseRequest, opts ...grpc.CallOption) (*codegenpb.SignPluginReleaseResponse, error)
 	Guide(ctx context.Context, in *codegenpb.GuideRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[codegenpb.GeneratedFile], error)

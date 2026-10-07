@@ -212,9 +212,46 @@ const lockPath = "w17/lock.yaml"
 // the returned result (possibly nil) carries the warnings that arrived before
 // it, so the caller can print them ahead of the error.
 func (r *clusterRun) run() (*clusterResult, error) {
+	var res *clusterResult
+	start := &codegenpb.PlaceGenerateStart{Lock: r.lock, ProtoLines: r.protoLines, Op: codegenpb.PlacementOp_PLACEMENT_OP_GENERATE_PROJECT}
+	err := placeAndRun(r.placer, start, true, r.retries, r.out, attemptDeadline(r.protoLines),
+		func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string) error {
+			var err error
+			res, err = r.stream(g, signed)
+			if err != nil {
+				return err
+			}
+			if err := r.signAll(res); err != nil {
+				return finalError{err}
+			}
+			res.signedLock = signed
+			res.placementWarnings = placeWarnings
+			return nil
+		})
+	return res, err
+}
+
+// finalError is an attempt's failure that is not the worker's: returned as is,
+// never retried or re-classified (a refused ACL-lock signature, say).
+type finalError struct{ error }
+
+func (e finalError) Unwrap() error { return e.error }
+
+// placeAndRun is the cluster half every generating command shares: place the
+// run (polling the queue), run it on the granted worker, and on failure follow
+// one set of rules — a placement the pool refused for a reason that may pass is
+// placed again (up to placeAttempts, backing off); a worker lost mid-run is
+// run again on a new placement (up to `retries`); anything else is final.
+//
+// `needSigned` is whether the placement must come back with a console-signed
+// lock (a project run): a grant without one is refused rather than run.
+// `attempt` runs once per placement; `deadline` only names the window in a
+// timed-out run's error.
+func placeAndRun(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSigned bool, retries int, out io.Writer,
+	deadline time.Duration, attempt func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string) error) error {
 	placeFailures, reruns := 0, 0
 	for {
-		granted, signed, placeWarnings, err := r.place()
+		granted, signed, placeWarnings, err := place(placer, start, needSigned, out)
 		if err != nil {
 			class, cause := classifyFailure(err)
 			if class == failLost {
@@ -223,52 +260,108 @@ func (r *clusterRun) run() (*clusterResult, error) {
 				class, cause = failPlaceAgain, "the console is unreachable"
 			}
 			if class == failFatal {
-				return nil, fatalPlacementError(cause, err)
+				return fatalPlacementError(cause, err)
 			}
 			placeFailures++
 			if placeFailures >= placeAttempts {
-				return nil, fmt.Errorf("codegen: %s; gave up after %d placement attempt(s): %w", cause, placeFailures, err)
+				return fmt.Errorf("codegen: %s; gave up after %d placement attempt(s): %w", cause, placeFailures, err)
 			}
 			wait := jitterFn(backoffFor(placeFailures))
-			fmt.Fprintf(r.out, "codegen: %s — placing the run again in %s (attempt %d of %d)\n",
+			fmt.Fprintf(out, "codegen: %s — placing the run again in %s (attempt %d of %d)\n",
 				cause, wait.Round(100*time.Millisecond), placeFailures+1, placeAttempts)
 			sleepFn(wait)
 			continue
 		}
 
-		res, err := r.stream(granted, signed)
+		err = attempt(granted, signed, placeWarnings)
 		if err == nil {
-			if err := r.signAll(res); err != nil {
-				return res, err
-			}
-			res.signedLock = signed
-			res.placementWarnings = placeWarnings
-			return res, nil
+			return nil
+		}
+		var final finalError
+		if errors.As(err, &final) {
+			return final.error
 		}
 		class, cause := classifyFailure(err)
 		switch class {
 		case failPlaceAgain:
 			placeFailures++
 			if placeFailures >= placeAttempts {
-				return res, fmt.Errorf("codegen: %s; gave up after %d placement attempt(s): %w", cause, placeFailures, err)
+				return fmt.Errorf("codegen: %s; gave up after %d placement attempt(s): %w", cause, placeFailures, err)
 			}
 			wait := jitterFn(backoffFor(placeFailures))
-			fmt.Fprintf(r.out, "codegen: %s — placing the run again in %s (attempt %d of %d)\n",
+			fmt.Fprintf(out, "codegen: %s — placing the run again in %s (attempt %d of %d)\n",
 				cause, wait.Round(100*time.Millisecond), placeFailures+1, placeAttempts)
 			sleepFn(wait)
 		case failLost:
-			if reruns >= r.retries {
-				return res, fmt.Errorf("codegen: %s to the codegen worker mid-run; gave up after %d re-run(s) (--retries %d): %w",
-					cause, reruns, r.retries, err)
+			if reruns >= retries {
+				return fmt.Errorf("codegen: %s to the codegen worker mid-run; gave up after %d re-run(s) (--retries %d): %w",
+					cause, reruns, retries, err)
 			}
 			reruns++
-			fmt.Fprintf(r.out, "codegen: %s to the codegen worker mid-run — running again on a new placement (re-run %d of %d)\n",
-				cause, reruns, r.retries)
+			fmt.Fprintf(out, "codegen: %s to the codegen worker mid-run — running again on a new placement (re-run %d of %d)\n",
+				cause, reruns, retries)
 		default:
-			return res, fatalStreamError(cause, err, attemptDeadline(r.protoLines))
+			return fatalStreamError(cause, err, deadline)
 		}
 	}
 }
+
+// RunOnWorker runs one generating RPC other than GenerateProject on a codegen
+// worker: GenerateClient (`target client generate`) and GeneratePluginPb
+// (`plugin gen-pb`). The console serves neither — it only places them.
+//
+// It places `start` (polling the queue), dials the granted worker exactly as
+// `codegen` does (the relay's certificate pinned, the one-time ticket), and
+// calls `run` with that worker and the lock the console signed at placement
+// (nil for a plugin-pb run, which has no project). The retry rules are
+// GenerateProject's (placeAndRun), with one re-run after a lost worker.
+//
+// `run` streams and writes. An error it returns that is not a gRPC status —
+// a file it could not write — is this machine's, reported as is and never
+// retried.
+func RunOnWorker(placer core.Placer, start *codegenpb.PlaceGenerateStart, out io.Writer,
+	run func(ctx context.Context, worker codegenpb.CodegenServiceClient, signedLock []byte) error) error {
+	needSigned := start.GetOp() != codegenpb.PlacementOp_PLACEMENT_OP_PLUGIN_PB
+	deadline := attemptDeadline(start.GetProtoLines())
+	warned := false
+	return placeAndRun(placer, start, needSigned, 1, out, deadline,
+		func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string) error {
+			// Once per command, not per placement: a re-run is placed again
+			// and the console answers with the same warnings.
+			if !warned {
+				for _, w := range placeWarnings {
+					fmt.Fprintf(out, "warning: %s\n", w)
+				}
+				warned = true
+			}
+			cl, conn, err := core.DialWorker(g.GetAddress(), g.GetCertFingerprint(), g.GetTicket())
+			if err != nil {
+				return err
+			}
+			defer func() { _ = conn.Close() }()
+			ctx, cancel := context.WithTimeout(context.Background(), deadline)
+			defer cancel()
+			err = run(ctx, cl, signed)
+			if err == nil {
+				return nil
+			}
+			if _, isStatus := status.FromError(err); !isStatus && !errors.Is(err, context.DeadlineExceeded) {
+				return finalError{err}
+			}
+			if status.Code(err) == codes.Unimplemented {
+				// A worker from before this RPC moved to the cluster serves
+				// GenerateProject only. The client is newer than the pool —
+				// the deploy that moves the RPC has not reached it yet.
+				return finalError{fmt.Errorf("codegen: the codegen worker does not run this yet — the console and its pool are older than this w17ctl; "+
+					"deploy the console first, or use the w17ctl release that matches it: %w", err)}
+			}
+			return err
+		})
+}
+
+// ProtoLines is the size a placement is admitted against: the proto source
+// lines the run will upload.
+func ProtoLines(files []*codegenpb.ProtoFile) int64 { return countProtoLines(files) }
 
 // backoffFor is the un-jittered wait after the n-th failed placement (n ≥ 1).
 func backoffFor(n int) time.Duration {
@@ -314,10 +407,8 @@ func hasCodegenError(err error) bool {
 // place opens a placement and polls it until a worker is granted. The signed
 // lock and its warnings come with the answer to `start` and are kept across
 // polls.
-func (r *clusterRun) place() (*codegenpb.PlaceGenerateGranted, []byte, []string, error) {
-	resp, err := r.placeCall(&codegenpb.PlaceGenerateRequest{Step: &codegenpb.PlaceGenerateRequest_Start{
-		Start: &codegenpb.PlaceGenerateStart{Lock: r.lock, ProtoLines: r.protoLines},
-	}})
+func place(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSigned bool, out io.Writer) (*codegenpb.PlaceGenerateGranted, []byte, []string, error) {
+	resp, err := placeCall(placer, &codegenpb.PlaceGenerateRequest{Step: &codegenpb.PlaceGenerateRequest_Start{Start: start}})
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -327,7 +418,7 @@ func (r *clusterRun) place() (*codegenpb.PlaceGenerateGranted, []byte, []string,
 	blips := 0
 	for {
 		if g := resp.GetGranted(); g != nil {
-			if len(signed) == 0 {
+			if needSigned && len(signed) == 0 {
 				return nil, nil, nil, errors.New("the console granted a placement without the signed lock — refusing to run on it")
 			}
 			return g, signed, warnings, nil
@@ -337,7 +428,7 @@ func (r *clusterRun) place() (*codegenpb.PlaceGenerateGranted, []byte, []string,
 			return nil, nil, nil, errors.New("the console answered the placement with neither queued nor granted")
 		}
 		if q.GetPosition() != lastPosition {
-			fmt.Fprintf(r.out, "codegen: waiting for a codegen worker — position %d in the queue\n", q.GetPosition())
+			fmt.Fprintf(out, "codegen: waiting for a codegen worker — position %d in the queue\n", q.GetPosition())
 			lastPosition = q.GetPosition()
 		}
 		wait := time.Duration(q.GetRetryAfterMs()) * time.Millisecond
@@ -352,7 +443,7 @@ func (r *clusterRun) place() (*codegenpb.PlaceGenerateGranted, []byte, []string,
 		}
 		sleepFn(wait)
 		waited += wait
-		resp, err = r.placeCall(&codegenpb.PlaceGenerateRequest{Step: &codegenpb.PlaceGenerateRequest_Poll{
+		resp, err = placeCall(placer, &codegenpb.PlaceGenerateRequest{Step: &codegenpb.PlaceGenerateRequest_Poll{
 			Poll: &codegenpb.PlaceGeneratePoll{Reservation: q.GetReservation()},
 		}})
 		// A blip between the console and the relay keeps the place: the same
@@ -362,7 +453,7 @@ func (r *clusterRun) place() (*codegenpb.PlaceGenerateGranted, []byte, []string,
 			blips++
 			sleepFn(wait)
 			waited += wait
-			resp, err = r.placeCall(&codegenpb.PlaceGenerateRequest{Step: &codegenpb.PlaceGenerateRequest_Poll{
+			resp, err = placeCall(placer, &codegenpb.PlaceGenerateRequest{Step: &codegenpb.PlaceGenerateRequest_Poll{
 				Poll: &codegenpb.PlaceGeneratePoll{Reservation: q.GetReservation()},
 			}})
 		}
@@ -398,10 +489,10 @@ func attemptDeadline(protoLines int64) time.Duration {
 	return streamAttemptTimeout + time.Duration(protoLines)*streamPerLine
 }
 
-func (r *clusterRun) placeCall(req *codegenpb.PlaceGenerateRequest) (*codegenpb.PlaceGenerateResponse, error) {
+func placeCall(placer core.Placer, req *codegenpb.PlaceGenerateRequest) (*codegenpb.PlaceGenerateResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), placeCallTimeout)
 	defer cancel()
-	return r.placer.PlaceGenerate(ctx, req)
+	return placer.PlaceGenerate(ctx, req)
 }
 
 // stream runs GenerateProject once on the granted worker and buffers the op

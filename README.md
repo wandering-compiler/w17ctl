@@ -205,6 +205,9 @@ prepare inputs.
 | `target <cmd>` | Declare **what** codegen emits + **how** it deploys — the lock's `generated_code` entries: `client` (FE clients), `grpc-client` (Go client pkg), `business`, `binary` (composed binaries), `ci`, `scale` (prod replicas). All edit the signed lock. |
 | `plugin <cmd>` | List embedded + installed plugins; install one (e.g. `auth`) into the project — stages its proto tree + records activation. |
 | `secrets <cmd>` | Production-secrets (age tier): `init` mints a project age keypair; `encrypt` turns a plain `.secrets` into a committable `.secrets.age`. Runtime decrypts when a key is present, reads plain otherwise — seamless dev, strong devops. Local crypto only. |
+| `secrets keygen\|seal\|unseal\|check\|rekey` | Deploy env files of an infrastructure environment: `keygen --env <env>` prints the environment's age key once and writes its public half to `deploy/.sops.yaml`; `seal` validates every `deploy/<env>/services/*/.env` against its `.env.example` and seals it to `.env.enc` (sops dotenv format — `sops decrypt` opens it), rewriting only files whose values changed; `check` needs no key (CI); `rekey --add/--remove` rotates. Local crypto only. |
+| `ci init\|update\|show\|remove` | The GitHub automation of the declared infrastructure: codegen then writes `.github/workflows/w17-ci.yaml`, `w17-build.yaml` and `w17-deploy-<env>.yaml` (prunes only its own). `show` prints what to set up in GitHub. |
+| `deploy --env <env> [--with-tests]` | One person's MVP/PoC shortcut: mint + pin migrations, codegen, build the images, ship them over SSH (no registry), blue/green deploy on the environment's server. Always warns that it is not the recommended way. |
 | `certs` | Fill a directory with a local dev PKI (self-signed CA + CA-signed leaf) for the internal-mesh TLS switch (`W17_INTERNAL_TLS=on`). Idempotent — never overwrites. |
 
 ### Codegen & schema

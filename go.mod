@@ -3,10 +3,11 @@ module github.com/wandering-compiler/w17ctl
 go 1.26
 
 require (
+	filippo.io/age v1.3.1
 	github.com/alecthomas/kong v1.16.1
 	github.com/coder/websocket v1.8.15
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/wandering-compiler/sdk/go v0.1.0-rc.10
+	github.com/wandering-compiler/sdk/go v0.1.0-rc.11
 	golang.org/x/mod v0.38.0
 	golang.org/x/term v0.45.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d
@@ -16,7 +17,6 @@ require (
 )
 
 require (
-	filippo.io/age v1.3.1 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.42.0 // indirect

@@ -13,7 +13,7 @@
 // fetch is responsible for answering:
 //
 //   - the manifest must name the plugin the tag names, and the version the tag
-//     names. `publish-plugins.sh` refuses to cut a disagreeing tag, but a repo
+//     names. The plugins repository's release (tools/release.sh) refuses to cut a disagreeing tag, but a repo
 //     this client did not publish never went through that gate, and the
 //     manifest is what travels on into the project once the tag is gone.
 //   - the caller gets the resolved commit SHA and the content digest, so the
@@ -136,6 +136,11 @@ type Fetched struct {
 	// "Are these the bytes that were released?" is a signature question and only
 	// the published form can answer it. "Is this working tree still the one that
 	// was installed?" is a pin question and only the landed form can.
+	//
+	// For an AUTHOR tree fetched by commit (isAuthorTree), "as published" is the
+	// tree as RENDERED on this machine, since the repository holds no rendered
+	// form for that commit. Such a tree is unsigned, so no signature is checked
+	// against it.
 	PublishedDigest string
 	// Signature is the contents of SignatureFile, VERBATIM, when the published
 	// tree carries one — and empty otherwise.
@@ -196,6 +201,26 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 		return Fetched{}, err
 	}
 
+	// A plugin repository's main branch holds the AUTHOR tree — live Go, a real
+	// go.mod, tests, generated pb — and only its release tags hold the rendered,
+	// installable form. A commit install of main therefore arrives in the author
+	// form, and it goes through the same render FromDir uses, so what lands is
+	// what a release of that commit would place, not the author's working shape.
+	if isAuthorTree(tree) {
+		// A directory of its own: rendering into `work/<anything>` would be the
+		// plugin's own directory for a plugin of that name, and the render
+		// replaces its destination.
+		renderRoot, merr := os.MkdirTemp(work, "render-")
+		if merr != nil {
+			return Fetched{}, fmt.Errorf("plugin fetch: %w", merr)
+		}
+		rendered := filepath.Join(renderRoot, src.Plugin)
+		if _, rerr := pluginrender.Plugin(tree, rendered); rerr != nil {
+			return Fetched{}, fmt.Errorf("plugin fetch: rendering the author tree at %s: %w", shortID(sha), rerr)
+		}
+		tree = rendered
+	}
+
 	if err := os.RemoveAll(dest); err != nil {
 		return Fetched{}, fmt.Errorf("plugin fetch: clearing %s: %w", dest, err)
 	}
@@ -222,6 +247,36 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 		Dir: dest, Repo: src.Repo, Ref: src.Ref(), Version: version,
 		SHA: sha, Digest: digest, PublishedDigest: published, Signature: string(sig),
 	}, nil
+}
+
+// isAuthorTree reports whether a fetched plugin directory is an author tree
+// that has to be rendered before it lands: LIVE Go under src/ — a non-test `.go`,
+// `go.mod` or `go.sum` without the `.src` suffix every release carries. That is
+// what would harm a consumer (a module inside their build, the plugin's tests,
+// stale generated pb), and it never appears in a rendered tree.
+//
+// A signed tree is a release whatever it holds. A tree with no Go at all lands
+// as it is: there is nothing in it to make inert, and re-rendering it would
+// drop whatever the render does not know (a non-standard proto layout).
+func isAuthorTree(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, SignatureFile)); err == nil {
+		return false
+	}
+	live := false
+	_ = filepath.WalkDir(filepath.Join(dir, "src"), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		switch name := d.Name(); {
+		case strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go"), name == "go.mod", name == "go.sum":
+			// A bare `_test.go` alone is not the mark: a published tree may carry
+			// one, and stripSrcSuffix drops it either way.
+			live = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return live
 }
 
 // materialise puts the repository's tree for src into work.
@@ -344,7 +399,7 @@ func shortID(sha string) string {
 	return sha
 }
 
-// checkManifest is the consuming half of the guard publish-plugins.sh applies
+// checkManifest is the consuming half of the guard the plugins repository's release (tools/release.sh) applies
 // when cutting a tag. A third party's repo never met that gate.
 // It also returns the version to record.
 //
@@ -610,9 +665,17 @@ func FromDir(src, dest string) (Fetched, error) {
 	}
 	defer func() { _ = os.RemoveAll(work) }()
 
+	// The same decision a repository install makes (isAuthorTree): an author
+	// tree is rendered first; a tree already in the published form — a
+	// release's, signed or not, or one with no Go at all — lands as it is.
+	// Rendering a published tree again lost all of its Go without an error.
 	published := filepath.Join(work, "published")
-	if _, rerr := pluginrender.Plugin(abs, published); rerr != nil {
-		return Fetched{}, rerr
+	if isAuthorTree(abs) {
+		if _, rerr := pluginrender.Plugin(abs, published); rerr != nil {
+			return Fetched{}, rerr
+		}
+	} else if cerr := copyTree(abs, published); cerr != nil {
+		return Fetched{}, fmt.Errorf("plugin install: copying %s: %w", abs, cerr)
 	}
 
 	if err := os.RemoveAll(dest); err != nil {

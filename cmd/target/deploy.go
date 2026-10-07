@@ -97,7 +97,7 @@ func (c *DeployListCmd) Run() error {
 	// Docker is stated rather than listed. An empty list would otherwise read
 	// as "this project generates no deploy artefacts", which is false — the
 	// Compose files every project actually uses are always emitted.
-	fmt.Fprintln(core.Stdout, "docker → compose.yaml + deploy/prod/compose.yaml (always emitted, cannot be removed)")
+	fmt.Fprintln(core.Stdout, "docker → each bundle's Dockerfile + dev compose.yaml (always emitted, cannot be removed); production stacks come from `w17ctl infra`")
 	ts := view.GetDeployTargets()
 	if len(ts) == 0 {
 		fmt.Fprintln(core.Stdout, "no optional deploy targets declared")

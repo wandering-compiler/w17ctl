@@ -201,6 +201,15 @@ func renderSrc(srcDir, destDir string, st *Stats) error {
 			return nil
 		}
 		base := filepath.Base(p)
+		// An already-RENDERED tree is refused, not rendered again: its Go is
+		// `.go.src`, which none of the cases below takes, so a second render
+		// dropped every line of it and reported success. `plugin dev` handed a
+		// release's tree did exactly that — a throwaway project with the
+		// plugin's code silently missing, which "generates" proves nothing about.
+		if strings.HasSuffix(base, ".go"+SrcSuffix) || base == "go.mod"+SrcSuffix || base == "go.sum"+SrcSuffix {
+			return fmt.Errorf("plugin render: %s is already in the published form (%s) — render takes an "+
+				"author tree; a published tree is installed as it is", srcDir, filepath.ToSlash(rel))
+		}
 		switch {
 		case verbatimUnderSrc[base]:
 			if err := copyFile(p, filepath.Join(destDir, rel)); err != nil {

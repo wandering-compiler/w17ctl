@@ -14,7 +14,7 @@ import (
 // the only leaf is `add`; future: `module rename` /
 // `module remove`.
 type Cmd struct {
-	Add AddCmd `cmd:"" help:"Scaffold a new module under an existing domain — creates <protoDir>/domains/<DOMAIN>/<MODULE>/w17.proto (<protoDir> is the project's proto root: \"proto\" unless init was given --proto-dir). With --with-example seeds the four-layer (queries/mutations/business/types) shape with annotation samples."`
+	Add AddCmd `cmd:"" help:"Scaffold a new module under an existing domain — creates <protoDir>/domains/<DOMAIN>/[<GROUPS>/]<MODULE>/w17.proto (<protoDir> is the project's proto root: \"proto\" unless init was given --proto-dir). With --with-example seeds the four-layer (queries/mutations/business/types) shape with annotation samples."`
 }
 
 // AddCmd implements `w17ctl module add DOMAIN/MODULE`.
@@ -26,7 +26,7 @@ type Cmd struct {
 // when the domain directory is missing (steers to
 // `w17ctl domain add`).
 type AddCmd struct {
-	Ident       string `arg:"" name:"ident" help:"Module identifier in <domain>/<module> shape (e.g. users/billing, app/cache). Both segments lowercase letters / digits / underscores."`
+	Ident       string `arg:"" name:"ident" help:"Module identifier in <domain>/[<groups>/]<module> shape (e.g. users/billing, finplatform/engine/ledger). Group directories are organisational only — the module name stays the identity. Every segment lowercase letters / digits / underscores."`
 	WithExample bool   `name:"with-example" help:"Also lay down the four-layer (queries/mutations/business/types) example payload alongside the module sentinel."`
 	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
 }
@@ -38,7 +38,7 @@ var renderTemplateFn = scaffold.RenderTemplate
 
 // Run implements the kong command interface.
 func (c *AddCmd) Run() error {
-	domain, module, err := parseModuleIdent(c.Ident)
+	domain, groups, module, err := parseModuleIdent(c.Ident)
 	if err != nil {
 		return fmt.Errorf("module add: %w", err)
 	}
@@ -64,13 +64,17 @@ func (c *AddCmd) Run() error {
 		return fmt.Errorf("module add: %s exists but is not a directory", domainDir)
 	}
 
-	moduleDir := filepath.Join(domainDir, module)
+	moduleDir := filepath.Join(domainDir, filepath.FromSlash(groups), module)
 	if _, err := os.Stat(moduleDir); err == nil {
 		return fmt.Errorf("module add: %s already exists (refusing to overwrite — delete the directory or pick a different name)",
-			filepath.Join(protoDir, "domains", domain, module))
+			filepath.Join(protoDir, "domains", domain, filepath.FromSlash(groups), module))
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("module add: stat %s: %w", moduleDir, err)
 	}
+
+	// Module groups: a module placed inside another module, or a module name
+	// reused under another group, is refused by codegen (protopath.Validate,
+	// on entry to every build) — the same thin-client rule as the next note.
 
 	// F1 (plugin-system track) — a module name that collides with an
 	// active plugin's `registered_as` is caught at codegen time by the IR
@@ -90,6 +94,7 @@ func (c *AddCmd) Run() error {
 		Project: prefix,
 		Domain:  domain,
 		Module:  module,
+		Groups:  groups,
 	}
 
 	var written []string
@@ -107,7 +112,7 @@ func (c *AddCmd) Run() error {
 		written = w
 	}
 
-	rel := filepath.Join(protoDir, "domains", domain, module)
+	rel := filepath.Join(protoDir, "domains", domain, filepath.FromSlash(groups), module)
 	fmt.Fprintf(core.Stdout, "module add: scaffolded %s (%d file(s)):\n", rel, len(written))
 	for _, p := range written {
 		fmt.Fprintf(core.Stdout, "  %s\n", p)
@@ -115,23 +120,31 @@ func (c *AddCmd) Run() error {
 	return nil
 }
 
-// parseModuleIdent splits `<domain>/<module>` into validated
-// halves. Refuses anything other than exactly one slash —
-// callers misspelling the form get an explicit steering
-// message rather than a path-not-found later.
-func parseModuleIdent(ident string) (domain, module string, err error) {
-	parts := strings.Split(ident, "/")
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("identifier %q must be in <domain>/<module> shape (e.g. users/billing)", ident)
+// parseModuleIdent splits `<domain>/[<groups…>/]<module>` into validated
+// parts; groups come back in scaffold.Ctx.Groups form ("engine/" or "").
+// Refuses a single segment — callers misspelling the form get an explicit
+// steering message rather than a path-not-found later.
+func parseModuleIdent(ident string) (domain, groups, module string, err error) {
+	parts := strings.Split(strings.Trim(ident, "/"), "/")
+	for _, p := range parts {
+		if p == "" && len(parts) > 1 {
+			return "", "", "", fmt.Errorf("identifier %q has an empty segment", ident)
+		}
 	}
-	domain, module = parts[0], parts[1]
+	if len(parts) < 2 {
+		return "", "", "", fmt.Errorf("identifier %q must be in <domain>/[<groups>/]<module> shape (e.g. users/billing, finplatform/engine/ledger)", ident)
+	}
+	domain, module = parts[0], parts[len(parts)-1]
 	if err := scaffold.ValidateIdent("domain", domain); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if err := scaffold.ValidateIdent("module", module); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return domain, module, nil
+	if groups, err = scaffold.GroupsPath(strings.Join(parts[1:len(parts)-1], "/")); err != nil {
+		return "", "", "", err
+	}
+	return domain, groups, module, nil
 }
 
 // emptyModuleLayerDirs are the per-layer directories every
