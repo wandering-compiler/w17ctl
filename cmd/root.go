@@ -18,6 +18,7 @@ import (
 	admissioncmd "github.com/wandering-compiler/w17ctl/cmd/admission"
 	certs "github.com/wandering-compiler/w17ctl/cmd/certs"
 	cicmd "github.com/wandering-compiler/w17ctl/cmd/ci"
+	clientcmd "github.com/wandering-compiler/w17ctl/cmd/client"
 	codegencmd "github.com/wandering-compiler/w17ctl/cmd/codegen"
 	compatcmd "github.com/wandering-compiler/w17ctl/cmd/compat"
 	connectioncmd "github.com/wandering-compiler/w17ctl/cmd/connection"
@@ -138,6 +139,7 @@ var root struct {
 
 	// --- Plugins ---
 	Plugin plugincmd.Cmd `cmd:"" help:"Plugin catalog operations — list the embedded + installed plugins and install one into this project."`
+	Client clientcmd.Cmd `cmd:"" help:"Clients of THIRD-PARTY REST APIs, from their OpenAPI documents: generate / update / list / remove. Each is a signed, generated gRPC client under proto/clients/<name>/. (The project's own frontend clients are 'target client'.)"`
 
 	// --- Secrets & TLS ---
 	Sdk     sdkcmd.Cmd  `cmd:"" help:"Public sdk/go operations — move this project onto a new SDK release (update). Needs no local Go toolchain: the require + go.sum hashes are resolved from the module proxy."`

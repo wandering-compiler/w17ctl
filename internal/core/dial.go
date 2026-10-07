@@ -46,6 +46,10 @@ type CodegenConsole interface {
 	SignPluginRelease(ctx context.Context, in *codegenpb.SignPluginReleaseRequest, opts ...grpc.CallOption) (*codegenpb.SignPluginReleaseResponse, error)
 	Guide(ctx context.Context, in *codegenpb.GuideRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[codegenpb.GeneratedFile], error)
 	AdmissionStatus(ctx context.Context, in *codegenpb.AdmissionStatusRequest, opts ...grpc.CallOption) (*codegenpb.AdmissionStatusResponse, error)
+	// Egress clients (`w17ctl client`, `w17ctl verify`). Generation is served
+	// by the console itself, not placed on a worker: it ends in a signature.
+	GenerateEgressClient(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[codegenpb.GenerateEgressClientRequest, codegenpb.GenerateEgressClientResponse], error)
+	VerifyEgressClient(ctx context.Context, in *codegenpb.VerifyEgressClientRequest, opts ...grpc.CallOption) (*codegenpb.VerifyResult, error)
 }
 
 // The console client is what DialCodegen returns; the native client is what

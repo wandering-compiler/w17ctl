@@ -24,6 +24,7 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/adminruntime"
 	"github.com/wandering-compiler/w17ctl/internal/core"
+	"github.com/wandering-compiler/w17ctl/internal/egress"
 	"github.com/wandering-compiler/w17ctl/internal/gofmtc"
 	"github.com/wandering-compiler/w17ctl/internal/guidestamp"
 	"github.com/wandering-compiler/w17ctl/internal/scaffold"
@@ -348,6 +349,19 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	protoDir := view.GetProtoDir()
 	servicesDir := view.GetServicesDir()
 	languagesDir := view.GetLanguagesDir()
+
+	// Egress clients are compiled with the project (their stubs are generated
+	// beside the domains'), so they are checked first: a client that is not
+	// what the console signed must not reach generated code. The proto set
+	// below carries no client.yaml or document, so the console cannot check
+	// it there.
+	if _, clientErrs := egress.Verify(core.Stdout, cl, root, protoDir, lockYaml); len(clientErrs) > 0 {
+		if names, only := egress.DriftOnly(clientErrs); only {
+			return fmt.Errorf("codegen: client(s) %s do not verify — %s: %w",
+				strings.Join(names, ", "), egress.Advice, errors.Join(clientErrs...))
+		}
+		return fmt.Errorf("codegen: checking clients: %w", errors.Join(clientErrs...))
+	}
 
 	// The project's own lock says where its Go module lives; the convention is
 	// only the fallback. Assuming `srcgo` reads the WRONG go.mod in a repo
