@@ -383,7 +383,10 @@ func scaffoldGoModule(projectRoot, goModule, stubsRoot string) error {
 	// Co-dev replace/use paths: W17_WANDERING_COMPILER_PATH is
 	// project-root-relative (codegen joins it onto the root). Empty =
 	// published-module mode (no replace; proxy resolves the runtime).
-	w17Path := strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/")
+	w17Path, err := core.CoDevPath(projectRoot)
+	if err != nil {
+		return err
+	}
 
 	goModPath := filepath.Join(projectRoot, modDir, "go.mod")
 	if _, err := os.Stat(goModPath); err != nil {

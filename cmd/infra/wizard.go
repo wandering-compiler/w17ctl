@@ -2,11 +2,13 @@ package infra
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/wandering-compiler/w17ctl/internal/prompter"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
+	"google.golang.org/protobuf/proto"
 )
 
 // The values the wizard offers. The console's lock validator owns the truth
@@ -53,8 +55,13 @@ type Answers struct {
 	Firewall     string
 	SSHNoPass    string
 	SSH          map[string]string // env -> user@host[:port]; "none" clears
-	Region       string
-	Account      string
+	// Plugins edits the plugin activations an environment deploys:
+	// "<env>:<activation>.<service>" -> "bundle:<name>" | "image:<name>",
+	// "<env>:<activation>.<service>.<replicas|cpus|memory|command>" -> value,
+	// "<env>:<activation>" -> "none" (stop deploying it).
+	Plugins map[string]string
+	Region  string
+	Account string
 }
 
 // Wizard asks for the infrastructure, starting from `current` (nil for `infra
@@ -103,6 +110,11 @@ func Wizard(p prompter.Prompter, current *codegenpb.LockInfra, a Answers) (*code
 
 func askEnvironment(p prompter.Prompter, target, name string, prev *codegenpb.LockInfraEnvironment, a Answers) (*codegenpb.LockInfraEnvironment, error) {
 	env := &codegenpb.LockInfraEnvironment{Name: name, DeployBranch: prev.GetDeployBranch()}
+	plugins, err := editPlugins(name, prev.GetPlugins(), a.Plugins)
+	if err != nil {
+		return nil, err
+	}
+	env.Plugins = plugins
 	q := func(s string) string { return fmt.Sprintf("[%s] %s", name, s) }
 
 	domain := a.Domain[name]
@@ -131,7 +143,6 @@ func askEnvironment(p prompter.Prompter, target, name string, prev *codegenpb.Lo
 		env.Hosts[surface] = fqdn
 	}
 
-	var err error
 	if target == "swarm" {
 		if env.Edge, err = pick(p, a.Edge, q("Edge proxy"), edges, firstNonEmpty(prev.GetEdge(), "caddy")); err != nil {
 			return nil, err
@@ -262,6 +273,139 @@ func askHost(p prompter.Prompter, q func(string) string, env string, prev *codeg
 		h.Ssh = ssh
 	}
 	return h, nil
+}
+
+// editPlugins applies the --plugin edits of one environment to the
+// deployments it declares now. No prompt: which activations a project has,
+// and which services their plugins leave to the adopter, is known to the
+// console, which refuses a deployment that does not match them at codegen.
+func editPlugins(env string, prev []*codegenpb.LockInfraPluginDeploy, edits map[string]string) ([]*codegenpb.LockInfraPluginDeploy, error) {
+	var out []*codegenpb.LockInfraPluginDeploy
+	for _, d := range prev {
+		out = append(out, proto.Clone(d).(*codegenpb.LockInfraPluginDeploy))
+	}
+	type edit struct {
+		path       []string
+		value, key string
+	}
+	var list []edit
+	for key, value := range edits {
+		e, rest, ok := strings.Cut(key, ":")
+		if !ok {
+			return nil, fmt.Errorf("--plugin %s: want <env>:<activation>.<service>[.<field>]=<value>", key)
+		}
+		if e == env {
+			list = append(list, edit{strings.Split(rest, "."), strings.TrimSpace(value), key})
+		}
+	}
+	// The image first, so a field may be set on a service declared by the
+	// same command.
+	sort.Slice(list, func(i, j int) bool {
+		if len(list[i].path) != len(list[j].path) {
+			return len(list[i].path) < len(list[j].path)
+		}
+		return list[i].key < list[j].key
+	})
+	find := func(act string) *codegenpb.LockInfraPluginDeploy {
+		for _, d := range out {
+			if d.GetActivation() == act {
+				return d
+			}
+		}
+		return nil
+	}
+	for _, ed := range list {
+		bad := func(want string) error { return fmt.Errorf("--plugin %s=%s: %s", ed.key, ed.value, want) }
+		act := ed.path[0]
+		switch len(ed.path) {
+		case 1:
+			switch ed.value {
+			case "on":
+				// An activation whose plugin leaves nothing to the adopter has
+				// no service to name; this declares it.
+				if find(act) == nil {
+					out = append(out, &codegenpb.LockInfraPluginDeploy{Activation: act})
+				}
+			case "none":
+				for _, other := range list {
+					if other.path[0] == act && len(other.path) > 1 {
+						return nil, bad(fmt.Sprintf("stops deploying %s, and --plugin %s edits it in the same command — give one of them", act, other.key))
+					}
+				}
+				for i, d := range out {
+					if d.GetActivation() == act {
+						out = append(out[:i], out[i+1:]...)
+						break
+					}
+				}
+			default:
+				return nil, bad("an activation itself takes `on` (deploy it — for a plugin that leaves no service to you) or `none` (stop deploying it); its services are <activation>.<service>")
+			}
+		case 2:
+			kind, ref, ok := strings.Cut(ed.value, ":")
+			if !ok || (kind != "bundle" && kind != "image") || ref == "" {
+				return nil, bad("want bundle:<generated bundle> or image:<name from deploy/images.custom.txt>")
+			}
+			d := find(act)
+			if d == nil {
+				d = &codegenpb.LockInfraPluginDeploy{Activation: act}
+				out = append(out, d)
+			}
+			if d.Services == nil {
+				d.Services = map[string]*codegenpb.LockInfraAdopterService{}
+			}
+			svc := d.GetServices()[ed.path[1]]
+			if svc == nil {
+				svc = &codegenpb.LockInfraAdopterService{}
+				d.Services[ed.path[1]] = svc
+			}
+			svc.Bundle, svc.Image = "", ""
+			if kind == "bundle" {
+				svc.Bundle = ref
+			} else {
+				svc.Image = ref
+			}
+		case 3:
+			svc := find(act).GetServices()[ed.path[1]]
+			if svc == nil {
+				return nil, bad(fmt.Sprintf("%s.%s is not deployed in %s — name its image first (--plugin %s:%s.%s=bundle:<name>)", act, ed.path[1], env, env, act, ed.path[1]))
+			}
+			switch ed.path[2] {
+			case "replicas":
+				n, err := strconv.ParseInt(ed.value, 10, 32)
+				if err != nil {
+					return nil, bad("replicas is a number")
+				}
+				svc.Replicas = int32(n)
+			case "cpus":
+				svc.Cpus = ed.value
+			case "memory":
+				svc.Memory = ed.value
+			case "command":
+				svc.Command = nil
+				if ed.value != "none" {
+					svc.Command = splitCommand(ed.value)
+				}
+			default:
+				return nil, bad("the fields are replicas, cpus, memory and command")
+			}
+		default:
+			return nil, bad("want <activation>.<service>[.<field>]")
+		}
+	}
+	return out, nil
+}
+
+// splitCommand splits a --plugin command on commas: `/app/worker,--slots,2`.
+// Commas, not spaces, so an argument may hold a space.
+func splitCommand(v string) []string {
+	var out []string
+	for _, f := range strings.Split(v, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // pick returns the flag value when set (it must be one of the options),

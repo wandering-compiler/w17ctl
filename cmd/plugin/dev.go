@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	codegencmd "github.com/wandering-compiler/w17ctl/cmd/codegen"
+	connectioncmd "github.com/wandering-compiler/w17ctl/cmd/connection"
 	initcmd "github.com/wandering-compiler/w17ctl/cmd/init"
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/pluginfetch"
@@ -106,7 +107,7 @@ func (c *DevCmd) Run() error {
 	}
 	defer restore()
 
-	if err := devScaffold(abs, name, feats, signIn); err != nil {
+	if err := devScaffold(abs, name, feats, signIn, c.Console); err != nil {
 		return err
 	}
 
@@ -138,13 +139,17 @@ func (c *DevCmd) Run() error {
 	return nil
 }
 
+// devConnection is the one connection the scaffolded domain stores in — named
+// once, because the lock and the domain proto must agree on it.
+const devConnection = "app-postgres"
+
 // devScaffold writes the project files that turn this plugin on.
 //
 // Two files, and they are the whole activation: a domain sentinel carrying the
 // plugin with its features, and a REST registry including the plugin's presets
 // so its endpoints exist on a surface. Anything else a project has is not
 // needed to find out whether a plugin generates.
-func devScaffold(dir, name string, feats []string, signIn *signInPlugin) error {
+func devScaffold(dir, name string, feats []string, signIn *signInPlugin, console string) error {
 	initc := &initcmd.Cmd{
 		LockPath: filepath.Join("w17", "lock.yaml"),
 		Name:     "plugindev",
@@ -165,6 +170,15 @@ func devScaffold(dir, name string, feats []string, signIn *signInPlugin) error {
 	}
 	if err := initc.Run(); err != nil {
 		return fmt.Errorf("plugin dev: init: %w", err)
+	}
+	// The domain below stores in `app-postgres`, so the lock carries it, the way
+	// a person's first run would after `w17ctl connection add`: codegen refuses
+	// a schema on a connection the lock does not have (the dev stack and the
+	// deploy are built from the lock's connections, so such a domain would be
+	// generated against a database nothing starts).
+	conn := &connectioncmd.AddCmd{LockPath: initc.LockPath, Console: console, Name: devConnection, Default: true}
+	if err := conn.Run(); err != nil {
+		return fmt.Errorf("plugin dev: connection add: %w", err)
 	}
 
 	domain := filepath.Join("proto", "domains", "app")
@@ -524,7 +538,7 @@ option (w17.domain) = {
 };
 
 option (w17.module) = {
-  connection: { name: "app-postgres", dialect: POSTGRES, version: "18" },
+  connection: { name: "` + devConnection + `", dialect: POSTGRES, version: "18" },
   channels: [
     { name: "app", transport: TRANSPORT_NATS, retry: { max_deliver: 3 }, drain_timeout_seconds: 30 }
   ]

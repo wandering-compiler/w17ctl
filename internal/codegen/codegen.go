@@ -400,6 +400,10 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	// result into i18n.ts. The .po merge thus runs server-side now.
 	existingPo := readExistingPo(root, languagesDir)
 
+	w17Path, err := core.CoDevPath(root)
+	if err != nil {
+		return err
+	}
 	run := &clusterRun{
 		placer:     core.PlacerFn(conn),
 		lock:       lockYaml,
@@ -409,7 +413,7 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 			GenDir:      genDir,
 			ServicesDir: servicesDir,
 			DepVersions: depVersions,
-			W17Path:     strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/"),
+			W17Path:     w17Path,
 			Force:       force,
 			GenGoMod:    string(genGoMod),
 			ExistingPo:  existingPo,
@@ -1599,7 +1603,7 @@ func realReadDepVersions(root, genDir string) (*codegenpb.DepVersions, error) {
 		return nil, err
 	}
 	var secondary map[string]string
-	if w17Path := strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/"); w17Path != "" {
+	if w17Path, _ := core.CoDevPath(root); w17Path != "" {
 		// Best-effort: a missing/unreadable tool go.mod just leaves
 		// the fallback empty (the validator surfaces any still-unset
 		// required version with a clear message).

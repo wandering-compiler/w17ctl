@@ -47,6 +47,7 @@ type flags struct {
 	Firewall       string            `name:"host-firewall" help:"swarm: yes | no — no leaves your firewall alone."`
 	SSHNoPassword  string            `name:"host-ssh-no-password" help:"swarm: yes | no."`
 	SSH            map[string]string `name:"ssh" help:"swarm, per environment: --ssh prod=root@203.0.113.10 (user@host[:port]; none clears)."`
+	Plugin         map[string]string `name:"plugin" help:"swarm: run a plugin activation's services beside the project, on this environment's machine. Name the image of each service its plugin leaves to you: --plugin prod:codegen.worker=bundle:app-server (or image:<name from deploy/images.custom.txt>); then --plugin prod:codegen.worker.replicas=2 (also cpus, memory, command — comma-separated argv). --plugin prod:codegen=on deploys an activation whose plugin leaves no service to you; --plugin prod:codegen=none stops deploying it."`
 	Region         string            `name:"region" help:"aws-ecs / gcp-cloudrun: region."`
 	Account        string            `name:"account" help:"aws-ecs: account id; gcp-cloudrun: project id."`
 	LockPath       string            `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
@@ -64,7 +65,8 @@ func (f flags) answers() Answers {
 		Backups: f.Backups, KeepDays: f.BackupKeepDays, BaseSchedule: f.BackupSchedule,
 		VerifySched: f.VerifySchedule, ArchiveTO: f.ArchiveTimeout, Alert: f.Alert,
 		InstallDock: f.InstallDocker, Firewall: f.Firewall, SSHNoPass: f.SSHNoPassword, SSH: f.SSH,
-		Region: f.Region, Account: f.Account,
+		Plugins: f.Plugin,
+		Region:  f.Region, Account: f.Account,
 	}
 }
 
@@ -195,6 +197,34 @@ func (c *ShowCmd) Run() error {
 				fmt.Fprintf(w, "  ssh: %s\n", h.GetSsh())
 			}
 		}
+		for _, d := range e.GetPlugins() {
+			names := make([]string, 0, len(d.GetServices()))
+			for n := range d.GetServices() {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			for _, n := range names {
+				svc := d.GetServices()[n]
+				img := "bundle " + svc.GetBundle()
+				if svc.GetImage() != "" {
+					img = "image " + svc.GetImage()
+				}
+				fmt.Fprintf(w, "  plugin %s.%s: %s", d.GetActivation(), n, img)
+				if svc.GetReplicas() > 1 {
+					fmt.Fprintf(w, ", %d replicas", svc.GetReplicas())
+				}
+				if svc.GetCpus() != "" {
+					fmt.Fprintf(w, ", cpus %s", svc.GetCpus())
+				}
+				if svc.GetMemory() != "" {
+					fmt.Fprintf(w, ", memory %s", svc.GetMemory())
+				}
+				if len(svc.GetCommand()) > 0 {
+					fmt.Fprintf(w, ", command %q", svc.GetCommand())
+				}
+				fmt.Fprintln(w)
+			}
+		}
 	}
 	return nil
 }
@@ -228,7 +258,9 @@ func (c *RemoveCmd) Run() error {
 	intent := &codegenpb.SetInfraIntent{Clear: true}
 	what := "the whole infrastructure"
 	if c.Env != "" {
-		kept := &codegenpb.LockInfra{Target: current.GetTarget()}
+		// The CI block belongs to the whole infrastructure, not the
+		// environment going.
+		kept := &codegenpb.LockInfra{Target: current.GetTarget(), Ci: current.GetCi()}
 		found := false
 		for _, e := range current.GetEnvironments() {
 			if e.GetName() == c.Env {

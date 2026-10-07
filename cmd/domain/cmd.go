@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	connectioncmd "github.com/wandering-compiler/w17ctl/cmd/connection"
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/scaffold"
 )
@@ -156,6 +157,29 @@ func (c *AddCmd) Run() error {
 	fmt.Fprintf(core.Stdout, "domain add: scaffolded %s (%d file(s)):\n", rel, len(written))
 	for _, p := range written {
 		fmt.Fprintf(core.Stdout, "  %s\n", p)
+	}
+	// The sentinel just written declares `<domain>-postgres`; the lock gets it
+	// too. The dev stack, the db-init files and the deploy are built from the
+	// lock's connections, and codegen refuses a schema on a connection the lock
+	// does not have — so a domain whose connection only the proto names would
+	// stop the very next codegen of the documented first run (init, domain
+	// add, codegen), where until now it generated against a database nothing
+	// started.
+	conn := c.Name + "-postgres"
+	inLock := false
+	for _, lc := range view.GetConnections() {
+		inLock = inLock || lc.GetName() == conn
+	}
+	if !inLock {
+		add := &connectioncmd.AddCmd{
+			LockPath: filepath.Join(root, "w17", "lock.yaml"),
+			Console:  c.Console,
+			Name:     conn,
+			Default:  len(view.GetConnections()) == 0,
+		}
+		if err := add.Run(); err != nil {
+			return fmt.Errorf("domain add: the domain declares connection %s and the lock does not have it: %w — add it with `w17ctl connection add --name %s`", conn, err, conn)
+		}
 	}
 	// Hand-written Service/Facade bodies live OUTSIDE the generated
 	// w17/ tree — in the project's own top-level srcgo module — and the
