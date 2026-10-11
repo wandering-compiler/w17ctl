@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/wandering-compiler/sdk/go/lib/fieldcrypt"
 	"gopkg.in/yaml.v3"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
@@ -278,7 +279,7 @@ func gitIgnored(root, rel string) bool {
 
 var (
 	placeholders = []string{"CHANGE_ME", "REPLACE_ME", "s3://BUCKET/"}
-	pgDSN        = regexp.MustCompile(`postgres(?:ql)?://([^:/@"\s]+):([^@"\s]*)@`)
+	pgDSN        = regexp.MustCompile(`postgres(?:ql)?://([^:/@"\s]+):([^@"\s]*)@([^:/"\s]+)`)
 )
 
 // validate checks one environment's plaintext files before anything is sealed.
@@ -327,6 +328,11 @@ func validate(root string, files []envFile) []string {
 			if p := valueProblem(l.Value); p != "" {
 				problems = append(problems, fmt.Sprintf("%s: %s %s", rel, l.Key, p))
 			}
+			if l.Key == fieldcrypt.EnvKeys {
+				if p := fieldKeysProblem(l.Value); p != "" {
+					problems = append(problems, fmt.Sprintf("%s: %s %s", rel, l.Key, p))
+				}
+			}
 		}
 		var missing []string
 		for k := range want {
@@ -342,6 +348,22 @@ func validate(root string, files []envFile) []string {
 	}
 	problems = append(problems, crossFileProblems(values)...)
 	return problems
+}
+
+// fieldKeysProblem: a keyring the service would refuse at boot — or boot
+// with the public development key.
+func fieldKeysProblem(v string) string {
+	v = strings.Trim(v, `"`)
+	if strings.Contains(v, "CHANGE_ME") {
+		return "" // reported as a placeholder already
+	}
+	if strings.Contains(v, fieldcrypt.DevKeys[2:]) {
+		return "is the public development key — give this environment its own: `w17ctl secrets field-key`"
+	}
+	if _, err := fieldcrypt.Parse(v); err != nil {
+		return "is not a keyring (" + err.Error() + ") — `w17ctl secrets field-key` prints one"
+	}
+	return ""
 }
 
 // valueProblem: what the server's bash (it sources these files) or a
@@ -375,10 +397,6 @@ func valueProblem(v string) string {
 // crossFileProblems: each Postgres role's password in postgres/.env must be
 // the one inside the DSN of every binary connecting as that role.
 func crossFileProblems(values map[string]map[string]string) []string {
-	pg := values["postgres"]
-	if pg == nil {
-		return nil
-	}
 	var problems []string
 	services := make([]string, 0, len(values))
 	for s := range values {
@@ -393,14 +411,21 @@ func crossFileProblems(values map[string]map[string]string) []string {
 		sort.Strings(keys)
 		for _, k := range keys {
 			for _, m := range pgDSN.FindAllStringSubmatch(values[svc][k], -1) {
-				role, pw := m[1], m[2]
+				// The DSN's host is the database server it connects to — postgres, or
+				// postgres-<name> with more than one — and that server's .env owns the
+				// role's password.
+				role, pw, host := m[1], m[2], m[3]
+				pg := values[host]
+				if pg == nil {
+					continue
+				}
 				pwKey := strings.ToUpper(strings.ReplaceAll(role, "-", "_")) + "_DB_PASSWORD"
 				want, ok := pg[pwKey]
 				if !ok {
 					continue
 				}
 				if pw != want {
-					problems = append(problems, fmt.Sprintf("deploy/…/services/%s/.env: %s connects as %s with a password that is not postgres/.env's %s", svc, k, role, pwKey))
+					problems = append(problems, fmt.Sprintf("deploy/…/services/%s/.env: %s connects as %s with a password that is not %s/.env's %s", svc, k, role, host, pwKey))
 				}
 			}
 		}

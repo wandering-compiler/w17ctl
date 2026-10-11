@@ -65,20 +65,15 @@ type Answers struct {
 }
 
 // Wizard asks for the infrastructure, starting from `current` (nil for `infra
-// init`; the lock's block for `infra update`, so every question defaults to
-// what is declared now). It returns the complete block to send as one
-// SetInfra edit; the console validates it.
+// init`; w17/infra.yaml's for `infra update`, so every question defaults to
+// what is declared now). It returns the complete choice to send as one
+// SetInfra edit; the console merges it into w17/infra.yaml (what the wizard
+// does not ask — workloads, the database's offering, limits, your comments —
+// stays as the file has it) and validates the whole.
 func Wizard(p prompter.Prompter, current *codegenpb.LockInfra, a Answers) (*codegenpb.LockInfra, error) {
 	// The CI block and each environment's deploy branch belong to `w17ctl ci`;
-	// this wizard carries them through unchanged (the edit replaces the block).
+	// this wizard carries them through unchanged.
 	out := &codegenpb.LockInfra{Ci: current.GetCi()}
-
-	target, err := pick(p, a.Target, "Infrastructure target — swarm = your own servers (Docker Swarm), aws-ecs = ECS Fargate + RDS, gcp-cloudrun = Cloud Run + Cloud SQL",
-		targets, firstNonEmpty(current.GetTarget(), "swarm"))
-	if err != nil {
-		return nil, err
-	}
-	out.Target = target
 
 	prevEnvs := map[string]*codegenpb.LockInfraEnvironment{}
 	var prevNames []string
@@ -98,18 +93,36 @@ func Wizard(p prompter.Prompter, current *codegenpb.LockInfra, a Answers) (*code
 		return nil, fmt.Errorf("infra: at least one environment is needed")
 	}
 
+	kinds := map[string]bool{}
 	for _, name := range envs {
+		// Each environment deploys onto a target of its own kind: staging on your
+		// server, prod on AWS. --target answers it for every environment.
+		target, err := pick(p, a.Target, fmt.Sprintf("[%s] Target — swarm = your own server (Docker Swarm), aws-ecs = ECS Fargate + RDS, gcp-cloudrun = Cloud Run + Cloud SQL", name),
+			targets, firstNonEmpty(prevEnvs[name].GetTargetKind(), current.GetTarget(), "swarm"))
+		if err != nil {
+			return nil, err
+		}
+		kinds[target] = true
 		env, err := askEnvironment(p, target, name, prevEnvs[name], a)
 		if err != nil {
 			return nil, err
 		}
 		out.Environments = append(out.Environments, env)
 	}
+	if len(kinds) == 1 {
+		for k := range kinds {
+			out.Target = k
+		}
+	}
 	return out, nil
 }
 
 func askEnvironment(p prompter.Prompter, target, name string, prev *codegenpb.LockInfraEnvironment, a Answers) (*codegenpb.LockInfraEnvironment, error) {
-	env := &codegenpb.LockInfraEnvironment{Name: name, DeployBranch: prev.GetDeployBranch()}
+	env := &codegenpb.LockInfraEnvironment{Name: name, DeployBranch: prev.GetDeployBranch(), TargetKind: target}
+	if prev.GetTargetKind() == target {
+		// The same kind: the same target (its name in w17/infra.yaml), updated.
+		env.Target = prev.GetTarget()
+	}
 	plugins, err := editPlugins(name, prev.GetPlugins(), a.Plugins)
 	if err != nil {
 		return nil, err

@@ -190,3 +190,29 @@ func gitIgnores(root, rel string) bool {
 	cmd.Dir = root
 	return cmd.Run() == nil
 }
+
+// noticeTrackedDeploy names the generated files under deploy/ git still
+// tracks. deploy/.gitignore (written by the console) lists every generated
+// file there, but git ignores only what it does not track yet — a project
+// that committed deploy/ before keeps committing every change to it until
+// the files are untracked once. Asked of git (`ls-files -ci`: tracked AND
+// matched by an ignore rule), silent when git cannot answer or nothing is
+// left.
+func noticeTrackedDeploy(root string, stdout io.Writer) {
+	if os.Getenv(scaffold.TrackGeneratedEnv) == "1" || !gitCanAnswer(root) {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(root, "deploy", ".gitignore")); err != nil {
+		return
+	}
+	out, err := exec.Command("git", "-C", root, "ls-files", "-ci", "--exclude-standard", "--", "deploy").Output() // #nosec G204 -- fixed arguments
+	if err != nil {
+		return
+	}
+	n := strings.Count(strings.TrimSpace(string(out)), "\n") + 1
+	if strings.TrimSpace(string(out)) == "" {
+		return
+	}
+	fmt.Fprintf(stdout, "codegen: note: %d generated file(s) under deploy/ are still tracked by git — deploy/ is regenerated from w17/infra.yaml now. Untrack them once (they stay on disk):\n"+
+		"  git ls-files -ci --exclude-standard -- deploy | git rm --cached --quiet --pathspec-from-file=-\n", n)
+}

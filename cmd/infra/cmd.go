@@ -1,31 +1,39 @@
 // Package infra implements `w17ctl infra` — the project's infrastructure:
-// where it is deployed and how (docs/decisions/infra-targets.md).
+// where it is deployed and how, declared in w17/infra.yaml
+// (docs/decisions/infra-targets.md,
+// docs/decisions/infra-targets-workloads-and-a-tuning-file.md).
 //
-// The prompts live here (UX); the choice is sent to the console as ONE
-// SetInfra lock edit and validated there; the files are rendered by the
+// The prompts and flags live here (UX); every change is sent to the console
+// with the file's bytes — one SetInfra (the wizard's choice) or EditInfra
+// (values by path) — and the console edits the file (comments kept),
+// validates it and returns it; the files under deploy/ are rendered by the
 // console during codegen. The client decides nothing about infrastructure
 // (docs/specs/w17ctl/public-split-architecture.md §8.2).
 package infra
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
-	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	"github.com/wandering-compiler/w17ctl/internal/prompter"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 )
 
 // Cmd is `w17ctl infra`.
 type Cmd struct {
-	Init   InitCmd   `cmd:"" help:"Choose the project's infrastructure — swarm (your own servers), aws-ecs or gcp-cloudrun — and its environments, edge, TLS, database backups and server setup. Prompts; every question has a flag. Writes the signed lock; the next codegen renders deploy/<env>/."`
-	Update UpdateCmd `cmd:"" help:"Change the declared infrastructure. The same prompts, each defaulting to what the lock declares now."`
-	Show   ShowCmd   `cmd:"" help:"Print the declared infrastructure."`
-	Remove RemoveCmd `cmd:"" help:"Remove one environment (--env) or the whole infrastructure. The next codegen deletes what it had generated for it."`
-	Setup  SetupCmd  `cmd:"" help:"Prepare an environment's server (swarm): copy deploy/<env>/install to the lock's host.ssh and run setup.sh there as root, with your own SSH key."`
+	Init     InitCmd     `cmd:"" help:"Choose the project's infrastructure — per environment swarm (your own server), aws-ecs or gcp-cloudrun — with its edge, TLS, database backups and server setup. Prompts; every question has a flag. Writes w17/infra.yaml (yours, commit it); the next codegen renders deploy/<env>/."`
+	Update   UpdateCmd   `cmd:"" help:"Change the declared infrastructure. The same prompts, each defaulting to what w17/infra.yaml declares now; what they do not ask (workloads, the database offering, limits, your comments) stays."`
+	Show     ShowCmd     `cmd:"" help:"Print the declared infrastructure. --effective: every resolved value, with where it came from (w17/infra.yaml:<line> or default)."`
+	Remove   RemoveCmd   `cmd:"" help:"Remove one environment (--env) or the whole infrastructure. The next codegen deletes what it had generated for it."`
+	Set      SetCmd      `cmd:"" help:"Set values of w17/infra.yaml by path: w17ctl infra set workloads.web.port=3000 'environments.prod.database.backup={mode: daily}'. --env E prefixes environments.E. Comments and order stay; the console validates the whole file."`
+	Unset    UnsetCmd    `cmd:"" help:"Remove values of w17/infra.yaml by path (back to the default): w17ctl infra unset environments.prod.limits.PG_WORK_MEM."`
+	Target   TargetCmd   `cmd:"" help:"Add or remove a target — a place environments deploy onto (a server, a cloud account)."`
+	Workload WorkloadCmd `cmd:"" help:"Add or remove a workload: a container w17 did not generate (a frontend, a Python or Rust service), or the tuning of a generated bundle."`
+	Migrate  MigrateCmd  `cmd:"" help:"Move a lock's infra block into w17/infra.yaml (once; every infra edit does it too)."`
+	Plan     PlanCmd     `cmd:"" help:"What a deploy of an environment would change: the rendered stack against what the server runs (swarm), or terraform plan (aws-ecs / gcp-cloudrun)."`
+	Setup    SetupCmd    `cmd:"" help:"Prepare an environment's server (swarm): copy deploy/<env>/install to the target's ssh and run setup.sh there as root, with your own SSH key."`
 }
 
 // flags are the pre-answers shared by init and update.
@@ -84,41 +92,33 @@ type UpdateCmd struct{ flags }
 func (c *UpdateCmd) Run() error { return run("infra update", c.flags, true) }
 
 func run(op string, f flags, update bool) error {
-	release, err := lockfile.ForUpdate(f.LockPath)
-	if err != nil {
-		return fmt.Errorf("%s: lock for update: %w", op, err)
-	}
-	defer release()
-	lockBytes, err := os.ReadFile(f.LockPath)
-	if err != nil {
-		return fmt.Errorf("%s: read lock %s: %w", op, f.LockPath, err)
-	}
-	view, err := core.DescribeLock(f.Console, lockBytes)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	current := view.GetInfra()
-	switch {
-	case !update && current != nil:
-		return fmt.Errorf("%s: the lock already declares infrastructure (%s) — change it with `w17ctl infra update`", op, current.GetTarget())
-	case update && current == nil:
-		return fmt.Errorf("%s: the lock declares no infrastructure yet — start with `w17ctl infra init`", op)
-	}
-
-	next, err := Wizard(newPrompter(), current, f.answers())
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	newBytes, err := core.EditLock(f.Console, lockBytes, &codegenpb.LockEditIntent{
-		Intent: &codegenpb.LockEditIntent_SetInfra{SetInfra: &codegenpb.SetInfraIntent{Infra: next}},
+	var next *codegenpb.LockInfra
+	_, err := core.EditInfraOnDisk(op, f.Console, f.LockPath, func(view *codegenpb.LockView) (*codegenpb.LockEditIntent, error) {
+		current := view.GetInfra()
+		switch {
+		case !update && view.GetInfraSource() == "lock":
+			// The lock still carries the block: move it, change nothing else.
+			return &codegenpb.LockEditIntent{Intent: &codegenpb.LockEditIntent_EditInfra{EditInfra: &codegenpb.EditInfraIntent{}}}, nil
+		case !update && current != nil:
+			return nil, fmt.Errorf("w17/infra.yaml already declares infrastructure (%s) — change it with `w17ctl infra update`", envNames(current))
+		case update && current == nil:
+			return nil, fmt.Errorf("no infrastructure declared yet — start with `w17ctl infra init`")
+		}
+		var err error
+		next, err = Wizard(newPrompter(), current, f.answers())
+		if err != nil {
+			return nil, err
+		}
+		return &codegenpb.LockEditIntent{Intent: &codegenpb.LockEditIntent_SetInfra{SetInfra: &codegenpb.SetInfraIntent{Infra: next}}}, nil
 	})
 	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
+		return err
 	}
-	if err := lockfile.WriteAtomic(f.LockPath, newBytes, 0o644); err != nil {
-		return fmt.Errorf("%s: write lock: %w", op, err)
+	if next == nil {
+		fmt.Fprintf(core.Stdout, "%s: change it with `w17ctl infra update`, or edit w17/infra.yaml\n", op)
+		return nil
 	}
-	fmt.Fprintf(core.Stdout, "%s: %s with %s (%s)\n", op, next.GetTarget(), envNames(next), f.LockPath)
+	fmt.Fprintf(core.Stdout, "%s: %s (%s)\n", op, envNames(next), core.InfraPath(f.LockPath))
 	printNextSteps(next)
 	return nil
 }
@@ -126,15 +126,19 @@ func run(op string, f flags, update bool) error {
 func envNames(in *codegenpb.LockInfra) string {
 	var names []string
 	for _, e := range in.GetEnvironments() {
-		names = append(names, e.GetName())
+		names = append(names, e.GetName()+" on "+firstNonEmpty(e.GetTargetKind(), in.GetTarget()))
 	}
 	return strings.Join(names, ", ")
 }
 
 func printNextSteps(in *codegenpb.LockInfra) {
+	swarm := false
+	for _, e := range in.GetEnvironments() {
+		swarm = swarm || firstNonEmpty(e.GetTargetKind(), in.GetTarget()) == "swarm"
+	}
 	fmt.Fprintln(core.Stdout, "next:")
-	fmt.Fprintln(core.Stdout, "  1. w17ctl codegen                       — renders deploy/<env>/")
-	if in.GetTarget() == "swarm" {
+	fmt.Fprintln(core.Stdout, "  1. w17ctl codegen                       — renders deploy/<env>/ (commit w17/infra.yaml; deploy/ is generated)")
+	if swarm {
 		fmt.Fprintln(core.Stdout, "     w17ctl infra setup --env <env>       — prepares the server named by --ssh, with your SSH key")
 	}
 	fmt.Fprintln(core.Stdout, "  2. fill deploy/<env>/**/.env            — from the .env.example beside each")
@@ -145,12 +149,14 @@ func printNextSteps(in *codegenpb.LockInfra) {
 
 // ShowCmd is `w17ctl infra show`.
 type ShowCmd struct {
-	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Effective bool   `name:"effective" help:"Every resolved value, with where it came from (w17/infra.yaml:<line>, or default)."`
+	Env       string `name:"env" help:"Only this environment (with --effective)."`
+	LockPath  string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
+	Console   string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
 }
 
 func (c *ShowCmd) Run() error {
-	view, err := core.DescribeLockAt("infra show", c.Console, c.LockPath)
+	view, err := core.DescribeInfraAt("infra show", c.Console, c.LockPath, c.Effective, c.Env)
 	if err != nil {
 		return err
 	}
@@ -159,10 +165,17 @@ func (c *ShowCmd) Run() error {
 		fmt.Fprintln(core.Stdout, "no infrastructure declared — `w17ctl infra init` chooses one")
 		return nil
 	}
+	if view.GetInfraSource() == "lock" {
+		fmt.Fprintln(core.Stdout, "# declared in the lock's infra block — `w17ctl infra migrate` moves it into w17/infra.yaml")
+	}
+	if c.Effective {
+		fmt.Fprint(core.Stdout, view.GetInfraEffective())
+		return nil
+	}
 	w := core.Stdout
-	fmt.Fprintf(w, "target: %s\n", in.GetTarget())
 	for _, e := range in.GetEnvironments() {
 		fmt.Fprintf(w, "environment %s:\n", e.GetName())
+		fmt.Fprintf(w, "  target: %s (%s)\n", e.GetTarget(), e.GetTargetKind())
 		fmt.Fprintf(w, "  domain: %s\n", e.GetDomain())
 		if len(e.GetHosts()) > 0 {
 			keys := make([]string, 0, len(e.GetHosts()))
@@ -185,8 +198,7 @@ func (c *ShowCmd) Run() error {
 			fmt.Fprintf(w, "  region: %s, account: %s\n", c.GetRegion(), c.GetAccount())
 		}
 		if b := e.GetBackups(); b.GetEnabled() {
-			fmt.Fprintf(w, "  backups: keep %d days, base %q, restore test %q, max loss %ds, alert %s\n",
-				b.GetKeepDays(), b.GetBaseSchedule(), b.GetVerifySchedule(), b.GetArchiveTimeoutS(), b.GetAlert())
+			fmt.Fprintf(w, "  backups: keep %d days\n", b.GetKeepDays())
 		} else {
 			fmt.Fprintln(w, "  backups: off")
 		}
@@ -226,6 +238,7 @@ func (c *ShowCmd) Run() error {
 			}
 		}
 	}
+	fmt.Fprintln(w, "(workloads, the database and every default: `w17ctl infra show --effective`)")
 	return nil
 }
 
@@ -238,56 +251,39 @@ type RemoveCmd struct {
 
 func (c *RemoveCmd) Run() error {
 	const op = "infra remove"
-	release, err := lockfile.ForUpdate(c.LockPath)
-	if err != nil {
-		return fmt.Errorf("%s: lock for update: %w", op, err)
-	}
-	defer release()
-	lockBytes, err := os.ReadFile(c.LockPath)
-	if err != nil {
-		return fmt.Errorf("%s: read lock %s: %w", op, c.LockPath, err)
-	}
-	view, err := core.DescribeLock(c.Console, lockBytes)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	current := view.GetInfra()
-	if current == nil {
-		return fmt.Errorf("%s: the lock declares no infrastructure", op)
-	}
-	intent := &codegenpb.SetInfraIntent{Clear: true}
 	what := "the whole infrastructure"
-	if c.Env != "" {
-		// The CI block belongs to the whole infrastructure, not the
-		// environment going.
-		kept := &codegenpb.LockInfra{Target: current.GetTarget(), Ci: current.GetCi()}
-		found := false
-		for _, e := range current.GetEnvironments() {
-			if e.GetName() == c.Env {
-				found = true
-				continue
+	_, err := core.EditInfraOnDisk(op, c.Console, c.LockPath, func(view *codegenpb.LockView) (*codegenpb.LockEditIntent, error) {
+		current := view.GetInfra()
+		if current == nil {
+			return nil, fmt.Errorf("no infrastructure declared")
+		}
+		intent := &codegenpb.SetInfraIntent{Clear: true}
+		if c.Env != "" {
+			// The CI block belongs to the whole infrastructure, not the
+			// environment going.
+			kept := &codegenpb.LockInfra{Target: current.GetTarget(), Ci: current.GetCi()}
+			found := false
+			for _, e := range current.GetEnvironments() {
+				if e.GetName() == c.Env {
+					found = true
+					continue
+				}
+				kept.Environments = append(kept.Environments, e)
 			}
-			kept.Environments = append(kept.Environments, e)
+			if !found {
+				return nil, fmt.Errorf("no environment %q (declared: %s)", c.Env, envNames(current))
+			}
+			what = "environment " + c.Env
+			// The last environment going takes the infrastructure with it.
+			if len(kept.GetEnvironments()) > 0 {
+				intent = &codegenpb.SetInfraIntent{Infra: kept}
+			}
 		}
-		if !found {
-			return fmt.Errorf("%s: no environment %q (declared: %s)", op, c.Env, envNames(current))
-		}
-		what = "environment " + c.Env
-		// The last environment going takes the infrastructure with it — an
-		// infrastructure with no environment is refused by the lock anyway.
-		if len(kept.GetEnvironments()) > 0 {
-			intent = &codegenpb.SetInfraIntent{Infra: kept}
-		}
-	}
-	newBytes, err := core.EditLock(c.Console, lockBytes, &codegenpb.LockEditIntent{
-		Intent: &codegenpb.LockEditIntent_SetInfra{SetInfra: intent},
+		return &codegenpb.LockEditIntent{Intent: &codegenpb.LockEditIntent_SetInfra{SetInfra: intent}}, nil
 	})
 	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
+		return err
 	}
-	if err := lockfile.WriteAtomic(c.LockPath, newBytes, 0o644); err != nil {
-		return fmt.Errorf("%s: write lock: %w", op, err)
-	}
-	fmt.Fprintf(core.Stdout, "%s: removed %s (%s) — the next `w17ctl codegen` deletes its generated files; your .env / .env.enc stay\n", op, what, c.LockPath)
+	fmt.Fprintf(core.Stdout, "%s: removed %s — the next `w17ctl codegen` deletes its generated files; your .env / .env.enc stay\n", op, what)
 	return nil
 }

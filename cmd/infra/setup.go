@@ -12,11 +12,12 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/remote"
+	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 )
 
 // SetupCmd is `w17ctl infra setup` — prepare one environment's server with
 // the operator's own SSH key: copy deploy/<env>/install there and run its
-// setup.sh as root. The server is the lock's `host.ssh`; nothing about it is
+// setup.sh as root. The server is its target's `ssh`; nothing about it is
 // decided here, the script is the console's (rendered by codegen).
 type SetupCmd struct {
 	Env      string   `name:"env" required:"" help:"The environment whose server to prepare."`
@@ -26,26 +27,20 @@ type SetupCmd struct {
 }
 
 func (c *SetupCmd) Run() error {
-	view, err := core.DescribeLockAt("infra setup", c.Console, c.LockPath)
+	view, err := core.DescribeInfraAt("infra setup", c.Console, c.LockPath, false, "")
 	if err != nil {
 		return err
 	}
-	in := view.GetInfra()
-	if in.GetTarget() != "swarm" {
-		return fmt.Errorf("infra setup: prepares the servers of the swarm target; this project's infrastructure is %q", firstNonEmpty(in.GetTarget(), "not declared — `w17ctl infra init`"))
+	env, err := FindEnv(view, c.Env)
+	if err != nil {
+		return fmt.Errorf("infra setup: %w", err)
 	}
-	var target string
-	found := false
-	for _, e := range in.GetEnvironments() {
-		if e.GetName() == c.Env {
-			found, target = true, e.GetHost().GetSsh()
-		}
+	if env.GetTargetKind() != "swarm" {
+		return fmt.Errorf("infra setup: prepares a swarm environment's server; %s deploys onto %s (%s), which brings its own machines", c.Env, env.GetTarget(), env.GetTargetKind())
 	}
-	if !found {
-		return fmt.Errorf("infra setup: no environment %q (`w17ctl infra show`)", c.Env)
-	}
+	target := env.GetHost().GetSsh()
 	if target == "" {
-		return fmt.Errorf("infra setup: environment %q names no server — `w17ctl infra update --ssh %s=root@<server>`", c.Env, c.Env)
+		return fmt.Errorf("infra setup: environment %q names no server — `w17ctl infra set targets.%s.ssh=root@<server>`", c.Env, env.GetTarget())
 	}
 	tg, err := remote.Parse(target)
 	if err != nil {
@@ -140,4 +135,19 @@ func tarInto(tw *tar.Writer, root, dir string) error {
 		_, err = tw.Write(body)
 		return err
 	})
+}
+
+// FindEnv is one declared environment of the view, or a refusal naming the
+// declared ones.
+func FindEnv(view *codegenpb.LockView, name string) (*codegenpb.LockInfraEnvironment, error) {
+	in := view.GetInfra()
+	if in == nil {
+		return nil, errors.New("no infrastructure declared — `w17ctl infra init`")
+	}
+	for _, e := range in.GetEnvironments() {
+		if e.GetName() == name {
+			return e, nil
+		}
+	}
+	return nil, fmt.Errorf("no environment %q (declared: %s)", name, envNames(in))
 }

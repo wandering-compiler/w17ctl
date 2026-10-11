@@ -270,6 +270,11 @@ compiler directly — you drive `w17ctl`.
 | Review a schema change (PR flow) | `w17ctl review open` → `approve` → `merge` |
 | Check compatibility of a change | `w17ctl compat report …` |
 | Manage deploy environments | `w17ctl env …` |
+| Declare where it is deployed (servers, clouds, environments) | `w17ctl infra init` / `update` — writes `w17/infra.yaml` (commit it) |
+| Add a container w17 did not generate (frontend, another language) | `w17ctl infra workload add <name> --build-context <dir> --port <p> [--route-host www]` |
+| Tune one value of the infrastructure | `w17ctl infra set <path>=<value>` (`infra show --effective` lists every value and where it came from) |
+| What would a deploy change? | `w17ctl infra plan --env <env>` |
+| Deploy one environment from this machine | `w17ctl deploy --env <env>` (swarm, aws-ecs, gcp-cloudrun) |
 | Log in to a console | `w17ctl login` |
 | See which consoles you are logged into | `w17ctl console list` |
 | Choose which console commands talk to | `w17ctl console use <url>` |

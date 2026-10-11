@@ -82,3 +82,27 @@ func (t Target) RsyncArgs() []string {
 	}
 	return args
 }
+
+// StackFiles are the parts of a swarm environment's rendered tree a deploy
+// copies to the server (deploy/<env>/… → /opt/stack/<env>/…), besides the
+// project's hooks/ when it has one.
+var StackFiles = []string{"services", "install", "stack-limits.sh"}
+
+// Fingerprint is a hash of what the last deploy left in stackDir on the
+// server — the files it copies, no .env — so a plan can name the state it
+// was made against and a deploy can refuse when that state moved
+// (`w17ctl deploy --expect`). "none" when nothing was deployed yet.
+func (t Target) Fingerprint(stackDir string) (string, error) {
+	var out strings.Builder
+	script := "cd " + ShellQuote(stackDir) + " 2>/dev/null || { echo none; exit 0; }; " +
+		"find " + strings.Join(StackFiles, " ") + " hooks -type f ! -name '.env*' 2>/dev/null | LC_ALL=C sort | " +
+		"xargs -r sha256sum | sha256sum | cut -c1-16"
+	if err := t.Run(nil, &out, t.Sudo("sh -c "+ShellQuote(script))); err != nil {
+		return "", fmt.Errorf("fingerprint of %s on %s: %w", stackDir, t.Dest(), err)
+	}
+	fp := strings.TrimSpace(out.String())
+	if fp == "" {
+		fp = "none"
+	}
+	return fp, nil
+}

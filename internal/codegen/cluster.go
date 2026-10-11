@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
+	"github.com/wandering-compiler/w17ctl/internal/scaffold"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 )
 
@@ -207,6 +208,10 @@ type clusterResult struct {
 
 // lockPath is where the console-signed lock lands.
 const lockPath = "w17/lock.yaml"
+
+// deployGitignore is the ignore file the console writes into deploy/: every
+// file it generated there (docs/decisions/infra-targets-workloads-and-a-tuning-file.md §5).
+const deployGitignore = "deploy/.gitignore"
 
 // run places and runs until a clean stream end or a final failure. On failure
 // the returned result (possibly nil) carries the warnings that arrived before
@@ -542,7 +547,13 @@ func (r *clusterRun) stream(g *codegenpb.PlaceGenerateGranted, signed []byte) (*
 			// The lock is the CONSOLE's: it signed it at placement, and the
 			// client writes those bytes. A worker holds no key and never
 			// authors the lock; whatever one sends for it is dropped.
-			if path.Clean(strings.TrimPrefix(o.Write.GetRelativePath(), "./")) == lockPath {
+			rel := path.Clean(strings.TrimPrefix(o.Write.GetRelativePath(), "./"))
+			if rel == lockPath {
+				continue
+			}
+			// A checkout that commits its generated tree on purpose (this
+			// repository's golden examples) must not have deploy/ ignored under it.
+			if rel == deployGitignore && os.Getenv(scaffold.TrackGeneratedEnv) == "1" {
 				continue
 			}
 			res.writes = append(res.writes, o.Write)

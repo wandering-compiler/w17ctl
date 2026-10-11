@@ -394,6 +394,12 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	if err != nil {
 		return err
 	}
+	// w17/infra.yaml — the project's infrastructure. Its bytes travel as they
+	// are; the console decodes and validates them and renders deploy/.
+	infraYAML, err := core.ReadInfra(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil {
+		return fmt.Errorf("codegen: %w", err)
+	}
 	if len(files) == 0 {
 		return fmt.Errorf("no .proto files found under %s", filepath.Join(root, protoDir))
 	}
@@ -438,6 +444,7 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 			// Empty on a local build, and the render treats that as a real
 			// answer rather than inventing a number.
 			W17CtlVersion: core.Version,
+			Infra:         infraYAML,
 		},
 		files:    files,
 		genFiles: readGenGoFiles(root, genDir),
@@ -606,6 +613,7 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	if lk, lkErr := lockfile.Load(filepath.Join(root, "w17", "lock.yaml")); lkErr == nil {
 		warnUningnoredGeneratedRoots(root, lk.GeneratedCode.OutputRoots(), core.Stdout)
 	}
+	noticeTrackedDeploy(root, core.Stdout)
 	// Refresh the platform reference (w17/specs/*) while the console is on
 	// the line. It describes the COMPILER's output, so it goes stale exactly
 	// when the compiler moves — and the loop that follows the compiler runs
@@ -2057,7 +2065,7 @@ func sendProtoChunks(stream codegenpb.CodegenService_GenerateProjectClient, file
 func formatIncoming(root string, writes []*codegenpb.GeneratedFile, mode gofmtc.Mode) (map[string]bool, gofmtc.Result, error) {
 	staged := make([]*gofmtc.File, len(writes))
 	for i, w := range writes {
-		staged[i] = &gofmtc.File{Path: w.GetRelativePath(), Contents: w.GetContents()}
+		staged[i] = &gofmtc.File{Path: w.GetRelativePath(), Contents: w.GetContents(), Formatted: w.GetFormatted()}
 	}
 	res, err := gofmtc.ApplyMode(root, staged, mode)
 	if err != nil {

@@ -1,9 +1,9 @@
-// Package deploy implements `w17ctl deploy` — one person's shortcut from the
-// laptop to a swarm environment, for an MVP or a proof of concept
-// (docs/decisions/infra-targets.md §4.5). It runs what the deploy workflow
-// runs, on the same generated scripts, with the operator's own credentials;
-// what it skips is the review, the release branch and the record a CI run
-// leaves — which is why it says so every time.
+// Package deploy implements `w17ctl deploy` — one person's way from the
+// laptop to an environment, swarm or cloud (docs/decisions/infra-targets.md
+// §4.5, docs/decisions/infra-targets-workloads-and-a-tuning-file.md §6). It
+// runs what the deploy workflow runs, on the same generated scripts, with the
+// operator's own credentials; what it skips is the review, the release branch
+// and the record a CI run leaves — which is why it says so every time.
 package deploy
 
 import (
@@ -24,18 +24,21 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/remote"
+	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"github.com/wandering-compiler/sdk/go/service/secret/sopsenv"
 )
 
 // Cmd is `w17ctl deploy`.
 type Cmd struct {
-	Env        string   `name:"env" required:"" help:"The environment to deploy (deploy/<env>/)."`
-	WithTests  bool     `name:"with-tests" help:"Run the e2e suite (w17ctl test) first; a red suite stops the deploy."`
-	AllowDirty bool     `name:"allow-dirty" help:"Deploy a tree with uncommitted changes (the images are then tagged as dirty)."`
-	BuildFlags []string `name:"build-flag" placeholder:"FLAG" help:"Passed to every docker build, e.g. --build-flag=--build-arg=X=1. Repeatable."`
-	Key        string   `name:"key" placeholder:"FILE" help:"The environment's age key file. Default: $SOPS_AGE_KEY, then $SOPS_AGE_KEY_FILE."`
-	LockPath   string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console    string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default."`
+	Env         string   `name:"env" required:"" help:"The environment to deploy (deploy/<env>/)."`
+	Expect      string   `name:"expect" placeholder:"FINGERPRINT" help:"swarm: deploy only if the server still holds the state w17ctl infra plan printed (its fingerprint) — refuses when someone deployed in between."`
+	StateBucket string   `name:"state-bucket" env:"TF_STATE_BUCKET" help:"aws-ecs / gcp-cloudrun: the Terraform state bucket (deploy/<env>/terraform/bootstrap created it)."`
+	WithTests   bool     `name:"with-tests" help:"Run the e2e suite (w17ctl test) first; a red suite stops the deploy."`
+	AllowDirty  bool     `name:"allow-dirty" help:"Deploy a tree with uncommitted changes (the images are then tagged as dirty)."`
+	BuildFlags  []string `name:"build-flag" placeholder:"FLAG" help:"Passed to every docker build, e.g. --build-flag=--build-arg=X=1. Repeatable."`
+	Key         string   `name:"key" placeholder:"FILE" help:"The environment's age key file. Default: $SOPS_AGE_KEY, then $SOPS_AGE_KEY_FILE."`
+	LockPath    string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
+	Console     string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default."`
 }
 
 const warning = `
@@ -63,29 +66,39 @@ func (c *Cmd) Run() error {
 		return err
 	}
 	root := filepath.Dir(filepath.Dir(abs))
-	view, err := core.DescribeLockAt("deploy", c.Console, c.LockPath)
+	view, err := core.DescribeInfraAt("deploy", c.Console, c.LockPath, false, "")
 	if err != nil {
 		return err
 	}
-	if view.GetInfra().GetTarget() != "swarm" {
-		return fmt.Errorf("deploy: deploys a swarm environment; this project's infrastructure is %q", view.GetInfra().GetTarget())
-	}
-	var ssh string
-	found := false
+	var env *codegenpb.LockInfraEnvironment
 	for _, e := range view.GetInfra().GetEnvironments() {
 		if e.GetName() == c.Env {
-			found, ssh = true, e.GetHost().GetSsh()
+			env = e
 		}
 	}
-	if !found {
+	if env == nil {
 		return fmt.Errorf("deploy: no environment %q (`w17ctl infra show`)", c.Env)
 	}
-	if ssh == "" {
-		return fmt.Errorf("deploy: environment %q names no server — `w17ctl infra update --ssh %s=root@<server>`, then `w17ctl infra setup --env %s`", c.Env, c.Env, c.Env)
-	}
-	target, err := remote.Parse(ssh)
-	if err != nil {
-		return fmt.Errorf("deploy: %w", err)
+	kind := env.GetTargetKind()
+	var target remote.Target
+	ssh := env.GetHost().GetSsh()
+	switch kind {
+	case "swarm":
+		if ssh == "" {
+			return fmt.Errorf("deploy: environment %q names no server — `w17ctl infra set targets.%s.ssh=root@<server>`, then `w17ctl infra setup --env %s`", c.Env, env.GetTarget(), c.Env)
+		}
+		if target, err = remote.Parse(ssh); err != nil {
+			return fmt.Errorf("deploy: %w", err)
+		}
+	case "aws-ecs", "gcp-cloudrun":
+		if c.Expect != "" {
+			return fmt.Errorf("deploy: --expect is a swarm fingerprint; on %s the Terraform state is the lock (`w17ctl infra plan` shows its plan)", kind)
+		}
+		if c.StateBucket == "" {
+			return fmt.Errorf("deploy: the Terraform state bucket — --state-bucket or TF_STATE_BUCKET (deploy/%s/terraform/bootstrap created it)", c.Env)
+		}
+	default:
+		return fmt.Errorf("deploy: environment %s has no known target kind (%q)", c.Env, kind)
 	}
 	ids, err := sopsenv.LoadIdentities(os.Getenv, nonEmpty(c.Key)...)
 	if err != nil {
@@ -131,6 +144,18 @@ func (c *Cmd) Run() error {
 	}
 
 	envDir := filepath.Join(root, "deploy", c.Env)
+	if kind != "swarm" {
+		return c.deployCloud(root, envDir, kind, env, view, ids, sha, dirty)
+	}
+	if c.Expect != "" {
+		fp, err := target.Fingerprint("/opt/stack/" + c.Env)
+		if err != nil {
+			return fmt.Errorf("deploy: %w", err)
+		}
+		if fp != c.Expect {
+			return fmt.Errorf("deploy: the server holds %s, not the %s the plan was made against — someone deployed in between; run `w17ctl infra plan --env %s` again", fp, c.Expect, c.Env)
+		}
+	}
 	images, err := readImages(filepath.Join(envDir, "install", "images.txt"))
 	if err != nil {
 		return fmt.Errorf("deploy: %w", err)
@@ -161,6 +186,9 @@ func (c *Cmd) Run() error {
 		for _, a := range im.buildArgs {
 			args = append(args, "--build-arg", a)
 		}
+		if im.target != "" {
+			args = append(args, "--target", im.target)
+		}
 		args = append(args, "-t", ref, "-f", im.dockerfile, im.context)
 		if err := run(nil, core.Stdout, root, "docker", args...); err != nil {
 			return fmt.Errorf("deploy: build %s: %w", im.name, err)
@@ -180,7 +208,7 @@ func (c *Cmd) Run() error {
 	stack := "/opt/stack/" + c.Env
 	step("the stack's files")
 	rsync := append([]string{"-az", "--delete-after", "--chown=root:root", "--chmod=go-w"}, target.RsyncArgs()...)
-	srcs := []string{"services", "install", "stack-limits.sh"}
+	srcs := append([]string(nil), remote.StackFiles...)
 	if st, err := os.Stat(filepath.Join(envDir, "hooks")); err == nil && st.IsDir() {
 		srcs = append(srcs, "hooks")
 	} else if err := target.Run(nil, io.Discard, target.Sudo("rm -rf "+stack+"/hooks")); err != nil {
@@ -264,9 +292,13 @@ func gitState(root string) (dirty bool, sha string, err error) {
 }
 
 // image is one line of images.txt / images.custom.txt: <image> <context>
-// <Dockerfile> [KEY=VALUE …] — the trailing pairs are build arguments.
+// <Dockerfile> [+target=<stage>] [+lock] [KEY=VALUE …] — the trailing pairs
+// are build arguments; +lock (a cloud bundle) layers the lock and the
+// fixtures on top.
 type image struct {
 	name, context, dockerfile string
+	target                    string
+	lock                      bool
 	buildArgs                 []string
 }
 
@@ -289,12 +321,20 @@ func readImages(path string) ([]image, error) {
 		if len(parts) < 3 {
 			return nil, fmt.Errorf("%s: %q is not <image> <context> <Dockerfile> [KEY=VALUE …]", path, line)
 		}
+		im := image{name: parts[0], context: parts[1], dockerfile: parts[2]}
 		for _, a := range parts[3:] {
-			if !buildArg.MatchString(a) {
+			switch {
+			case strings.HasPrefix(a, "+target="):
+				im.target = strings.TrimPrefix(a, "+target=")
+			case a == "+lock":
+				im.lock = true
+			case buildArg.MatchString(a):
+				im.buildArgs = append(im.buildArgs, a)
+			default:
 				return nil, fmt.Errorf("%s: %q — %q is not a KEY=VALUE build argument", path, line, a)
 			}
 		}
-		out = append(out, image{parts[0], parts[1], parts[2], parts[3:]})
+		out = append(out, im)
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%s lists no image", path)

@@ -1,15 +1,15 @@
 module github.com/wandering-compiler/w17ctl
 
-go 1.26
+go 1.26.0
 
 require (
 	filippo.io/age v1.3.1
 	github.com/alecthomas/kong v1.16.1
 	github.com/coder/websocket v1.8.15
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/wandering-compiler/sdk/go v0.1.0-rc.13
-	golang.org/x/mod v0.38.0
-	golang.org/x/term v0.45.0
+	github.com/wandering-compiler/sdk/go v0.1.0-rc.14
+	golang.org/x/mod v0.41.0
+	golang.org/x/term v0.46.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
@@ -55,11 +55,11 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

@@ -27,6 +27,8 @@ type Cmd struct {
 	Unseal UnsealCmd `cmd:"" help:"Decrypt deploy/<env>/services/*/.env.enc back to .env for editing."`
 	Check  CheckCmd  `cmd:"" help:"Without any private key: every .env.enc exists, carries exactly its .env.example's keys and is sealed for deploy/.sops.yaml's key. CI runs it."`
 	Rekey  RekeyCmd  `cmd:"" help:"Re-seal the data keys of an environment's .env.enc files for the keys deploy/.sops.yaml names (--add / --remove to rotate) — values untouched."`
+
+	FieldKey FieldKeyCmd `cmd:"" name:"field-key" help:"Print a field-encryption keyring for W17_FIELD_KEYS (the key of CRYPTED_SECRET columns): a fresh 1:<key>, or --rotate <current> to append the next version (new values then encrypt with it, the old ones keep decrypting). Put it in the service's deploy/<env>/services/<svc>/.env and seal it; keep it — without it those columns are unreadable."`
 }
 
 // secretsBackends are the materialisers the lock's secrets.backend may

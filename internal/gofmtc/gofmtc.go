@@ -43,10 +43,15 @@ type File struct {
 	// Skip is set when this project already holds the formatted form of
 	// exactly these bytes, so there is nothing to write.
 	Skip bool
+	// Formatted is the server's word that Contents is already gofmt-exact
+	// (GeneratedFile.formatted): written as it is, never formatted here.
+	Formatted bool
 }
 
 // Result reports what a run did, so the caller can say so.
 type Result struct {
+	// AsSent counts the Go files the server sent already formatted.
+	AsSent    int
 	Formatted int
 	Skipped   int
 }
@@ -76,10 +81,15 @@ func ApplyMode(root string, files []*File, mode Mode) (Result, error) {
 		fmt.Fprintf(os.Stderr, "w17ctl: formatting generated Go with %s (--gofmt=pinned)\n", using)
 		format = fn
 	}
-	return apply(root, files, format)
+	// A pinned run asked for the project's own Go to lay the files out, so it
+	// formats a server-formatted file too: the server's gofmt is its Go
+	// version's, not necessarily the one go.mod pins.
+	return apply(root, files, format, mode != ModePinned)
 }
 
-func apply(root string, files []*File, format func([]byte) ([]byte, error)) (Result, error) {
+// apply formats files with format and marks the ones it could skip.
+// trustFormatted writes a file the server marked formatted as it arrived.
+func apply(root string, files []*File, format func([]byte) ([]byte, error), trustFormatted bool) (Result, error) {
 	var res Result
 	for _, f := range files {
 		if !strings.HasSuffix(f.Path, ".go") {
@@ -98,6 +108,10 @@ func apply(root string, files []*File, format func([]byte) ([]byte, error)) (Res
 		if ok && onDiskHasHash(filepath.Join(root, f.Path), incoming) {
 			f.Skip = true
 			res.Skipped++
+			continue
+		}
+		if f.Formatted && trustFormatted {
+			res.AsSent++
 			continue
 		}
 		out, err := format(f.Contents)

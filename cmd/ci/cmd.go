@@ -7,11 +7,9 @@ package ci
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
-	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	"github.com/wandering-compiler/w17ctl/internal/prompter"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"google.golang.org/protobuf/proto"
@@ -51,45 +49,31 @@ func run(op string, f flags, update bool) error {
 	return editInfra(op, f.LockPath, f.Console, func(in *codegenpb.LockInfra) error {
 		switch {
 		case !update && in.GetCi() != nil:
-			return fmt.Errorf("the lock already declares CI (%s) — change it with `w17ctl ci update`", in.GetCi().GetProvider())
+			return fmt.Errorf("CI is already declared (%s) — change it with `w17ctl ci update`", in.GetCi().GetProvider())
 		case update && in.GetCi() == nil:
-			return fmt.Errorf("the lock declares no CI yet — start with `w17ctl ci init`")
+			return fmt.Errorf("no CI declared yet — start with `w17ctl ci init`")
 		}
 		return Wizard(newPrompter(), in, f)
 	}, func(in *codegenpb.LockInfra) { printSetup(in) })
 }
 
-// editInfra reads the lock's infra block, lets mutate change a copy, and
-// writes it back as one SetInfra edit the console validates.
+// editInfra reads the declared infrastructure (w17/infra.yaml), lets mutate
+// change a copy, and sends it back as one SetInfra edit the console merges
+// into the file and validates.
 func editInfra(op, lockPath, console string, mutate func(*codegenpb.LockInfra) error, after func(*codegenpb.LockInfra)) error {
-	release, err := lockfile.ForUpdate(lockPath)
-	if err != nil {
-		return fmt.Errorf("%s: lock for update: %w", op, err)
-	}
-	defer release()
-	lockBytes, err := os.ReadFile(lockPath)
-	if err != nil {
-		return fmt.Errorf("%s: read lock %s: %w", op, lockPath, err)
-	}
-	view, err := core.DescribeLock(console, lockBytes)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	if view.GetInfra() == nil {
-		return fmt.Errorf("%s: the lock declares no infrastructure — CI deploys one, so start with `w17ctl infra init`", op)
-	}
-	next := proto.Clone(view.GetInfra()).(*codegenpb.LockInfra)
-	if err := mutate(next); err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	newBytes, err := core.EditLock(console, lockBytes, &codegenpb.LockEditIntent{
-		Intent: &codegenpb.LockEditIntent_SetInfra{SetInfra: &codegenpb.SetInfraIntent{Infra: next}},
+	var next *codegenpb.LockInfra
+	_, err := core.EditInfraOnDisk(op, console, lockPath, func(view *codegenpb.LockView) (*codegenpb.LockEditIntent, error) {
+		if view.GetInfra() == nil {
+			return nil, fmt.Errorf("no infrastructure declared — CI deploys one, so start with `w17ctl infra init`")
+		}
+		next = proto.Clone(view.GetInfra()).(*codegenpb.LockInfra)
+		if err := mutate(next); err != nil {
+			return nil, err
+		}
+		return &codegenpb.LockEditIntent{Intent: &codegenpb.LockEditIntent_SetInfra{SetInfra: &codegenpb.SetInfraIntent{Infra: next}}}, nil
 	})
 	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	if err := lockfile.WriteAtomic(lockPath, newBytes, 0o644); err != nil {
-		return fmt.Errorf("%s: write lock: %w", op, err)
+		return err
 	}
 	if after != nil {
 		after(next)
@@ -117,20 +101,14 @@ func Wizard(p prompter.Prompter, in *codegenpb.LockInfra, f flags) error {
 	}
 	in.Ci = ci
 	for _, env := range in.GetEnvironments() {
-		def := env.GetDeployBranch()
-		if def == "" {
-			if env.GetName() == "prod" || env.GetName() == "production" {
-				def = "production"
-			} else {
-				def = "any"
-			}
-		}
+		// The view resolves the default: "" is every ref.
+		def := firstNonEmpty(env.GetDeployBranch(), "any")
 		b, err := text(p, f.DeployBranch[env.GetName()], fmt.Sprintf("[%s] Branch it deploys from ('any' = every ref)", env.GetName()), def)
 		if err != nil {
 			return err
 		}
 		if b == "any" {
-			b = ""
+			b = "*"
 		}
 		env.DeployBranch = b
 	}
@@ -170,7 +148,17 @@ func firstNonEmpty(vs ...string) string {
 // workflows need is in this list unless they really read it.
 func printSetup(in *codegenpb.LockInfra) {
 	w := core.Stdout
-	swarm := in.GetTarget() == "swarm"
+	kind := func(env *codegenpb.LockInfraEnvironment) string {
+		return firstNonEmpty(env.GetTargetKind(), in.GetTarget())
+	}
+	swarm, cloud := false, false
+	for _, env := range in.GetEnvironments() {
+		if kind(env) == "swarm" {
+			swarm = true
+		} else {
+			cloud = true
+		}
+	}
 	if swarm {
 		fmt.Fprintln(w, "next: `w17ctl codegen` writes .github/workflows/w17-ci.yaml, w17-build.yaml and")
 	} else {
@@ -184,14 +172,14 @@ func printSetup(in *codegenpb.LockInfra) {
 			fmt.Fprintf(w, "    deployment branches: only %s (Settings → Environments) — the workflow refuses other refs too\n", b)
 		}
 		fmt.Fprintln(w, "    secret    SOPS_AGE_KEY    the environment's age private key (`w17ctl secrets keygen` printed it)")
-		switch in.GetTarget() {
+		switch kind(env) {
 		case "swarm":
 			fmt.Fprintln(w, "    secret    STACK_SSH_KEY   a private SSH key root@server accepts (deploy only)")
 			fmt.Fprintln(w, "    variable  STACK_HOST_KEY  the line `setup.sh` printed (pins the server's SSH host key)")
 			if env.GetHost().GetSsh() == "" {
-				fmt.Fprintf(w, "    ⚠ no server in the lock — `w17ctl infra update --ssh %s=root@<server>`; the deploy workflow targets it\n", env.GetName())
+				fmt.Fprintf(w, "    ⚠ no server declared — `w17ctl infra set targets.%s.ssh=root@<server>`; the deploy workflow targets it\n", firstNonEmpty(env.GetTarget(), env.GetName()))
 			}
-			fmt.Fprintln(w, "    variable  STACK_LIMIT_OVERRIDES (optional)  e.g. COLOR_WATCH_S=20")
+			fmt.Fprintln(w, "    variable  STACK_LIMIT_OVERRIDES (optional, an emergency — the limits live in w17/infra.yaml)")
 		case "aws-ecs":
 			fmt.Fprintln(w, "    variable  AWS_ROLE_ARN    deploy/"+env.GetName()+"/terraform/bootstrap's role_arn output (GitHub OIDC, no AWS key)")
 			fmt.Fprintln(w, "    variable  TF_STATE_BUCKET the bootstrap's bucket")
@@ -201,11 +189,12 @@ func printSetup(in *codegenpb.LockInfra) {
 		}
 	}
 	if swarm {
-		fmt.Fprintln(w, "Images are pushed with the workflow's own GITHUB_TOKEN (packages: write); the server pulls with")
-		fmt.Fprintln(w, "the deploy run's token for the length of the run — no registry secret to create or rotate.")
-	} else {
-		fmt.Fprintln(w, "Images go to the environment's own registry (ECR / Artifact Registry), pushed by the deploy")
-		fmt.Fprintln(w, "workflow; deploy/<env>/README.md walks the first install. The target is a RELEASE CANDIDATE.")
+		fmt.Fprintln(w, "Images of the swarm environments are pushed with the workflow's own GITHUB_TOKEN (packages:")
+		fmt.Fprintln(w, "write); the server pulls with the deploy run's token — no registry secret to create or rotate.")
+	}
+	if cloud {
+		fmt.Fprintln(w, "Images of a cloud environment go to its own registry (ECR / Artifact Registry), pushed by the")
+		fmt.Fprintln(w, "deploy workflow; deploy/<env>/README.md walks the first install. The cloud targets are a RELEASE CANDIDATE.")
 	}
 }
 
@@ -216,7 +205,7 @@ type ShowCmd struct {
 }
 
 func (c *ShowCmd) Run() error {
-	view, err := core.DescribeLockAt("ci show", c.Console, c.LockPath)
+	view, err := core.DescribeInfraAt("ci show", c.Console, c.LockPath, false, "")
 	if err != nil {
 		return err
 	}
@@ -242,7 +231,7 @@ type RemoveCmd struct {
 func (c *RemoveCmd) Run() error {
 	return editInfra("ci remove", c.LockPath, c.Console, func(in *codegenpb.LockInfra) error {
 		if in.GetCi() == nil {
-			return fmt.Errorf("the lock declares no CI")
+			return fmt.Errorf("no CI declared")
 		}
 		in.Ci = nil
 		return nil
