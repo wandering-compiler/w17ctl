@@ -140,8 +140,8 @@ github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UV
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/wandering-compiler/sdk/go v0.1.0-rc.16 h1:ZBot4fmXDmE3Xo5lL2XwwvJlXwNQKSfk/ELUB2EYaRI=
-github.com/wandering-compiler/sdk/go v0.1.0-rc.16/go.mod h1:R50O+NhZ39kr8/4Eng/VTn2aMJS6MOoVtTZvH/MPXSM=
+github.com/wandering-compiler/sdk/go v0.1.0-rc.17 h1:N45T2nd6kSn3EoaUIlG6ER6cHI2e91Tc7xbxIGUF73c=
+github.com/wandering-compiler/sdk/go v0.1.0-rc.17/go.mod h1:R50O+NhZ39kr8/4Eng/VTn2aMJS6MOoVtTZvH/MPXSM=
 github.com/yuin/gopher-lua v1.1.1 h1:kYKnWBjvbNP4XLT3+bPEwAXJx262OhaHDWDVOPjL46M=
 github.com/yuin/gopher-lua v1.1.1/go.mod h1:GBR0iDaNXjAgGg9zfCvksxSRnQx76gclCIb7kdAd1Pw=
 github.com/zeebo/xxh3 v1.1.0 h1:s7DLGDK45Dyfg7++yxI0khrfwq9661w9EN78eP/UZVs=
