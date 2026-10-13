@@ -4,8 +4,8 @@
 //
 // A plugin exists in three shapes and only the first is written by a person:
 //
-//	author      plugins/<name>/            live .go, tests, src/gen/pb
-//	published   <registry>/<name>/         .go.src, tests, no src/gen/pb
+//	author      plugins/<name>/            live .go, tests, src/gen (generated)
+//	published   <registry>/<name>/         .go.src, tests, no src/gen
 //	consumer    <proto_dir>/plugins/<name>/ live .go, NO tests
 //
 // This package owns the author → published step. `pluginfetch.stripSrcSuffix`
@@ -59,11 +59,12 @@ const SrcSuffix = ".src"
 
 // skipUnderSrc are paths under a plugin's `src/` the published form omits.
 //
-// `src/gen/pb` is REGENERATED — by `w17ctl plugin gen-pb` for the author and by
-// codegen inside a consumer's project — so publishing it would ship bytes that
-// are replaced on first use, and `plugindigest` skips `src/gen` for the same
-// reason. What ships is everything a person wrote.
-var skipUnderSrc = []string{"gen/pb"}
+// `src/gen` is GENERATED, all of it — the pb, the contract and the feature
+// constants — by `w17ctl plugin gen` for the author and by staging inside a
+// consumer's project, so publishing it would ship bytes that are replaced on
+// first use; `plugindigest` leaves `src/gen` out for the same reason. What
+// ships is everything a person wrote.
+var skipUnderSrc = []string{"gen"}
 
 // verbatimUnderSrc keep their name in the published form.
 //

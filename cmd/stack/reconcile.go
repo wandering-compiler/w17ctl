@@ -22,9 +22,13 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/reconcile"
 	"github.com/wandering-compiler/w17ctl/internal/snapstore"
 	applyfetchpb "github.com/wandering-compiler/sdk/go/pb/applyfetch"
+	applyplanpb "github.com/wandering-compiler/sdk/go/pb/applyplan"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate/factory"
 )
+
+// planFreshFn asks the console for a plan; a package var so tests can stub it.
+var planFreshFn = plan.PlanMigration
 
 // composeServicesFn captures `docker compose config --services` (the
 // full service inventory). A package var so tests can stub it.
@@ -333,14 +337,21 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 			// outgoing branch was already snapshotted, so the wipe is
 			// recoverable. currentBytes is the opaque compiled IR (the plan
 			// RPC takes it verbatim — the client never decodes it).
-			if err := wipeStores(ctx, applierFor, connNames, logf); err != nil {
+			// The wipe reaches the namespaces the schema declares beside the
+			// default one, and only those — so it asks the plan of the fresh
+			// build which they are before emptying anything.
+			fresh, err := planFreshFn(nil, currentBytes, nil)
+			if err != nil {
+				return fmt.Errorf("plan the fresh build: %w", err)
+			}
+			if err := wipeStores(ctx, applierFor, connNames, fresh, logf); err != nil {
 				return err
 			}
 			// No connection list here: a reconcile builds from NIL base
 			// (a full create), so there is no checkpoint claim to verify
 			// against — the comparison exists to catch a base that lies,
 			// and an empty base cannot.
-			_, err := plan.DevPlanAndApply(ctx, nil, currentBytes, applierFor, nil, logf)
+			_, err = plan.DevPlanAndApply(ctx, nil, currentBytes, applierFor, nil, logf)
 			return err
 		},
 		SeedFixtures: func(ctx context.Context) error {
@@ -354,11 +365,12 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 }
 
 // wipeStores empties each store in place via its migrate.Wiper (PG drops
-// the public schema; Redis FLUSHDBs; SQLite/MySQL drop their tables).
+// the public schema and the schemas the fresh plan declares for it; Redis
+// FLUSHDBs; SQLite/MySQL drop their tables).
 // A store whose Applier has no Wiper (schemaless NATS/S3) is logged +
 // skipped — the relational fresh-build doesn't target it. Only the
 // connected store is touched; unrelated docker volumes are untouched.
-func wipeStores(ctx context.Context, applierFor migrate.ApplierFor, conns []string, logf func(string, ...any)) error {
+func wipeStores(ctx context.Context, applierFor migrate.ApplierFor, conns []string, fresh *applyplanpb.DevApplyPlan, logf func(string, ...any)) error {
 	for _, c := range conns {
 		a, err := applierFor(c)
 		if err != nil {
@@ -370,7 +382,7 @@ func wipeStores(ctx context.Context, applierFor migrate.ApplierFor, conns []stri
 			logf("reconcile: store %q has no wipe support — skipping (fresh build won't reset it)", c)
 			continue
 		}
-		err = w.Wipe(ctx)
+		err = w.Wipe(ctx, migrate.DevPlanNamespaces(fresh, c))
 		_ = a.Close()
 		if err != nil {
 			return fmt.Errorf("wipe %s: %w", c, err)

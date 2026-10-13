@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"google.golang.org/grpc/metadata"
 
@@ -19,26 +20,44 @@ type AuthOrg struct {
 	Role string // owner | admin | member
 }
 
+// SignedIn is what a successful sign-in hands the client to store.
+type SignedIn struct {
+	Token  string
+	UserID string
+	// ExpiresAt is when the console says the session ends; zero = the
+	// response did not say. See signInExpiry.
+	ExpiresAt time.Time
+}
+
 // SignIn authenticates email+password against the console auth gateway at addr
 // and returns the minted bearer + the principal's user id. The RPC is
 // unauthenticated (it is the credential that mints the bearer). A wrong
 // email/password surfaces as a gRPC Unauthenticated error (anti-enumeration —
 // the server maps every failure to one opaque status).
-func SignIn(ctx context.Context, addr, email, password string) (token, userID string, err error) {
+func SignIn(ctx context.Context, addr, email, password string) (SignedIn, error) {
 	cl, conn, err := DialAuthService(addr)
 	if err != nil {
-		return "", "", fmt.Errorf("dial console: %w", err)
+		return SignedIn{}, fmt.Errorf("dial console: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 	resp, err := cl.SignIn(ctx, &authpb.SignInReq{Email: email, Password: password})
 	if err != nil {
-		return "", "", err
+		return SignedIn{}, err
 	}
 	if resp.GetToken() == "" {
-		return "", "", fmt.Errorf("invalid email or password")
+		return SignedIn{}, fmt.Errorf("invalid email or password")
 	}
-	return resp.GetToken(), resp.GetUserId(), nil
+	return SignedIn{Token: resp.GetToken(), UserID: resp.GetUserId(), ExpiresAt: signInExpiry(resp)}, nil
 }
+
+// signInExpiry is the one place a sign-in response's session expiry is read.
+//
+// The console's SignInResp carries none today, so the answer is the zero time
+// (unknown) and login records no expiry. The client still learns one: an
+// expired session's refusal names its expiry, and ExplainAuthFailure writes it
+// to the store. When the response grows the field, it is read here and nothing
+// downstream changes.
+func signInExpiry(*authpb.SignInResp) time.Time { return time.Time{} }
 
 // ListMyOrgs lists the organizations the bearer belongs to, dialing the console
 // auth gateway at addr and threading token as the request bearer. A nil/empty
@@ -49,6 +68,7 @@ func ListMyOrgs(ctx context.Context, addr, token string) ([]AuthOrg, error) {
 		return nil, fmt.Errorf("dial console: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
+	notePresentedToken(addr, token)
 	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 	resp, err := cl.ListMyOrgs(authCtx, &authpb.ListMyOrgsReq{})
 	if err != nil {

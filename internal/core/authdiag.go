@@ -40,6 +40,9 @@ func ExplainAuthFailure(addr string, err error) error {
 	}
 	switch st.Code() {
 	case codes.Unauthenticated:
+		if line := explainExpiredSession(addr, st); line != "" {
+			return fmt.Errorf("%w\n%s", err, line)
+		}
 		return fmt.Errorf("%w\n%s", err, explainUnauthenticated(addr))
 	case codes.PermissionDenied:
 		hint := explainPermissionDenied(addr)

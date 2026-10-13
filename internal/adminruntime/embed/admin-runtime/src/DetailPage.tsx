@@ -1,7 +1,6 @@
 // Generic detail view — react-hook-form rendering an
-// arbitrary record's fields per spec. Walking-skeleton iter-1
-// handles flat fields + readonly_fields; iter-2 lifts
-// fieldsets rendering + per-field UI overrides.
+// arbitrary record's fields per spec. Handles flat fields,
+// readonly_fields, fieldsets and per-field UI overrides.
 
 import { useEffect, useState } from "react";
 import {
@@ -78,7 +77,7 @@ export interface DetailPageProps {
   onBack: () => void;
   // Called when an inline row's link column is clicked — the
   // child page becomes the current view. App.tsx threads the
-  // setView setter here; iter-1+ relies on in-memory routing.
+  // setView setter here; routing is in memory.
   onSelectInlineRow?: (childPageName: string, childId: string) => void;
 }
 
@@ -94,8 +93,7 @@ export function DetailPage({
   // `detail` is nullable: a model with no single-column identity may
   // declare a list-only page, and Go serialises that as a literal `null`.
   // Bound to a const so the guard below narrows it inside the effects and
-  // callbacks too — a property access re-widens in every closure
-  // (T2-6 pass #9, B9-1).
+  // callbacks too — a property access re-widens in every closure.
   const detail = page.detail;
 
   const [row, setRow] = useState<Record<string, unknown> | null>(null);
@@ -151,8 +149,8 @@ export function DetailPage({
 
   // DETAIL-target actions render as buttons in the detail header
   // alongside Delete. BOTH-target actions render here too.
-  // LIST-only filtered out (those appear on ListPage). REV-150
-  // iter-3 — actions whose required_permissions the user lacks
+  // LIST-only filtered out (those appear on ListPage). Actions
+  // whose required_permissions the user lacks
   // are filtered out entirely; the button never renders.
   const detailActions: [string, AdminActionSpec][] = Object.entries(page.actions || {}).filter(
     ([, a]) =>
@@ -160,7 +158,7 @@ export function DetailPage({
       hasAllPermissions(whoami?.permission_ids, a.required_permissions),
   );
 
-  // Per-endpoint perm gates (REV-150 iter-3). Backend handler
+  // Per-endpoint perm gates. Backend handler
   // still enforces; SPA hides UI consumers shouldn't trigger.
   const canUpdate = hasAllPermissions(whoami?.permission_ids, detail.required_permissions_update);
   const canDelete = hasAllPermissions(whoami?.permission_ids, detail.required_permissions_delete);
@@ -194,7 +192,7 @@ export function DetailPage({
 
   const onDelete = async () => {
     if (!detail.delete_endpoint) return;
-    // Walking-skeleton: simple confirm(); iter-2 wires Mantine modal.
+    // A plain confirm() for now, not a Mantine modal.
     if (!window.confirm(t("Delete this row?"))) return;
     setSaving(true);
     setError(null);
@@ -404,7 +402,7 @@ export function DetailPage({
 
 // isSecretType — the semantic types whose value must not appear as characters on a
 // screen. All three are excluded from an admin's DEFAULT list columns and detail fields
-// by the generator (`masked` in srcgo/domains/gateway/admin/spec_gen.go); this is what
+// by the generator (its `masked` set in the admin spec emitter); this is what
 // happens when an author names one explicitly anyway.
 //
 // ⚠️ NOT the same question as seeding. PASSWORD's read value is a HASH, so it must never
@@ -563,7 +561,7 @@ export function renderFieldInput({
         placeholder={semType === "PASSWORD" ? tr("Leave empty to keep current") : undefined}
         // No defaultValue — passwords never round-trip from the
         // read response (the stored hash is useless to pre-fill
-        // with). Empty submit = "don't change" per REV-151.
+        // with). Empty submit = "don't change".
         disabled={disabled}
         {...register(field)}
       />

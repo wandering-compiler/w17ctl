@@ -147,6 +147,7 @@ func printInstance(active bool, inst *authstore.Instance) {
 		}
 		fmt.Fprintf(core.Stdout, "    identity: %s\n", id)
 	}
+	printSessionExpiry(inst)
 	if len(inst.Orgs) == 0 {
 		return
 	}
@@ -159,6 +160,24 @@ func printInstance(active bool, inst *authstore.Instance) {
 			def = " [default]"
 		}
 		fmt.Fprintf(core.Stdout, "      - %s — %s%s\n", o.Slug, o.Role, def)
+	}
+}
+
+// now is whoami's clock; a var so a test can stand either side of an expiry.
+var now = time.Now
+
+// printSessionExpiry shows the stored session expiry when one is known, and
+// says so plainly once it has passed — the record still prints an identity,
+// and an identity reads as "logged in".
+func printSessionExpiry(inst *authstore.Instance) {
+	at, ok := inst.SessionExpiry()
+	if !ok {
+		return
+	}
+	when := core.FormatSessionTime(at)
+	fmt.Fprintf(core.Stdout, "    session expires: %s\n", when)
+	if !at.After(now()) {
+		fmt.Fprintf(core.Stdout, "    ⚠ expired %s — run w17ctl login %s\n", when, inst.URL)
 	}
 }
 

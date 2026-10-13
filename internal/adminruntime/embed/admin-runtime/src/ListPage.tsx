@@ -5,8 +5,8 @@
 // renderers for the detail-link column + the
 // <page>:list:column:<field> slot + the
 // <page>:list:row-action trailing column. Filter / search /
-// applied-state stay in the Paper above the table — iter-3
-// could lift them into DataTable's per-column filter popovers.
+// applied-state stay in the Paper above the table, not in DataTable's
+// per-column filter popovers.
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -112,7 +112,7 @@ export function ListPage({ spec, page, whoami, slots, onSelectRow, onAdd }: List
 
   // Filter + search values keyed by request-field name. The
   // SPA stages values locally and the user clicks "Apply" to
-  // refetch (no debounce — iter-3 could lift to per-keystroke).
+  // refetch (no per-keystroke refetch, so no debounce).
   const filterFieldNames = page.list?.filters || [];
   const searchFieldNames = page.list?.search || [];
   const sortableSet = useMemo(() => new Set(page.list?.sortable || []), [page.list?.sortable]);
@@ -283,7 +283,7 @@ export function ListPage({ spec, page, whoami, slots, onSelectRow, onAdd }: List
     !!page.detail?.create_endpoint &&
     hasAllPermissions(whoami?.permission_ids, page.detail?.required_permissions_create);
 
-  // Per-row action slot (REV-150 `<page>:list:row-action`).
+  // Per-row action slot (`<page>:list:row-action`).
   // When the consumer registers a component, a trailing
   // synthetic column renders it for every row with
   // { row, rowId, page, onSelectRow }.
@@ -292,7 +292,7 @@ export function ListPage({ spec, page, whoami, slots, onSelectRow, onAdd }: List
   // idAccessor must return a stable React key from a record.
   // Prefer `id`; fall back to row's array index lookup. The
   // O(n) indexOf path only fires for ID-less rows (rare) on
-  // ≤page-size data sets — acceptable for iter-2.
+  // ≤page-size data sets — acceptable.
   const idAccessor = useMemo(
     () => (record: Row) => {
       if (record.id != null) return displayString(record.id);
@@ -316,7 +316,7 @@ export function ListPage({ spec, page, whoami, slots, onSelectRow, onAdd }: List
   // defaults it to the first column ON ITS OWN, so suppressing the
   // emitter's `detail_link_column` is not enough — two surfaces
   // independently turned the link on, and a list-only page linked into a
-  // null detail spec either way (T2-6 pass #9, B9-1).
+  // null detail spec either way.
   const linkCol = page.detail
     ? page.list?.detail_link_column || (page.list?.columns ?? [])[0]?.name || ""
     : "";
@@ -569,8 +569,8 @@ export function ListPage({ spec, page, whoami, slots, onSelectRow, onAdd }: List
 
 interface PageEnvelope {
   // A decimal STRING — w17.Paging.total is a uint64 and the dialect renders
-  // every 64-bit field that way (T2-6 pass #6 removed the number carve-out
-  // that made this field the exception). Convert at the edge that needs a
+  // every 64-bit field that way (a former number carve-out that made this
+  // field the exception was removed). Convert at the edge that needs a
   // number; never let an int64 pass through a JS number in general.
   total: string;
   next_cursor: string;
@@ -708,7 +708,7 @@ function CursorPager({
 // dialect, and the cursors as strings too. It was briefly the dialect's one
 // number carve-out; that exception broke this reader on the binary wire and
 // narrowed formatCount for its other caller, so it was removed rather than
-// propagated (T2-6 pass #6).
+// propagated.
 function readPageEnvelope(resp: ListResp, pagingField: string): PageEnvelope {
   const raw = resp[pagingField];
   const env = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
@@ -802,7 +802,7 @@ export function resolveRefCell(
 
 // formatRowTitle resolves the spec's title template against a
 // row record. Kept here for future use (FK-picker rendering,
-// detail breadcrumb) — currently unused in walking-skeleton.
+// detail breadcrumb) — currently unused.
 export const _formatRowTitle = formatTitle;
 
 // FilterInput dispatches a Mantine input component based on the

@@ -67,6 +67,12 @@ func instanceFor(addr string) *authstore.Instance {
 	if err != nil {
 		return nil
 	}
+	return lookupInstance(st, addr)
+}
+
+// lookupInstance is instanceFor's matching over an already-loaded store, for
+// the callers that go on to modify and save it.
+func lookupInstance(st *authstore.Store, addr string) *authstore.Instance {
 	if addr == "" {
 		return st.ActiveInstance()
 	}
@@ -154,6 +160,7 @@ func (b bearerPerRPC) GetRequestMetadata(_ context.Context, _ ...string) (map[st
 	if token == "" {
 		return nil, nil
 	}
+	notePresentedToken(b.addr, token)
 	md := map[string]string{"authorization": "Bearer " + token}
 	// The ACTIVE org rides every console call, not just `init`.
 	//

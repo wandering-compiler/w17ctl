@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -73,6 +74,47 @@ type Instance struct {
 	// nothing, which leaves the console's single-org inference to decide:
 	// right for a one-org user, a deliberate refusal for a multi-org one.
 	DefaultOrg string `yaml:"default_org,omitempty"`
+
+	// ExpiresAt is when the console said this session ends, RFC3339 in UTC.
+	// Empty = unknown, which is every record written before the field
+	// existed and every login whose response names no expiry.
+	//
+	// Kept as TEXT and parsed on read (SessionExpiry), not as a yaml
+	// timestamp: a value this client cannot parse must cost the expiry hint,
+	// never the whole store — every console command loads this file.
+	ExpiresAt string `yaml:"expires_at,omitempty"`
+}
+
+// SessionExpiry returns the stored session expiry, and false when none is
+// recorded or the recorded value does not parse.
+func (inst *Instance) SessionExpiry() (time.Time, bool) {
+	if inst == nil || inst.ExpiresAt == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, inst.ExpiresAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.UTC(), true
+}
+
+// RecordSessionExpiry stores when this instance's session ends. The zero time
+// means UNKNOWN and clears the field: a new session's expiry is not the old
+// one's, so a login that learns none must not inherit a stale date. Reports
+// whether the record changed, so a caller can skip a pointless rewrite.
+func (inst *Instance) RecordSessionExpiry(at time.Time) bool {
+	if inst == nil {
+		return false
+	}
+	next := ""
+	if !at.IsZero() {
+		next = at.UTC().Format(time.RFC3339)
+	}
+	if inst.ExpiresAt == next {
+		return false
+	}
+	inst.ExpiresAt = next
+	return true
 }
 
 // User is the cached principal identity (display only — authority is the

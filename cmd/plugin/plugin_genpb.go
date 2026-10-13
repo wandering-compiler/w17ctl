@@ -17,13 +17,15 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/gofmtc"
 )
 
-// GenPbCmd implements `w17ctl plugin gen-pb [dir]`.
+// GenPbCmd implements `w17ctl plugin gen [dir]` (`gen-pb` is its old name).
 //
-// It regenerates a plugin's standalone `src/gen/pb/*.pb.go` from its
-// `proto/` tree — the committed pb files that exist ONLY for the plugin
-// author's local dev/test loop (`go test ./...` inside `src/`). The
-// project codegen pipeline generates its OWN per-activation pb at
-// staging time and never uses these files.
+// It generates a plugin's `src/gen` from `plugin.yaml` and `proto/`: the pb
+// (`gen/pb`), the contract (`gen/interfaces.go`: EnvConfig, ClientSet,
+// HandlerRegistry) and the feature constants (`gen/features.go`, at the
+// manifest defaults). Staging generates the same package for every
+// activation, from the same functions, so the author's `go build` and
+// `go test` inside `src/` see what a bundle will give the plugin. Nothing in
+// `src/gen` is written by hand or published.
 //
 // Thin-client model: the compile is a COMPILER concern, so it runs on a
 // codegen worker the console places (PLACEMENT_OP_PLUGIN_PB). The client
@@ -38,19 +40,19 @@ type GenPbCmd struct {
 func (c *GenPbCmd) Run() error {
 	dir, err := filepath.Abs(c.Dir)
 	if err != nil {
-		return fmt.Errorf("plugin gen-pb: resolve dir: %w", err)
+		return fmt.Errorf("plugin gen: resolve dir: %w", err)
 	}
 
 	pluginYaml, err := os.ReadFile(filepath.Join(dir, "plugin.yaml"))
 	if err != nil {
-		return fmt.Errorf("plugin gen-pb: read plugin.yaml: %w", err)
+		return fmt.Errorf("plugin gen: read plugin.yaml: %w", err)
 	}
 	protoFiles, err := readPluginProto(filepath.Join(dir, "proto"))
 	if err != nil {
-		return fmt.Errorf("plugin gen-pb: %w", err)
+		return fmt.Errorf("plugin gen: %w", err)
 	}
 	if len(protoFiles) == 0 {
-		return fmt.Errorf("plugin gen-pb: no .proto files under %s", filepath.Join(dir, "proto"))
+		return fmt.Errorf("plugin gen: no .proto files under %s", filepath.Join(dir, "proto"))
 	}
 
 	addr, err := core.ResolveConsoleAddr(c.Console)
@@ -105,10 +107,6 @@ func (c *GenPbCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	if len(got) == 0 {
-		return fmt.Errorf("plugin gen-pb: server produced no output (check proto under %s) — the existing gen/pb is left as it was", filepath.Join(dir, "proto"))
-	}
-
 	// Every file is checked BEFORE the old stubs go: a path that escapes, or a
 	// body that does not format, refuses the whole set with gen/pb untouched.
 	//
@@ -125,7 +123,7 @@ func (c *GenPbCmd) Run() error {
 		// worker cannot escape the plugin dir via `..`/absolute.
 		dst, err := pathguard.Join(srcDir, f.GetRelativePath())
 		if err != nil {
-			return fmt.Errorf("plugin gen-pb: server file path %q escapes the plugin dir: %w", f.GetRelativePath(), err)
+			return fmt.Errorf("plugin gen: server file path %q escapes the plugin dir: %w", f.GetRelativePath(), err)
 		}
 		// Belt and braces: these come from protoc-gen-go, whose output is
 		// already gofmt-clean, so this is a no-op today. It is here because
@@ -138,18 +136,31 @@ func (c *GenPbCmd) Run() error {
 		}
 		todo = append(todo, pending{dst: dst, body: body})
 	}
+	// After the path checks, so a set that is refused for where it would
+	// write says that, not that it is empty. The contract and the feature
+	// constants come back whatever the protos say; it is the pb that shows
+	// the protos compiled into anything.
+	pbCount := 0
+	for _, f := range got {
+		if strings.HasPrefix(f.GetRelativePath(), "gen/pb/") {
+			pbCount++
+		}
+	}
+	if pbCount == 0 {
+		return fmt.Errorf("plugin gen: server produced no output (check proto under %s) — the existing gen/pb is left as it was", filepath.Join(dir, "proto"))
+	}
 	if err := clearGeneratedPb(outDir); err != nil {
-		return fmt.Errorf("plugin gen-pb: %w", err)
+		return fmt.Errorf("plugin gen: %w", err)
 	}
 	for _, w := range todo {
 		if err := os.MkdirAll(filepath.Dir(w.dst), 0o755); err != nil {
-			return fmt.Errorf("plugin gen-pb: mkdir %s: %w", filepath.Dir(w.dst), err)
+			return fmt.Errorf("plugin gen: mkdir %s: %w", filepath.Dir(w.dst), err)
 		}
 		if err := os.WriteFile(w.dst, w.body, 0o644); err != nil {
-			return fmt.Errorf("plugin gen-pb: write %s: %w", w.dst, err)
+			return fmt.Errorf("plugin gen: write %s: %w", w.dst, err)
 		}
 	}
-	fmt.Fprintf(core.Stdout, "plugin gen-pb: wrote %d files to %s\n", len(todo), outDir)
+	fmt.Fprintf(core.Stdout, "plugin gen: wrote %d files under %s (%d pb)\n", len(todo), filepath.Join(srcDir, "gen"), pbCount)
 	return nil
 }
 

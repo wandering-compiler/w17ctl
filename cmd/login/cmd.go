@@ -42,19 +42,19 @@ func (c *Cmd) Run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), loginTimeout)
 	defer cancel()
 
-	token, userID, err := core.SignIn(ctx, host, email, password)
+	signed, err := core.SignIn(ctx, host, email, password)
 	if err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
 
 	// Orgs — best-effort with the freshly minted bearer (a token already
 	// exists; the cache can refresh later via `w17ctl org list`).
-	orgs, orgErr := core.ListMyOrgs(ctx, host, token)
+	orgs, orgErr := core.ListMyOrgs(ctx, host, signed.Token)
 	if orgErr != nil {
 		fmt.Fprintf(core.Stdout, "warning: logged in, but couldn't list organizations: %v\n", orgErr)
 	}
 
-	return store(host, token, userID, email, orgs)
+	return store(host, signed, email, orgs)
 }
 
 // gather resolves the three inputs, prompting interactively for any not
@@ -117,17 +117,18 @@ func defaultHost() string {
 
 // store writes the just-logged-in instance to the credential store as the
 // active console.
-func store(host, token, userID, email string, orgs []core.AuthOrg) error {
+func store(host string, signed core.SignedIn, email string, orgs []core.AuthOrg) error {
 	st, err := authstore.LoadDefault()
 	if err != nil {
 		return err
 	}
 	inst := &authstore.Instance{
 		URL:   host,
-		Token: token,
-		User:  &authstore.User{ID: userID, Email: email},
+		Token: signed.Token,
+		User:  &authstore.User{ID: signed.UserID, Email: email},
 		Orgs:  toStoreOrgs(orgs),
 	}
+	inst.RecordSessionExpiry(signed.ExpiresAt)
 	// Read BEFORE the pointer moves, and used after the prune below — a login
 	// to a second console takes the active one with it, and until `console use`
 	// existed there was no way back but editing the YAML.

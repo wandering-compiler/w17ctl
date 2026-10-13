@@ -2,7 +2,7 @@
 // parent's detail form. Mirrors ListPage's table for TABULAR
 // layout; STACKED layout renders cards per child row.
 //
-// REV-150 P32: inline write UI surfaced.
+// Inline write UI:
 //   - `Add` button at the top renders when the spec carries
 //     `create_endpoint` (POST /api/inline/<parent>/{id}/<inline>).
 //   - Per-row `Edit` / `Delete` buttons render when the spec
@@ -11,7 +11,7 @@
 //   - Form pulls editable fields from `spec.pages[inline.page].
 //     detail.fields` when present, falling back to the list's
 //     columns minus "id". Inputs are plain TextInput — same
-//     shape as ActionModal; typed inputs are an iter-3 lift.
+//     shape as ActionModal; typed inputs are not wired yet.
 
 import { useEffect, useState } from "react";
 import {
@@ -111,12 +111,12 @@ export function InlineSection({ spec, inline, parentId, onSelectChild }: InlineS
   // Columns inherited from the target page's list.columns. When
   // the target page has no list (detail-only target), fall back
   // to "(no columns declared)" — caller's storage method must
-  // return a shape the SPA can introspect; iter-3 lift.
+  // return a shape the SPA can introspect.
   const columns = targetPage.list?.columns || [];
   const columnNames = columns.map((c) => c.name);
   // Same rule as ListPage: an inlined pivot page may itself be list-only,
   // and the inline table's link column would open a detail it has not got
-  // (T2-6 pass #9, B9-2 — the same defect through the inline door).
+  // (the same defect as ListPage's, through the inline door).
   const linkCol = targetPage.detail
     ? targetPage.list?.detail_link_column || columnNames[0]
     : undefined;
@@ -342,9 +342,8 @@ interface InlineFormModalProps {
   // The CHILD page's semantic field types, so a secret is not treated like a string.
   // Without them this form seeded every field from the row into a plain TextInput —
   // including a password column, whose stored hash then sat there in clear text and
-  // went back on submit as the new password. Same defect DetailPage carried
-  // (docs/decisions/which-components-belong-in-the-gate.md), one layer down and
-  // unmasked.
+  // went back on submit as the new password. Same defect DetailPage carried,
+  // one layer down and unmasked.
   fieldTypes: Record<string, string>;
   inline: AdminInlineSpec;
   parentId: string;

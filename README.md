@@ -170,7 +170,7 @@ bearer out.
 |---|---|
 | `login [<host>]` | Sign in over gRPC (`AuthService.SignIn`) and store the bearer + org memberships in `~/.w17/auth.yaml`. Prompts interactively for anything not given (email → password (hidden) → host); `--email` + `--password` (or `W17_PASSWORD`) keep it non-interactive for CI. |
 | `logout [<url>]` | Drops a console's stored credential from `~/.w17/auth.yaml`. |
-| `whoami` | Prints the stored identity + orgs for the active console (`--all` = every logged-in console). Pure local read. |
+| `whoami` | Prints the stored identity + orgs for the active console (`--all` = every logged-in console), and the session expiry when one is known (with a warning once it has passed). Pure local read. |
 | `org list` / `org use <slug>` | List orgs you belong to (server read) and pick the default; the default org scopes subsequent commands. |
 
 **Unattended callers don't log in.** CI and a production deployment have no

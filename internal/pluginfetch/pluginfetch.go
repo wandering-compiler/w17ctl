@@ -627,6 +627,13 @@ func indent(s string) string {
 // is what a signature claims; landed covers what ends up in the project and is
 // what the lock pins. They are never equal for a rendered tree.
 func unpackDigests(dest string) (published, landed string, err error) {
+	// The digest leaves out the locations codegen regenerates (src/gen,
+	// node_modules, .w17dev), so a file a fetched tree carried there would
+	// be compiled under a valid pin. Nothing in them is the release's: drop
+	// them before anything reads the tree. Of is the same before and after.
+	if err = plugindigest.Prune(dest); err != nil {
+		return "", "", err
+	}
 	published, err = plugindigest.Of(dest)
 	if err != nil {
 		return "", "", err

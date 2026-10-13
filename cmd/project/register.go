@@ -1,8 +1,12 @@
 package project
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,10 +40,22 @@ import (
 //
 //	RegisterProject on the console  →  new project_id
 //	EditLock(adopt_project)         →  the console re-signs the lock
+//	SignAclLock, per domain         →  the console re-signs each ACL lock
 //
 // Exactly one field of the lock changes. The console owns the edit and the
 // signature; this command ships an intent and writes back what it gets, as the
 // public split requires.
+//
+// # The permission locks
+//
+// A project that comes from another console carries ACL locks that console
+// signed, and this one refuses to extend an allocation it cannot verify — so
+// the next codegen failed, and the only ways on were to waive the check on the
+// console's own machine or to delete the locks and renumber every permission.
+// Each lock therefore goes through SignAclLock unchanged: the console verifies
+// it against its own keys and the keys of the consoles its operator trusts,
+// and signs the same allocation with its own key. Every id is kept. A lock
+// this console already signed comes back as it was.
 type RegisterCmd struct {
 	Name     string `name:"name" placeholder:"NAME" help:"Register under this name. Empty uses the lock's project name."`
 	Org      string `name:"org" placeholder:"SLUG" help:"Organization to register under. Empty lets the console infer it when you belong to exactly one; with several, it refuses rather than guess."`
@@ -117,6 +133,12 @@ func (c *RegisterCmd) Run() error {
 		return err
 	}
 
+	resigned, err := resignACLLocks(addr, c.LockPath)
+	if err != nil {
+		return fmt.Errorf("project register: %w\n"+
+			"  The project is registered and its lock rewritten; re-run this command once the console can verify the permission locks.", err)
+	}
+
 	fmt.Printf("✓ registered %q on %s\n", name, addr)
 	fmt.Printf("  project_id: %s\n", projectID)
 	if prior != "" && prior != projectID {
@@ -126,5 +148,86 @@ func (c *RegisterCmd) Run() error {
 		// re-claimed — a first push under the new id is the way forward.
 		fmt.Printf("  was:        %s (anything stored under it stays there; push again under the new id)\n", prior)
 	}
+	for _, rel := range resigned {
+		fmt.Printf("  re-signed:  %s\n", rel)
+	}
 	return nil
+}
+
+// aclLockGlob finds every domain's permission lock under the project root.
+const aclLockGlob = "proto/domains/*/w17.lock.acl.proto"
+
+// resignACLLocks has the console sign every domain's ACL lock again, with the
+// allocation unchanged, and writes each back. The project root is the
+// directory above the lock's `w17/`. It returns the paths it rewrote.
+//
+// All locks are signed before any is written, so a refusal leaves every file
+// as it was.
+func resignACLLocks(addr, lockPath string) ([]string, error) {
+	root := filepath.Dir(filepath.Dir(lockPath))
+	paths, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(aclLockGlob)))
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	sort.Strings(paths)
+	lockBytes, err := os.ReadFile(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("read lock %s: %w", lockPath, err)
+	}
+	_, conn, err := core.DialCodegen(addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	placer := core.PlacerFn(conn)
+
+	signed := make([][]byte, len(paths))
+	for i, p := range paths {
+		prior, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		domain := filepath.Base(filepath.Dir(p))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		resp, err := placer.SignAclLock(ctx, &codegenpb.SignAclLockRequest{
+			Lock: lockBytes, Domain: domain, Prior: prior, Unsigned: withoutACLSignature(prior),
+		})
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("the console did not sign the permission lock of domain %q: %w", domain, err)
+		}
+		signed[i] = resp.GetSigned()
+	}
+	var rewritten []string
+	for i, p := range paths {
+		prior, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		if bytes.Equal(prior, signed[i]) {
+			continue
+		}
+		if err := lockfile.WriteAtomic(p, signed[i], 0o644); err != nil {
+			return nil, fmt.Errorf("write %s: %w", p, err)
+		}
+		rel, _ := filepath.Rel(root, p)
+		rewritten = append(rewritten, filepath.ToSlash(rel))
+	}
+	return rewritten, nil
+}
+
+// withoutACLSignature drops the signature line from a rendered ACL lock —
+// the unsigned form SignAclLock stamps a new signature into.
+func withoutACLSignature(lock []byte) []byte {
+	var out bytes.Buffer
+	for _, l := range bytes.SplitAfter(lock, []byte("\n")) {
+		if bytes.HasPrefix(l, []byte("option (w17.lock_signature) = ")) {
+			continue
+		}
+		out.Write(l)
+	}
+	return out.Bytes()
 }

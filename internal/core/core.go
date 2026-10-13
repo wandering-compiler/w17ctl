@@ -52,11 +52,11 @@ var (
 
 // SdkFloor is the sdk/go snapshot that went out with THIS w17ctl — stamped at
 // publish time by scripts/publish-w17ctl.sh as a generated file, derived from
-// the published sdk repo's HEAD commit. Empty in a local or co-dev build,
+// the SDK commit the platform pins (sdk.pin). Empty in a local or co-dev build,
 // which disables the check below rather than guessing.
 //
 // ⚠️ Derived from the COMMIT, not from the proxy's `@latest`. The first release
-// to use this floor caught why: publish-sdk had already pushed the new
+// to use this floor caught why: the SDK publish had already pushed the new
 // snapshot, the proxy served that exact version's .info, and `@latest` still
 // answered the previous day's — so a floor read from there would have been one
 // version behind on the day it had to bite, and silently, because a floor that
