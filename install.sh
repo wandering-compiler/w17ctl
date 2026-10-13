@@ -46,8 +46,7 @@ while [ $# -gt 0 ]; do
 		# invocation is `curl … | sh`, where "$0" is `sh` and the file is
 		# stdin — so the version that re-read its own source printed either
 		# nothing or a fragment of whatever `sh` happened to be, exactly
-		# under the usage that is documented (hosted review 2026-08-30,
-		# HOST-C-7).
+		# under the usage that is documented.
 		-h|--help)
 			cat <<'USAGE'
 Install w17ctl.
@@ -72,8 +71,7 @@ done
 need() { command -v "$1" >/dev/null 2>&1 || { echo "install.sh: needs $1" >&2; exit 1; }; }
 # --proto '=https' on every fetch below: without it a redirect can walk the
 # transfer down to plain HTTP, and this script's whole trust story is that
-# what it downloads came from the release it verified against
-# (hosted review 2026-08-30, HOST-C-6).
+# what it downloads came from the release it verified against.
 CURL="curl -fsSL --proto =https --tlsv1.2"
 
 need curl

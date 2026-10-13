@@ -10,8 +10,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/prompter"
 )
 
-// Host-bind selection + the public-exposure guard (docs/experiments/remote-stack.md
-// §9). Docker publishes this project's ports on the loopback interface by
+// Host-bind selection + the public-exposure guard. Docker publishes this project's ports on the loopback interface by
 // default (secure — reachable off-box only through the SSH tunnel in remote
 // mode). `stack bind public` opts into 0.0.0.0 (all interfaces); on a remote
 // host with a public IP that is an internet exposure, so the dangerous

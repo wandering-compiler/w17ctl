@@ -1,6 +1,5 @@
 // Package autosync resolves the dev-DB workflow mode + the active
-// initiative for a project (docs/specs/storage/dev-db-lifecycle.md
-// §workflow modes). Autosync (Mode A, default) ties the initiative to the
+// initiative for a project. Autosync (Mode A, default) ties the initiative to the
 // current git branch; manual (Mode B) uses an explicitly-activated
 // initiative or the fixed "default" lineage. Shared by the stack cluster
 // (build/reconcile/manage), initiative activate, and db snapshot.
@@ -116,7 +115,7 @@ func On(root string) bool {
 }
 
 // lockAutosyncBestEffort asks the console for the lock's autosync tri-state
-// (§8.2 — the client holds no lock types), returning nil when the lock is
+// (the client holds no lock types), returning nil when the lock is
 // absent / unreadable / the console is unreachable. A nil result makes
 // EffectiveAutosync fall back to the devconfig override or the default-on. The
 // console address is resolved from W17_CONSOLE_ADDR / the compiled default (these

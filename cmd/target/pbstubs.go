@@ -20,7 +20,7 @@ import (
 // stubs root moves, because the recovered module then belongs to whatever
 // directory happened to sit at the conventional path.
 //
-// Block 2 §8.2: the console owns the lock. This treats w17/lock.yaml as opaque
+// The console owns the lock. This treats w17/lock.yaml as opaque
 // bytes; the edit goes through EditLock (which validates + re-signs).
 type PbStubsCmd struct {
 	Set PbStubsSetCmd `cmd:"" help:"Set the on-disk root and/or import prefix for a language's pb stubs. Re-signs on save."`

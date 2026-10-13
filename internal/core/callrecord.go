@@ -50,8 +50,7 @@ const RecordConsoleCallsEnv = "W17_RECORD_CONSOLE_CALLS"
 // `<module>.<Service>.<Method>`, and the module is a property of the console's
 // domain layout rather than of anything the client can see — so the client
 // records the half it can know for certain, and the mapping to a permission id
-// is done where the console's own generated gate can be read (see
-// `srcgo/tests/cirole`).
+// is done where the console's own generated gate can be read.
 //
 // A `public_fqn` surface (ProjectRegistry is served as
 // `w17.registry.ProjectRegistry`) changes the PACKAGE, never the service name

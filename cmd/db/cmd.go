@@ -18,7 +18,7 @@ type Cmd struct {
 
 // SnapshotCmd is `w17ctl db snapshot` — point-in-time savepoints of
 // the local stores, scoped to an initiative (the dev DB lifecycle's
-// manual layer, docs/specs/storage/dev-db-lifecycle.md §workflow modes).
+// manual layer).
 // CRUD the developer drives; the currently-live stores are saved/
 // restored. Orthogonal to the branch-switch reconcile (which only
 // touches the initiative's main state). Activation guards that the
@@ -224,7 +224,7 @@ func (c *SnapshotActivateCmd) Run() error {
 	//
 	// Without this the guard refused exactly the case the savepoint exists
 	// for, and the message printed two lines earlier told the developer to
-	// run the command that would be refused (a consumer, 2026-09-19).
+	// run the command that would be refused.
 	undoes, _ := be.undoesHash(initiative, c.Name)
 	if isReturnTrip(undoes, current) {
 		fmt.Fprintf(core.Stdout, "db snapshot: %q is the way back from the change this initiative is standing on — restoring it\n", c.Name)
@@ -249,7 +249,7 @@ func (c *SnapshotActivateCmd) Run() error {
 // schema no longer matches the one the savepoint was taken at — which is
 // exactly what the consistency guard refuses. Without this the guard blocked
 // the case the savepoint exists for, and the sync's own output told the
-// developer to run the command it would block (a consumer, 2026-09-19).
+// developer to run the command it would block.
 //
 // Both halves must be KNOWN. An unrecorded "undoes" (every ordinary
 // savepoint, and every one taken before this existed) and an unreadable

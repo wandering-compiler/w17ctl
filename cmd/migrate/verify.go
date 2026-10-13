@@ -20,7 +20,7 @@ import (
 // you want answered BEFORE deciding to squash, reset or import, not as
 // the reason a push you already meant to make was rejected.
 //
-// Import (docs/decisions/project-import.md) is what forced it: only a
+// Import (`w17ctl project import-from`) is what forced it: only a
 // history that provably reproduces its schema may be re-signed under a
 // new scope, because after the re-signing nobody can tell the difference.
 type VerifyHistoryCmd struct {

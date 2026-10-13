@@ -5,8 +5,7 @@
 // that is the same class of work as dialling the console or writing files to
 // disk — but every decision about what a plugin MEANS stays on the console:
 // which version satisfies a constraint, whether the manifest is valid, how the
-// tree is staged into a project. See the public-split architecture doc; the
-// line this package must not cross is doing compiler work on the way past.
+// tree is staged into a project. The line this package must not cross is doing compiler work on the way past.
 //
 // The two checks it does make are not that line. Both are about whether the
 // bytes on disk are the ones the caller asked for, which is the question a
@@ -141,14 +140,20 @@ type Fetched struct {
 	// tree as RENDERED on this machine, since the repository holds no rendered
 	// form for that commit. Such a tree is unsigned, so no signature is checked
 	// against it.
+	//
+	// For a release TAG that carries a signature in its message (tagSignature),
+	// it is the tree as the tag holds it, taken before any render: that is what
+	// the publisher signed, and the only form every client computes alike — a
+	// render's bytes depend on the renderer's version.
 	PublishedDigest string
 	// Signature is the contents of SignatureFile, VERBATIM, when the published
-	// tree carries one — and empty otherwise.
+	// tree carries one, or the signature block of the release tag's message
+	// when the tag carries one — and empty otherwise.
 	//
 	// Not trimmed, not parsed. The file is a structured body the console wrote
 	// and the console reads; a client that tidied it would be a third opinion
 	// about a format only two ends need to agree on. Verifying an artefact is a
-	// console job (public-split §4).
+	// console job.
 	//
 	// Empty is the ordinary case today — every plugin published before signing
 	// existed is unsigned — and the console reports that differently from a
@@ -202,10 +207,37 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 	}
 
 	// A plugin repository's main branch holds the AUTHOR tree — live Go, a real
-	// go.mod, tests, generated pb — and only its release tags hold the rendered,
-	// installable form. A commit install of main therefore arrives in the author
-	// form, and it goes through the same render FromDir uses, so what lands is
+	// go.mod, tests, generated pb — and so does a release tagged on it; only the
+	// older releases, cut onto a `releases` branch, hold the rendered form. A
+	// commit install of main therefore arrives in the author form, and it goes through the same render FromDir uses, so what lands is
 	// what a release of that commit would place, not the author's working shape.
+	//
+	// A release tag cut from `main` carries its signature in the tag's message,
+	// over the digest of the tree as the tag holds it — what `plugin sign
+	// --print` hashed over the committed plugin directory. Both are read here,
+	// before a render replaces an author tree with one the publisher never
+	// hashed. That tree is usually an author tree, but not always: a plugin with
+	// no Go at all is never rendered, and is signed through its tag all the same.
+	var tagSig, taggedDigest string
+	if src.Commit == "" {
+		if tagSig, err = tagSignature(ctx, work, src.Tag()); err != nil {
+			return Fetched{}, err
+		}
+	}
+	if tagSig != "" {
+		// Two claims about one release — a signature in the tag and another in
+		// the tree — are refused rather than one picked: no release flow writes
+		// both, and choosing would let either one decide alone.
+		if _, serr := os.Stat(filepath.Join(tree, SignatureFile)); serr == nil {
+			return Fetched{}, fmt.Errorf(
+				"plugin fetch: %s carries a signature in its tag AND a %s in the tree it tags — "+
+					"a release carries one or the other, so this tag was not cut by a release", src.Tag(), SignatureFile)
+		}
+		if taggedDigest, err = plugindigest.Of(tree); err != nil {
+			return Fetched{}, fmt.Errorf("plugin fetch: %w", err)
+		}
+	}
+
 	if isAuthorTree(tree) {
 		// A directory of its own: rendering into `work/<anything>` would be the
 		// plugin's own directory for a plugin of that name, and the render
@@ -242,11 +274,82 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 	// unsigned case and not an error, so ReadFile's error is deliberately
 	// dropped rather than surfaced as a fetch failure.
 	sig, _ := os.ReadFile(filepath.Join(dest, SignatureFile))
+	if tagSig != "" {
+		// The claim is about the tree as tagged, so it is checked against that
+		// tree's digest. The landed digest stays the lock's pin either way.
+		published, sig = taggedDigest, []byte(tagSig)
+	}
 
 	return Fetched{
 		Dir: dest, Repo: src.Repo, Ref: src.Ref(), Version: version,
 		SHA: sha, Digest: digest, PublishedDigest: published, Signature: string(sig),
 	}, nil
+}
+
+// The lines a release tag's message wraps its signature in. Between them is
+// the plugin.sig `plugin sign` writes, verbatim.
+const (
+	tagSignatureBegin = "-----BEGIN W17 PLUGIN SIGNATURE-----"
+	tagSignatureEnd   = "-----END W17 PLUGIN SIGNATURE-----"
+)
+
+// tagSignature returns the signature a release tag carries in its message, or
+// "" when it carries none.
+//
+// A release cut from the author tree has no rendered tree to hold plugin.sig,
+// so the signature travels in the annotated tag instead: the tag is the release,
+// and a tag cannot be moved (the plugins repository forbids it). A lightweight
+// tag has no message of its own — git would answer with the COMMIT's message,
+// which is the author's text, not a release's — so only an annotated tag is
+// read.
+func tagSignature(ctx context.Context, work, tag string) (string, error) {
+	ref := "refs/tags/" + tag
+	kind, err := git(ctx, work, "for-each-ref", "--format=%(objecttype)", ref)
+	if err != nil {
+		return "", fmt.Errorf("plugin fetch: reading the tag %s: %w", tag, err)
+	}
+	if kind != "tag" {
+		return "", nil
+	}
+	msg, err := git(ctx, work, "for-each-ref", "--format=%(contents)", ref)
+	if err != nil {
+		return "", fmt.Errorf("plugin fetch: reading the message of %s: %w", tag, err)
+	}
+	return signatureFromTagMessage(tag, msg)
+}
+
+// signatureFromTagMessage extracts the block between tagSignatureBegin and
+// tagSignatureEnd, each on a line of its own. No block is an unsigned release;
+// a block that opens and never closes, or opens twice, is refused: that tag
+// says it is signed, and reading half of it as "unsigned" would turn a broken
+// release into an accepted one.
+func signatureFromTagMessage(tag, msg string) (string, error) {
+	lines := strings.Split(strings.ReplaceAll(msg, "\r\n", "\n"), "\n")
+	begin, end := -1, -1
+	for i, ln := range lines {
+		switch strings.TrimSpace(ln) {
+		case tagSignatureBegin:
+			if begin >= 0 {
+				return "", fmt.Errorf("plugin fetch: the message of %s opens its signature block twice", tag)
+			}
+			begin = i
+		case tagSignatureEnd:
+			if begin >= 0 && end < 0 {
+				end = i
+			}
+		}
+	}
+	if begin < 0 {
+		return "", nil
+	}
+	if end < 0 {
+		return "", fmt.Errorf("plugin fetch: the message of %s opens a signature block and never closes it (%s)", tag, tagSignatureEnd)
+	}
+	body := strings.Join(lines[begin+1:end], "\n")
+	if strings.TrimSpace(body) == "" {
+		return "", fmt.Errorf("plugin fetch: the signature block in the message of %s is empty", tag)
+	}
+	return body + "\n", nil
 }
 
 // isAuthorTree reports whether a fetched plugin directory is an author tree

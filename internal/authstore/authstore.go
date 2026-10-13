@@ -15,7 +15,7 @@
 // The client treats the token as OPAQUE bytes — it is minted and
 // validated by the console (the OAuth authorization server). w17ctl
 // never inspects or re-signs it; this package only stores and retrieves
-// it. See docs/specs/plugins/auth-cli-login-and-orgs.md.
+// it.
 package authstore
 
 import (

@@ -19,8 +19,8 @@ import (
 //
 // It used to be the compiler's whole codegenpb.CodegenServiceClient, which the
 // console client satisfied because the console re-declared the entire
-// CodegenService. That stopped being true when codegen moved onto the cluster
-// (docs/specs/console/codegen-on-the-cluster.md): GenerateProject and the
+// CodegenService. That stopped being true when codegen moved onto the
+// cluster: GenerateProject and the
 // per-generator Generate* RPCs left the console, and the stream now runs on a
 // codegen worker that DialWorker reaches. Naming the surface by what is CALLED
 // keeps every remaining console call compiling against the console client,
@@ -194,7 +194,7 @@ var DialProjectRegistryFn = realDialProjectRegistry
 // addr — the irpb-free authoring surface (register / push schema + fixtures /
 // list history) w17ctl uses instead of the private console/client
 // (registrypb) wrapper. Keeps w17ctl's push/registry commands free of any
-// registrypb / irpb / fixturespb / planpb dependency (public-split Block 3).
+// registrypb / irpb / fixturespb / planpb dependency.
 func DialProjectRegistry(addr string) (w17registrypb.ProjectRegistryClient, *grpc.ClientConn, error) {
 	return DialProjectRegistryFn(addr)
 }

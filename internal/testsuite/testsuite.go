@@ -84,9 +84,9 @@ var (
 // nothing read. So a compose failure reached the operator as
 // `docker compose config: exit status 1` while the sentence explaining it
 // ("services.core-server conflicts with imported resource") sat in the error
-// value, discarded. a consumer spent a CI round re-running `docker compose config`
-// by hand as a separate step to read a message this process had already been
-// handed (2026-09-12).
+// value, discarded. A CI round went into re-running `docker compose config` by
+// hand as a separate step to read a message this process had already been
+// handed.
 //
 // Trimmed and bounded: compose can emit a lot, and an error is read in a
 // terminal. The head is where the cause is — later lines are usually the same
@@ -273,7 +273,7 @@ func (c *Config) Run() (err error) {
 	// `connection refused`, under a `FAIL`, an exit 1 and a list of `✗`,
 	// while the same log said `Healthy` a few lines above. It reads as
 	// "I broke the suite", and it costs whoever sees it a search through
-	// their own diff (a consumer, 2026-08-30 — and once already in July).
+	// their own diff.
 	//
 	// So: wait here, and if it never comes up, fail with a sentence that
 	// says the stack is the problem. Same slot and same reasoning as
@@ -334,8 +334,7 @@ func (c *Config) resolveComposeFile(root string) (string, error) {
 //     `-admin`) serving on adminContainerPort.
 //   - COMPOSED — the admin is absorbed into the composed binary, so there
 //     is no `-admin` service at all: it keeps its own listener inside the
-//     gateway's process, on composedAdminContainerPort (port per surface,
-//     see docs/specs/bundles/composed-binary-packaging.md).
+//     gateway's process, on composedAdminContainerPort (port per surface).
 //
 // Only the split shape was ever looked for, so on a composed stack every
 // admin scenario skipped and the run still reported PASS. Returns "" when
@@ -517,16 +516,16 @@ func servicesPublishing(composeFile, root string, port int) []string {
 	return names
 }
 
-// reclaimLabelKey / workspace mirror srcgo/tests/containers/reclaim.go, which
-// labels the OTHER family of ephemeral containers this repo starts (the Go
-// tests' detached databases). Both families have to answer to one sweep —
+// reclaimLabelKey / workspace mirror the label the platform's own Go tests put
+// on the OTHER family of ephemeral containers they start (detached
+// databases). Both families have to answer to one sweep —
 // `make docker-sweep`, which filters
 // `--filter label=w17-test-workspace=$(W17_WORKSPACE)` — so the key and the
 // value have to be identical on both sides.
 //
-// Duplicated rather than imported: w17ctl is the PUBLIC thin client and its
-// private-srcgo closure is 0 (D4). srcgo/tests/dockernames gates the two
-// spellings against each other so the duplication cannot drift silently.
+// Duplicated rather than imported: w17ctl is the PUBLIC thin client and imports
+// no private code. A gate where w17ctl is developed checks the two spellings
+// against each other so the duplication cannot drift silently.
 const reclaimLabelKey = "w17-test-workspace"
 
 // workspace mirrors the Makefile's W17_WORKSPACE (which it exports) and falls
@@ -563,11 +562,10 @@ func workspace() string {
 // alive 46 hours after the run that started them, seven still healthy, while
 // the sweep reported "no leftovers".
 //
-// The label matches `srcgo/tests/containers` (reclaim.go), which has carried
-// it for the Go-test container family all along — same key, same workspace
-// value, so one sweep collects both. It is spelled out rather than imported:
-// w17ctl is the public thin client and imports zero private srcgo (D4), so
-// the agreement is pinned by a gate instead (srcgo/tests/dockernames).
+// The label matches the one the Go-test container family has carried all
+// along — same key, same workspace value, so one sweep collects both. It is
+// spelled out rather than imported: w17ctl is the public thin client and
+// imports no private code, so the agreement is pinned by a gate instead.
 // storePort is the port a relational store listens on, recognised by the
 // service's IMAGE.
 //
@@ -929,8 +927,7 @@ const adminContainerPort = 8080
 // composedAdminContainerPort is where an ABSORBED admin listens when the
 // project ships a composed binary: the admin keeps its own HTTP listener
 // inside the shared process and the composed bundle publishes that port
-// (`admin.AbsorbedListenPort`, docs/specs/bundles/composed-binary-packaging.md
-// §"port per surface"). Mirrored — not imported — because the client holds
+// (`admin.AbsorbedListenPort`, port per surface). Mirrored — not imported — because the client holds
 // no compiler types; a change to the platform's absorbed port has to be
 // mirrored here, which is why the composed lane asserts the admin answers
 // (`w17ctl test --transport=admin` against the composed example).
@@ -944,8 +941,8 @@ const composedAdminContainerPort = 9090
 // port publication: a `port` query issued immediately after can still see a
 // container with ZERO published ports, and the run then dies during
 // discovery on a stack that is in fact fully up. Measured at ~50% of runs
-// on a loaded shared box (16 cores, load ~12, ~50 foreign containers —
-// a consumer, 2026-07-28); it does not reproduce on an idle machine, which is
+// on a loaded shared box (16 cores, load ~12, ~50 foreign containers); it
+// does not reproduce on an idle machine, which is
 // why it read as a config error for a week.
 //
 // Waiting costs nothing when the ports are already up — the first attempt
@@ -999,7 +996,7 @@ func (c *Config) servicePortOnce(files []string, project, root, svc string, cont
 		// Docker says exactly what went wrong here — "no port 8080/tcp for
 		// container X: 4222/tcp, …" or `service "X" is not running` — and
 		// dropping it left a bare "exit status 1" that names neither the
-		// cause nor the fix (a consumer, 2026-07-28). It is the only evidence
+		// cause nor the fix. It is the only evidence
 		// there is: the caller cannot re-derive it from the exit code.
 		if msg := dockerStderr(err); msg != "" {
 			return 0, portsUnpublished(msg), fmt.Errorf("discover host port (%s:%d): %w — docker: %s", svc, containerPort, err, msg)
@@ -1039,7 +1036,7 @@ var (
 // is serving. The gate was answering "did docker publish a port", which is
 // true several seconds before the answer anyone wanted.
 //
-// a consumer measured the window with a socket on 2026-09-05: five resets at
+// The window, measured with a socket: five resets at
 // 400ms intervals, then HTTP at t+2.0s. It became deterministic the day
 // before, and by our own hand: dbwait stopped the server exiting on a
 // database that had not finished starting, so instead of dying and taking

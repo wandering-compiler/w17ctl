@@ -13,8 +13,7 @@ import (
 // snapBackend is the storage-mode-agnostic surface `db snapshot` drives.
 // Local mode = snapstore (dumps under w17/tmp, via each store's
 // Snapshotter). Remote mode = remotesnap (server-side pg_dump via
-// docker-exec; dumps live on the server, never transit the laptop —
-// docs/experiments/remote-stack.md §6, "remote-side").
+// docker-exec; dumps live on the server and never transit the laptop).
 type snapBackend interface {
 	save(ctx context.Context, initiative, name, schemaHash string) error
 	load(ctx context.Context, initiative, name string) error

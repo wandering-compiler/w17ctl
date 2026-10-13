@@ -85,7 +85,7 @@ Do this now to learn how it works:
    model, the event system, the directory structure).
 2. Read AGENTS.md and ALL of w17/specs/.
 3. If it isn't already recorded there, note the essentials in this project's
-   CLAUDE.md / AGENTS.md and in your long-term memory, so future sessions start
+   AGENTS.md (or whichever instruction file your agent reads) and in your long-term memory, so future sessions start
    from it: this is a w17 project driven via w17ctl; you change behaviour by
    editing proto/ and running `w17ctl codegen`, NEVER by hand-editing generated
    files; only business-handler bodies are hand-written; the full platform

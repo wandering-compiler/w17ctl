@@ -34,7 +34,7 @@ type Cmd struct {
 	Ps      PsCmd      `cmd:"" help:"List the stack's containers: docker compose ps."`
 	Restart RestartCmd `cmd:"" help:"Restart the stack (or named services): docker compose restart."`
 
-	// Remote-mode registry + selection (docs/experiments/remote-stack.md):
+	// Remote-mode registry + selection:
 	// offload the whole stack to an SSH docker host, apps still on localhost.
 	Remote  RemoteCmd   `cmd:"" help:"Manage remote docker hosts (add / list / remove) + pin this project (remote use <name>). See 'stack remote --help'."`
 	Local   UseLocalCmd `cmd:"" help:"Pin THIS project back to local mode (the counterpart to 'stack remote use')."`
@@ -330,7 +330,7 @@ func (c *CleanCmd) Run() error {
 		return err
 	}
 	// The codegen-owned paths (+ services dir) come from the console's lock
-	// projection (§8.2 — the client holds no lock types).
+	// projection (the client holds no lock types).
 	view, err := core.DescribeLockFromRoot(c.Console, root)
 	if err != nil {
 		return fmt.Errorf("clean: %w", err)

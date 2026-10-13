@@ -50,7 +50,7 @@ var AuthTokenFn = func(addr string) string {
 // spelling (scheme prefix, host casing, the loopback aliases localhost /
 // 127.0.0.1 / ::1). An address that matches nothing gets NO credential.
 //
-// The narrowing is deliberate (T2-5 D11-9). This used to fall back to the
+// The narrowing is deliberate. This used to fall back to the
 // active instance for any unknown address, on the reasoning that an unknown
 // address may be another name for the same console. That reasoning is
 // right, and normalization is what implements it — the fallback implemented

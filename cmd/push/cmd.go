@@ -39,7 +39,7 @@ import (
 // PR/approval workflow gates promotion, but the wire contract
 // stays the same — caller always sends "everything I have."
 //
-// Per docs/conventions-global/structure.md the operator never
+// By convention the operator never
 // has to think about "which subcommand"; one command, server
 // figures out what changed.
 type Cmd struct {
@@ -160,7 +160,7 @@ func pushSchemaIdempotent(ctx context.Context, cl w17registrypb.ProjectRegistryC
 	// this push stored for: a lock that lost or missed a pin (committed
 	// unpinned, reverted, a CI mint that failed at EditLock) must catch up
 	// for all of them, or `migrate fetch` skips the stragglers and the deploy
-	// targets old migrations under "lock pinned" (review of #153). The heads
+	// targets old migrations under "lock pinned". The heads
 	// include what this push just stored.
 	listResp, listErr := cl.ListMigrations(ctx, &w17registrypb.ListMigrationsRequest{ProjectId: projectID})
 	if listErr != nil {

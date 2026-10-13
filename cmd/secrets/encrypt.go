@@ -10,8 +10,8 @@ import (
 )
 
 // EncryptCmd implements `w17ctl secrets encrypt <file>`. Read-only on the
-// lock: the age recipients come from the console's DescribeLock (Block 2
-// §8.2); the file encryption stays client-side.
+// lock: the age recipients come from the console's DescribeLock; the file
+// encryption stays client-side.
 type EncryptCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
 	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`

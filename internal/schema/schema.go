@@ -1,14 +1,13 @@
 // Package schema is the thin client's IR-compile seam: it gathers a
 // project's proto file set + entry roots and calls the console's CompileIR
-// RPC (thin-client refactor Step 3b — the loader + ir.Build pipeline +
-// plugin staging all run server-side). The client only reads local files;
+// RPC (the loader, the IR build and plugin staging all run server-side). The client only reads local files;
 // the ACL permission catalogue is resolved server-side from the uploaded
 // committed ACL lock.
 //
 // Shared by the schema/migrate/push commands + `stack build` (dev diff
 // base) + initiative push (snapshot IR). The IR is handled as OPAQUE bytes
-// throughout — the client never decodes it (public-split Block 3: it drops
-// srcgo/pb/common/ir). LoadIRBytes is a package var so tests inject a fake IR
+// throughout — the client never decodes it and carries no IR types.
+// LoadIRBytes is a package var so tests inject a fake IR
 // blob without a live console.
 package schema
 
@@ -79,8 +78,7 @@ func compileIRBytesViaConsole(ctx context.Context, paths, imports []string, cons
 	// working command depends on its effect — but somebody's script may pass
 	// it out of habit, and turning that into an error buys them a broken
 	// pipeline in exchange for a correction they cannot act on. A line on
-	// stderr tells the person who can
-	// (docs/decisions/client-carries-compiler-payloads.md §2).
+	// stderr tells the person who can.
 	if len(imports) > 0 {
 		fmt.Fprintf(core.Stderr, "w17ctl: --import is ignored (%d path(s)): the console compiles the IR "+
 			"and resolves imports from the uploaded proto tree and its own w17 vocabulary. "+
@@ -88,7 +86,7 @@ func compileIRBytesViaConsole(ctx context.Context, paths, imports []string, cons
 	}
 	// A directory is not a root. Sent as one it became "." and the console
 	// built the plugin protos alone — a push from that planned a DROP TABLE
-	// for every other table of the project (2026-10-04). Checked before
+	// for every other table of the project. Checked before
 	// anything is dialled: it is the caller's mistake, whatever the console.
 	for _, p := range paths {
 		if info, serr := os.Stat(p); serr == nil && info.IsDir() {

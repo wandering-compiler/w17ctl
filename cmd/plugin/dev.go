@@ -40,7 +40,7 @@ import (
 // That was the first plan and this is better in the way that matters: it goes
 // through `install` and `codegen`, which is the path a CONSUMER takes. An
 // authored example tests a tree we wrote; this tests the tree they receive. It
-// also works for an author who has no monorepo, the feature matrix is a flag
+// also works for an author who has only the plugin's own tree, the feature matrix is a flag
 // rather than N copies of a project, and there is no per-plugin hand-written
 // scaffolding to drift.
 //

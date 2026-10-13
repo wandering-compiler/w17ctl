@@ -487,9 +487,9 @@ service NoteMutation {
 `
 
 // ExampleDomainRestProto — domain-level REST registry that
-// wires the example module's RPCs to HTTP URLs. REV-017
-// moves `(w17.http)` off individual RPCs into this central
-// `(w17.rest_api)` registry per domain; one file per
+// wires the example module's RPCs to HTTP URLs. Routes live
+// in this central `(w17.rest_api)` registry per domain, not on
+// individual RPCs; one file per
 // domain, the gateway codegen reads this and emits the
 // REST → gRPC routing layer.
 const ExampleDomainRestProto = `syntax = "proto3";
@@ -498,7 +498,7 @@ package {{.Project}}.{{.Domain}};
 
 import "w17/rest.proto";
 
-// REV-017 — domain-level REST registry. gRPC service
+// Domain-level REST registry. gRPC service
 // definitions stay a pure behaviour contract; this file is
 // the single source of truth for which methods are exposed
 // at which URLs. FastAPI / Django mental model: this is the
@@ -653,8 +653,8 @@ import "w17/event_subscribers.proto";
 option (w17.event_subscribers) = {
   subscriptions: [
     // Counter maintenance + activity-feed projection.
-    // The handler is hand-written in
-    // srcgo/domains/{{.Domain}}/grpcapi/business/.
+    // The handler is hand-written in the
+    // domain's grpcapi/business/ package.
     {
       event:   "NoteCreated"
       channel: "notes"
@@ -684,7 +684,7 @@ package {{.Project}}.{{.Domain}};
 
 import "w17/admin.proto";
 
-// REV-150 — admin surface for the {{.Domain}} domain. Each
+// Admin surface for the {{.Domain}} domain. Each
 // page declares one resource view (list + detail) backed by
 // query / mutation RPCs from the example module. Storage
 // codegen emits a separate admin bundle alongside storage +
@@ -721,8 +721,8 @@ import "domains/{{.Domain}}/{{.Groups}}{{.Module}}/types/models.proto";
 
 // NotesService — hand-written facade. Business-layer
 // services have NO (w17.db.method) anywhere — every method
-// body is implemented by hand in
-// srcgo/domains/{{.Domain}}/grpcapi/business/. Storage codegen
+// body is implemented by hand in the domain's
+// grpcapi/business/ package. Storage codegen
 // skips this file; the facade composes the auto-generated
 // NoteQuery / NoteMutation calls + applies business rules.
 //
@@ -746,8 +746,8 @@ service NotesService {
 // line up with the rest of the example set.
 // ---------------------------------------------------------------------------
 
-// ExampleRpcProto — domain gRPC-gateway (rpc) surface sentinel
-// (REV-152). Zero-message sentinel like rest/admin; unlike rest's
+// ExampleRpcProto — domain gRPC-gateway (rpc) surface sentinel.
+// Zero-message sentinel like rest/admin; unlike rest's
 // central registry the method PICKS are inline (`(w17.rpc) = true` on
 // each exposed rpc), so this file carries only surface metadata.
 const ExampleRpcProto = `syntax = "proto3";
@@ -756,7 +756,7 @@ package {{.Project}}.{{.Domain}};
 
 import "w17/rpc.proto";
 
-// REV-152 — public gRPC gateway surface for the {{.Domain}} domain.
+// Public gRPC gateway surface for the {{.Domain}} domain.
 // The generator re-declares the picked methods in a public
 // schema/grpcapi.proto (reusing backend message types verbatim;
 // streaming carries over) and emits a forward gateway. The methods
@@ -783,7 +783,7 @@ option (w17.rpc_api) = {
 };
 `
 
-// ExampleMcpProto — domain MCP surface sentinel (REV-018). Ref-based
+// ExampleMcpProto — domain MCP surface sentinel. Ref-based
 // like rest: each tool references an existing gRPC method by
 // `<module>.<Service>.<Method>`. One (w17.mcp_api) → one generated
 // <domain>-mcp-server proxy bundle.
@@ -793,7 +793,7 @@ package {{.Project}}.{{.Domain}};
 
 import "w17/mcp.proto";
 
-// REV-018 — MCP tool surface for the {{.Domain}} domain. The LLM
+// MCP tool surface for the {{.Domain}} domain. The LLM
 // reaches these tools during a session; each references an existing
 // gRPC method (same ref shape as rest + subscribers). Streaming RPCs
 // are a parse-time error (MCP has no streaming primitive). Tool name +
@@ -818,7 +818,7 @@ option (w17.mcp_api) = {
 };
 `
 
-// ExampleCliProto — domain CLI surface sentinel (REV-153). Like rpc, a
+// ExampleCliProto — domain CLI surface sentinel. Like rpc, a
 // zero-message sentinel with inline per-method picks; unlike rpc each
 // pick carries a command PATH. Emits the in-bundle <domain>-cli, plus a
 // standalone <domain>-ctl for the methods that are also `(w17.rpc)`.
@@ -828,7 +828,7 @@ package {{.Project}}.{{.Domain}};
 
 import "w17/cli.proto";
 
-// REV-153 — CLI surface for the {{.Domain}} domain. Generates a
+// CLI surface for the {{.Domain}} domain. Generates a
 // command-line tool with w17ctl-style namespace nesting. Methods are
 // picked INLINE with a command path, NOT listed here:
 //
@@ -923,7 +923,7 @@ func RelFromProject(abs string) string {
 // project and scaffolds `acme_finplatform.finplatform.<module>` — a SECOND
 // namespace beside the domain's. Codegen accepts it, so it surfaces in review,
 // or later when somebody adds an event to that module and cannot find the
-// types (a consumer, 2026-09-23).
+// types.
 //
 // A scaffolder's job is to match the tree it writes into. What the domain says
 // wins; the project name is the fallback for a domain that says nothing yet.

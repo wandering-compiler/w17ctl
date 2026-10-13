@@ -157,7 +157,7 @@ func (r *report) fixable(f migdecisions.File, line string) {
 }
 
 // replace records a file --write deletes and asks again for: it was made for
-// a different change of a key that is open now (M2), or it records no change
+// a different change of a key that is open now, or it records no change
 // at all.
 func (r *report) replace(f migdecisions.File, line string) {
 	r.fixable(f, line)
@@ -171,8 +171,8 @@ func assess(root string, st *schema.DecisionState) *report {
 	r.open = st.Plan.GetFindings()
 	r.consumed = st.Consumed
 	// A file answers an open question only when it was made for THAT change:
-	// same key AND same finding id (M2). Two tables sharing a bare name share
-	// a key and differ by id (C49-10).
+	// same key AND same finding id. Two tables sharing a bare name share
+	// a key and differ by id.
 	open := map[string]bool{}
 	for _, f := range r.open {
 		open[migdecisions.FindingIdent(f)] = true
@@ -241,7 +241,7 @@ func assess(root string, st *schema.DecisionState) *report {
 func (r *report) repair(root, dir string, st *schema.DecisionState) error {
 	// A file must say which CHANGE it decides. A console that does not
 	// identify its findings predates that; a file written from it could
-	// approve a different change of the same column later (M2), so write
+	// approve a different change of the same column later, so write
 	// none rather than one (and delete nothing more: --write's deletions
 	// wait for a console that can say what replaces them).
 	for _, f := range r.open {
@@ -342,7 +342,7 @@ func (r *report) print() {
 }
 
 // tableNote names f's table when another open finding shares its key — two
-// tables with one bare name (C49-10) — so the two questions read apart.
+// tables with one bare name — so the two questions read apart.
 func (r *report) tableNote(f *w17registrypb.Finding) string {
 	if f.GetTableFqn() == "" {
 		return ""

@@ -32,7 +32,7 @@ import (
 )
 
 // BuildCmd is `w17ctl stack build` — compile + build images, then **dev
-// diff-apply** (docs/specs/storage/dev-db-lifecycle.md S5/S6): bring the
+// diff-apply**: bring the
 // developer's local stores up to the current branch proto by applying
 // checkpoint→current directly, persisting no migration. No `up`.
 //
@@ -105,7 +105,7 @@ func (c *BuildCmd) Run() error {
 	// Resolve the mode. Remote build pushes the freshly-generated tree to
 	// the server and compiles there (remote-local, fast incremental); the
 	// dev diff-apply then runs against the REMOTE stores through a
-	// transient DB tunnel (Slice 6). The diff-apply TAIL is identical for
+	// transient DB tunnel. The diff-apply TAIL is identical for
 	// both modes — only the image build + DB reachability differ.
 	mode, cfg, err := c.resolveMode(root)
 	if err != nil {
@@ -132,7 +132,7 @@ func (c *BuildCmd) Run() error {
 		}
 		// Same resolution as the local path below, and for the same reason: a
 		// duplicate registry entry would otherwise tunnel to ANOTHER project's
-		// stores here while the local path resolved correctly (a consumer).
+		// stores here while the local path resolved correctly.
 		var ports map[string]int
 		_, p, pnote, perr := cfg.ResolveProject(lockProjectName(root), root)
 		if pnote != "" {
@@ -268,8 +268,7 @@ func (c *BuildCmd) resolveProtos(root string) (protos, imports []string, cleanup
 	// proto root — `schema.compileIRBytesViaConsole` says so in as many words,
 	// and ignores the `imports` argument entirely. What was left behind was
 	// the client extracting 576 KB of embedded vocabulary to a temp directory
-	// on every run, to build a list nothing read
-	// (docs/decisions/client-carries-compiler-payloads.md §2).
+	// on every run, to build a list nothing read.
 	return models, nil, cleanup, nil
 }
 
@@ -362,7 +361,7 @@ func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiativ
 		// The schema this savepoint belongs to, so `db snapshot activate` can
 		// warn when it is put back onto a different one. Empty was what
 		// produced a listing reading `(schema )` — an empty slot nobody could
-		// tell from a lost value (a consumer, 2026-09-19).
+		// tell from a lost value.
 		//
 		// It is the schema the database holds NOW, i.e. the checkpoint BEFORE
 		// this sync advances it: the snapshot is of what is there, not of
@@ -399,7 +398,7 @@ func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiativ
 		// anywhere else: this line is read by somebody who has just destroyed
 		// data and is copying the command out of it. `restore` was refused
 		// with "unexpected argument", at the one moment nobody goes looking
-		// through --help (a consumer, 2026-09-19).
+		// through --help.
 		fmt.Fprintf(core.Stdout, "stack build: snapshot %q taken before applying (put it back: w17ctl db snapshot activate %s%s)\n",
 			name, name, c.restoreFlags())
 		return nil
@@ -422,7 +421,7 @@ func (c *BuildCmd) snapshotFn(root string, specs []factory.TargetSpec, initiativ
 // LONG-LIVED stack — it snapshotted a store the suite had just created on
 // behalf of whatever branch the last real build recorded, and when no snapshot
 // for the current branch existed it "built fresh" through the repo's own
-// compose, reaching for `w17-01-app-gateway:latest` from inside an ephemeral
+// compose, reaching for `<workspace>-app-gateway:latest` from inside an ephemeral
 // project. The snapshot guard caught the other half and said so:
 //
 //	snapstore Save catalog-postgres: the store holds N object(s) but its dump
@@ -468,7 +467,7 @@ func (c *BuildCmd) ResolveTargets(root string) ([]factory.TargetSpec, error) {
 	// NAME and was being asked by PATH, so two entries on one directory gave a
 	// different answer per run (map iteration) — and each entry carries its own
 	// published store ports, so a dump reached another workspace's database on
-	// the same machine (a consumer).
+	// the same machine.
 	projName, p, pnote, rerr := cfg.ResolveProject(lockProjectName(root), root)
 	if pnote != "" {
 		fmt.Fprintf(core.Stdout, "stack build: %s\n", pnote)
@@ -649,7 +648,7 @@ func runDevDiffApplyLossy(sc *storageclient.StorageClients, project, actor, init
 	// Every store this client can read is planned from what it HOLDS (the
 	// live database, since rc.40). A schema-ful store it cannot read (MySQL,
 	// SQLite) is planned from these bytes — the record of what the last sync
-	// applied (pass #49 M1); before that it was planned as already converged
+	// applied; before that it was planned as already converged
 	// and never changed. They also feed `ClassifyCompat`, the
 	// destructive-change warning. Passed through as opaque bytes (nil for a
 	// brand-new initiative), never decoded.
@@ -697,7 +696,7 @@ func runDevDiffApplyLossy(sc *storageclient.StorageClients, project, actor, init
 	// the checkpoint to store — the head for what was applied, the previous
 	// record for every connection this run left out — and the bytes go to
 	// storage unread. Recording the head instead claimed a change for a store
-	// that never got it (PR #173 review).
+	// that never got it.
 	//
 	// An older console returns none. If this run left out a change it
 	// planned, recording the head would lose that change for good, so the

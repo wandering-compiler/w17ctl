@@ -137,15 +137,14 @@ func Plugin(src, dest string) (Stats, error) {
 
 // privateDocRef matches a path into the platform's private docs. The
 // platform's plugins are published to a PUBLIC registry and authored in a
-// private monorepo, so a comment pointing at docs/todos/… or docs/decisions/…
-// points its reader at nothing — and names internal documents in public
-// (2026-10-04: 18 files of auth, cluster and payment did). Say the reason in
-// the comment instead.
+// private repository, so a comment pointing at its internal docs points its
+// reader at nothing — and names internal documents in public. Say the reason
+// in the comment instead.
 //
 // Checked by Catalogue — the platform's own publish — and NOT by Plugin: an
 // author outside this repository renders, installs (`plugin update --from`)
 // and develops (`plugin dev`) through Plugin, and their own repository may
-// well have a docs/specs/ to cite.
+// well have docs of its own to cite.
 var privateDocRef = regexp.MustCompile(`docs/(todos|decisions|specs|runbooks|audit|archive)/`)
 
 // refusePrivateDocRefs refuses a rendered catalogue that cites the private docs,

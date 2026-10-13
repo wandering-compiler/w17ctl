@@ -23,8 +23,7 @@ import (
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 )
 
-// A codegen run on the cluster (docs/specs/console/codegen-on-the-cluster.md
-// §6): the console PLACES the run and signs the lock, a codegen worker behind a
+// A codegen run on the cluster: the console PLACES the run and signs the lock, a codegen worker behind a
 // relay RUNS it. Two connections, two phases:
 //
 //  1. PlaceGenerate{start} on the console → while `queued`, PlaceGenerate{poll}
@@ -88,8 +87,7 @@ var (
 	streamAttemptTimeout = 600 * time.Second
 	// streamPerLine is added to streamAttemptTimeout per uploaded proto line:
 	// a worker runs on ONE core, and a large project takes minutes there —
-	// 744 s measured at 206 662 lines (docs/specs/console/codegen-on-the-cluster.md
-	// §2). 7 ms a line gives that run ~2.7x headroom; see attemptDeadline.
+	// 744 s measured at 206 662 lines. 7 ms a line gives that run ~2.7x headroom; see attemptDeadline.
 	streamPerLine = 7 * time.Millisecond
 	// queueTimeout bounds how long a run waits in the queue for a worker.
 	// Long enough for a deploy (a worker drains its run, up to 15 min, before
@@ -210,7 +208,7 @@ type clusterResult struct {
 const lockPath = "w17/lock.yaml"
 
 // deployGitignore is the ignore file the console writes into deploy/: every
-// file it generated there (docs/decisions/infra-targets-workloads-and-a-tuning-file.md §5).
+// file it generated there.
 const deployGitignore = "deploy/.gitignore"
 
 // run places and runs until a clean stream end or a final failure. On failure
@@ -531,7 +529,7 @@ func (r *clusterRun) stream(g *codegenpb.PlaceGenerateGranted, signed []byte) (*
 		return nil, recvStatus(stream, err)
 	}
 
-	// Buffer the whole op stream — the collision pre-scan (R-console-4) needs
+	// Buffer the whole op stream — the collision pre-scan needs
 	// the full write set before touching disk.
 	res := &clusterResult{}
 	for {

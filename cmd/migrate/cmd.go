@@ -130,8 +130,7 @@ func (c *GenerateCmd) deriveFromProject() error {
 	// No import path is added. The console compiles the IR from the uploaded
 	// proto tree and resolves imports itself; the client-side -I is ignored
 	// with a warning (schema.LoadIRBytes) — and adding one here made EVERY
-	// derived run print that warning about a flag nobody passed (a consumer,
-	// 2026-10-02).
+	// derived run print that warning about a flag nobody passed.
 	return nil
 }
 
@@ -161,7 +160,7 @@ func (c *GenerateCmd) Run() error {
 }
 
 // ====================================================================
-// `w17ctl migrate reset` — recreate (docs/decisions/lifecycle-processes-decomposition.md)
+// `w17ctl migrate reset` — recreate
 // ====================================================================
 //
 // The productized answer to "I'm pre-prod and want to make a breaking

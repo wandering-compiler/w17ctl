@@ -1,6 +1,5 @@
 // Package remotesnap implements TRUE remote-side dev-DB snapshots for
-// remote-stack mode (docs/experiments/remote-stack.md §6, resolved
-// "remote-side"): pg_dump / pg_restore run INSIDE the remote postgres
+// remote-stack mode: pg_dump / pg_restore run INSIDE the remote postgres
 // container via `docker compose exec`, and the dump files live on the
 // server under `<remote_path>/.snapshots/<project>`. The dump bytes never
 // transit the laptop — the whole point of the remote-side choice.

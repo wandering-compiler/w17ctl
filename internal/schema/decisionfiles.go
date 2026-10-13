@@ -31,7 +31,7 @@ type DecisionState struct {
 
 // ForAnotherChange reports whether f — a stale or id-less file — has a key
 // the plan still needs decided, under a different change: the column
-// changed again after the decision was written (M2), so the open question is
+// changed again after the decision was written, so the open question is
 // a new one. Matching the console's key string is all it takes; what the
 // change IS stays the console's.
 func (d *DecisionState) ForAnotherChange(f migdecisions.File) bool {

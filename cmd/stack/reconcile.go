@@ -236,7 +236,7 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 	// the author chose in their targets, and the compose SERVICE name in
 	// their stack file. Excluding only the first stopped the store wherever
 	// they differed, and the snapshot then failed inside a container that was
-	// no longer running (a consumer). Both are excluded now; the service is
+	// no longer running. Both are excluded now; the service is
 	// resolved through the container that publishes the store's port, which
 	// is the one comparison that does not assume the names match.
 	storeNames := map[string]bool{}
@@ -292,7 +292,7 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 		// switch left the project's gateway and business services down until
 		// someone noticed and ran `stack up`. It read as an infrastructure
 		// outage with no cause, because the command that caused it had
-		// already reported success (a consumer).
+		// already reported success.
 		Resume: func(context.Context) error {
 			if len(*quiesced) == 0 {
 				return nil
@@ -310,7 +310,7 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 		// switch proceeds, the uncovered store is overwritten with nothing
 		// standing behind it, and coming back to that branch fails at restore
 		// with `open …/authplatform-postgres.sql: no such file or directory`.
-		// a consumer had six of those directories (#68).
+		// One project was found with six of those directories.
 		//
 		// Refused HERE rather than inside snapstore because this is the only
 		// place that knows a store was left out — snapstore is handed the conns
@@ -384,9 +384,9 @@ func wipeStores(ctx context.Context, applierFor migrate.ApplierFor, conns []stri
 // data. It seeds the DEFAULT group (`fixtures/<domain>/<name>.json`) plus the
 // conventional `dev` group (`fixtures/<domain>/dev/<name>.json`) — see
 // localSeedGroups; other named groups are on-demand (`fixtures apply
-// --group`). PG-only (the fixtures engine is relational/Postgres in F-1).
+// --group`). PG-only (the fixtures engine is relational/Postgres).
 //
-// Public-split (Block 3): the schema-aware render runs SERVER-side — the
+// The schema-aware render runs SERVER-side — the
 // client uploads the compiled IR bytes + each local fixture's raw JSON to the
 // console's FixtureFetch.RenderFixtureSeed and executes the returned
 // parameterized upserts against its local postgres store. So the client holds
@@ -411,7 +411,7 @@ const declaredRolesFixture = "acl-roles.json"
 // so the first account registers with NO roles — and the flag is spent, so the
 // one chance is gone. The result is a sign-in that cannot invite anybody and a
 // database effectively closed, reached through a SignUp that returned 200 and
-// a token (a consumer, 2026-09-23).
+// a token.
 //
 // Only the generated role file, deliberately. Hand-authored data fixtures keep
 // the behaviour they have: their seeds are upserts, and re-applying them on
@@ -473,7 +473,7 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 	// target came first. With two postgres stores that seeded the second
 	// domain's rows into the first domain's database: `relation "auth_role"
 	// does not exist` where the table was absent, and a silent write into the
-	// wrong store where a same-named table was there (a consumer, 2026-09-24).
+	// wrong store where a same-named table was there.
 	//
 	// The client cannot work out the mapping — it uploads the IR as opaque
 	// bytes and never decodes it — so the console returns the connection name

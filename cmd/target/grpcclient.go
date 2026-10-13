@@ -17,7 +17,7 @@ import (
 // dependency-inversion seam a hand-written business binary builds its
 // downstream clients from — see srcgo/gen/clients/<domain>/<tier>).
 //
-// Block 2 §8.2: the console owns the lock. The add goes through the
+// The console owns the lock. The add goes through the
 // console's EditLock (which re-signs); the list + the wizard's
 // duplicate-output_root check read through DescribeLock.
 type GrpcClientCmd struct {
@@ -53,7 +53,7 @@ type GrpcClientAddCmd struct {
 }
 
 func (c *GrpcClientAddCmd) Run() error {
-	// Q58-console-1: serialise the read → EditLock → write below against
+	// Serialise the read → EditLock → write below against
 	// concurrent lock-mutating runs so the second write can't clobber the
 	// first's edit. Held until this function returns.
 	release, lockErr := lockfile.ForUpdate(c.LockPath)

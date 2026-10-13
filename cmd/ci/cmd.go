@@ -1,6 +1,5 @@
 // Package ci implements `w17ctl ci` — the automation that builds the images
-// and deploys the declared infrastructure (docs/decisions/infra-targets.md
-// §4.4, §9). The choice is one SetInfra lock edit (the CI block plus each
+// and deploys the declared infrastructure. The choice is one SetInfra lock edit (the CI block plus each
 // environment's deploy branch); the workflows themselves are rendered by the
 // console during codegen into .github/workflows/w17-*.yaml.
 package ci

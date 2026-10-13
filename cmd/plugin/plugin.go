@@ -33,8 +33,8 @@ import (
 // The client is the courier and nothing more: it computed the digest (hashing
 // is not trust cryptography, and plugindigest lives in the public SDK so both
 // ends get the same answer) and it carries the signature across without reading
-// it. Verifying an artefact is a console job — public-split §4, the same rule
-// that put VerifyLock there.
+// it. Verifying an artefact is a console job — the same rule that put
+// VerifyLock there.
 //
 // installed may be nil for a pure parse (e.g. `plugin list`, which only needs
 // the version), and fetched may be its zero value where no tree was fetched
@@ -307,9 +307,9 @@ func (c *ListCmd) Run() error {
 	// the answer to "am I current". This listing used to OVERWRITE the served
 	// version with the installed one, so the only row that could ever reveal a
 	// newer release was a row for a plugin nobody had installed yet — and the
-	// comment above it claimed the opposite. That is the defect #57 was made
-	// of: a fix released six weeks earlier, reported as live, by a consumer
-	// whose tooling had no way to say their copy was behind.
+	// comment above it claimed the opposite: a fix released six weeks
+	// earlier could be reported as live by a consumer whose tooling had no way
+	// to say their copy was behind.
 	type row struct {
 		name      string
 		version   string // what is installed, or what the registry serves when nothing is
@@ -947,7 +947,7 @@ func isPluginURL(s string) bool {
 // each one's opening move DELETED the other's half-fetched tree — and `w17ctl
 // plugin update --all` in one terminal against an install in another is not an
 // exotic pairing. No advisory lock is taken anywhere in these commands, so
-// nothing upstream serialises them (T3-7 pass #15, D15-4).
+// nothing upstream serialises them.
 //
 // A unique name also removes the reason the RemoveAll was there: a dir this
 // process just created cannot hold another run's leftovers. An aborted run

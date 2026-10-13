@@ -5,8 +5,8 @@
 // surface coding agents drive, this is the surface a human clicks.
 //
 // It introduces no new source of truth — it reads ~/.w17/config.yaml,
-// w17/lock.yaml, and `docker compose ps` / `docker stats`, and (slice 2)
-// drives the same compose lifecycle the CLI drives. Bind to 127.0.0.1
+// w17/lock.yaml, and `docker compose ps` / `docker stats`, and drives the
+// same compose lifecycle the CLI drives. Bind to 127.0.0.1
 // only: the local Docker socket is root-equivalent on the host.
 package consoleui
 
@@ -34,7 +34,7 @@ type Server struct {
 	// console is the lock-projection RPC endpoint (DescribeLock); empty →
 	// resolved from W17_CONSOLE_ADDR / the compiled default. The UI treats the
 	// lock as opaque bytes and asks the console for its routing projection
-	// (§8.2), degrading gracefully when the console is unreachable.
+	// (the client holds no lock types), degrading gracefully when the console is unreachable.
 	console string
 
 	// loadCfg / saveCfg are indirected for tests; production reads/writes
@@ -81,7 +81,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/projects/{name}/fixtures", s.handleFixtures)
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
 
-	// Control actions (slice 2): all mutate via devconfig + the shared
+	// Control actions: all mutate via devconfig + the shared
 	// compose-env runner, so the UI and CLI never diverge.
 	s.mux.HandleFunc("POST /api/projects/{name}/up", s.handleUp)
 	s.mux.HandleFunc("POST /api/projects/{name}/down", s.handleDown)
@@ -331,8 +331,8 @@ func buildLockSummary(console, root string) *lockSummary {
 
 // loadLockViewBestEffort reads <root>/w17/lock.yaml and asks the console for its
 // routing projection, returning nil on any error (no lock yet, or the console
-// unreachable) — the UI degrades gracefully (§8.2: the client holds no lock
-// types; the console interprets the opaque bytes).
+// unreachable) — the UI degrades gracefully (the client holds no lock types;
+// the console interprets the opaque bytes).
 func loadLockViewBestEffort(console, root string) *codegenpb.LockView {
 	view, err := core.DescribeLockFromRoot(console, root)
 	if err != nil {

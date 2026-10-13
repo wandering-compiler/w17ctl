@@ -6,10 +6,8 @@ import (
 	"net/http"
 )
 
-// distFS holds the built React+TS SPA. Slice 1 ships a placeholder
-// index.html so the binary builds; slice 3 replaces web/dist with the
-// real Vite build output (committed, so a plain `go build` needs no node
-// toolchain).
+// distFS holds the built React+TS SPA: the Vite build output under web/dist
+// (committed, so a plain `go build` needs no node toolchain).
 //
 //go:embed all:web/dist
 var distFS embed.FS

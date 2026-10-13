@@ -23,7 +23,7 @@ import (
 // carry before running the DB operation (best-effort — see WaitReady).
 const dbTunnelTimeout = 10 * time.Second
 
-// Mode wiring (docs/experiments/remote-stack.md, Slice 5). Each compose
+// Mode wiring. Each compose
 // verb resolves its execution mode (flag → project pin → global default →
 // local) and, in remote mode, runs against a remote docker host over SSH
 // instead of the local daemon. The local path is byte-for-byte unchanged.
@@ -210,7 +210,7 @@ func closeTunnels(project string) error {
 }
 
 // withRemoteDB runs fn with the project's remote stores reachable at their
-// localhost:<hostPort> DSNs (Slice 6, option A). If a persistent `stack
+// localhost:<hostPort> DSNs. If a persistent `stack
 // up` tunnel is already open, the DB is reachable — fn runs directly.
 // Otherwise it opens a TRANSIENT SSH tunnel over the published ports,
 // waits (best-effort) for it to carry, runs fn, and tears the transient

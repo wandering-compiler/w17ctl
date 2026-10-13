@@ -24,7 +24,7 @@ import (
 // ⚠️ THE KEY IS NOT HERE. The digest is computed locally (hashing is not trust
 // cryptography, and `plugindigest` is in the public SDK precisely so the
 // publisher and every consumer get the same answer); the signature comes from
-// the console. Public-split §4 — the same rule that put VerifyLock there, and
+// the console — the same rule that put VerifyLock there, and
 // the reason `w17ctl` can be handed to plugin authors at all.
 type SignCmd struct {
 	Dir     string `arg:"" name:"dir" help:"Plugin tree to sign — the directory holding plugin.yaml."`

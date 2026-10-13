@@ -1,14 +1,11 @@
 // Package infra implements `w17ctl infra` — the project's infrastructure:
-// where it is deployed and how, declared in w17/infra.yaml
-// (docs/decisions/infra-targets.md,
-// docs/decisions/infra-targets-workloads-and-a-tuning-file.md).
+// where it is deployed and how, declared in w17/infra.yaml.
 //
 // The prompts and flags live here (UX); every change is sent to the console
 // with the file's bytes — one SetInfra (the wizard's choice) or EditInfra
 // (values by path) — and the console edits the file (comments kept),
 // validates it and returns it; the files under deploy/ are rendered by the
-// console during codegen. The client decides nothing about infrastructure
-// (docs/specs/w17ctl/public-split-architecture.md §8.2).
+// console during codegen. The client decides nothing about infrastructure.
 package infra
 
 import (

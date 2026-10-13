@@ -12,7 +12,7 @@ import (
 )
 
 // PushRawCmd backs `w17ctl migrate push-raw` — a single-
-// migration escape hatch (D-iter3-26) for hand-authored YAML bodies
+// migration escape hatch for hand-authored YAML bodies
 // the schema-driven planner can't auto-emit, typically TRANSFORM_FIELD
 // ops carrying author-supplied Starlark scripts.
 // Reads the YAML body from a file, ships it to console via the

@@ -1,7 +1,7 @@
 // Package logout implements `w17ctl logout` — drop a stored console
 // credential. Local-only: it removes the bearer from ~/.w17/auth.yaml. (A
 // server-side session revoke can be layered on later; the token also
-// expires on its own TTL.) See docs/specs/plugins/auth-cli-login-and-orgs.md.
+// expires on its own TTL.)
 package logout
 
 import (

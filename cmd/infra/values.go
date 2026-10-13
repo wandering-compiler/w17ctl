@@ -13,7 +13,7 @@ import (
 // The value-by-value editors of w17/infra.yaml. Each builds one EditInfra
 // intent — paths and YAML values — and the console applies it to the file's
 // YAML tree and validates the whole; nothing here knows what a value means
-// beyond spelling it (docs/decisions/infra-targets-workloads-and-a-tuning-file.md §6).
+// beyond spelling it.
 
 type fileFlags struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file (w17/infra.yaml sits beside it)."`

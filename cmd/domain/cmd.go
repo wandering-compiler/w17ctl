@@ -126,9 +126,9 @@ func (c *AddCmd) Run() error {
 		// Domain-level companion files. Each lives at the
 		// domain root because its surface aggregates across
 		// modules:
-		//   - rest.proto   (REV-017 (w17.rest_api) registry)
+		//   - rest.proto   (the w17.rest_api registry)
 		//
-		// admin.proto (REV-150 (w17.admin_api)) is deliberately NOT
+		// admin.proto (w17.admin_api) is deliberately NOT
 		// scaffolded: the admin surface requires an auth block wired to a
 		// real login flow (login_method/user_lookup → the auth plugin's
 		// admin_auth.AuthService.*), which a self-contained example can't

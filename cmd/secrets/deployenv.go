@@ -1,7 +1,7 @@
 package secrets
 
-// The deploy env files of an infrastructure environment (docs/decisions/
-// infra-targets.md §4.3, §8): deploy/<env>/services/<service>/.env, filled by a
+// The deploy env files of an infrastructure environment:
+// deploy/<env>/services/<service>/.env, filled by a
 // person from the generated .env.example beside it, committed only as the
 // sops-encrypted .env.enc. One age key per environment; its public half lives in
 // deploy/.sops.yaml, its private half in a password manager and the GitHub
@@ -275,7 +275,7 @@ func gitIgnored(root, rel string) bool {
 	return cmd.Run() == nil
 }
 
-// ── validation (§8.4) ───────────────────────────────────────────────────────────────
+// ── validation ───────────────────────────────────────────────────────────────────────
 
 var (
 	placeholders = []string{"CHANGE_ME", "REPLACE_ME", "s3://BUCKET/"}

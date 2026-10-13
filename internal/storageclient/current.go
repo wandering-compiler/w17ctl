@@ -11,7 +11,7 @@ import (
 //
 // Why exists because "no change request" must never be a silent
 // outcome. A push whose initiative did not resolve is a push that no
-// freeze will ever collapse (docs/decisions/squash-supersede-and-adopt.md), and
+// freeze will ever collapse, and
 // the operator finds that out at freeze time — long after the branch is
 // gone — unless the push says so at the time it happens.
 type CurrentInitiative struct {

@@ -1,12 +1,12 @@
 // Package client is `w17ctl client`: egress clients — a third-party REST API,
 // from its OpenAPI document, as a signed generated gRPC client under
-// `<proto root>/clients/<name>/` (docs/todos/egress-rest-client.md).
+// `<proto root>/clients/<name>/`.
 //
 // Not to be confused with `w17ctl target client`, which declares the
 // project's OWN generated frontend clients. These are clients of somebody
 // else's API.
 //
-// The client is dumb here as everywhere (public-split §4): it fetches or
+// The client is dumb here as everywhere: it fetches or
 // reads the document (transport), streams it to the console, and writes back
 // what the console returns, verbatim. Which operations exist, how they map to
 // proto and the signature over the result are the console's.

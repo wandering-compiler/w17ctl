@@ -53,8 +53,7 @@ const storageMaxRecvMsgSize = 256 << 20
 // storage tier stays consistent for when these RPCs become auth-gated. With no
 // token (not logged in) it adds nothing, identical to the pre-auth behavior, so
 // it is safe to wire on unconditionally. RequireTransportSecurity is false
-// because w17ctl dials the console over PLAINTEXT today (TLS is the deferred
-// "Phase C"); the bearer rides the encrypted channel unchanged once TLS lands.
+// because w17ctl may dial a console over PLAINTEXT; the bearer rides the encrypted channel unchanged once TLS lands.
 // addr is the console being dialed — the credential is resolved per
 // address, not from the active instance (see core.AuthTokenFn).
 // The storage tier uses core's credential rather than its own. It used to have
@@ -431,7 +430,7 @@ func IsUniqueViolation(err error) bool {
 }
 
 // GetOrCreate is the client-side get-or-create, and it is one on BOTH halves
-// of its own create race (T3-7 D-F2).
+// of its own create race.
 //
 // Two `initiative push` on one branch — a dev and a CI job, or two CI shards —
 // both Find nothing and both Create; the initiatives(org_id, project_id, name)

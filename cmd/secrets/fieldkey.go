@@ -8,11 +8,10 @@ import (
 )
 
 // FieldKeyCmd is `w17ctl secrets field-key` — a keyring for W17_FIELD_KEYS,
-// the key of a project's CRYPTED_SECRET columns
-// (docs/specs/storage/crypted-secret-field.md). Random bytes from this machine,
-// printed once, never written anywhere: it goes into the service's sealed
-// .env like any other secret (the dev-machine-crypto carve-out of the public
-// split, D4 §4 — the key never travels to the console).
+// the key of a project's CRYPTED_SECRET columns. Random bytes from this
+// machine, printed once, never written anywhere: it goes into the service's
+// sealed .env like any other secret (one of the few pieces of crypto the client
+// does itself — the key never travels to the console).
 type FieldKeyCmd struct {
 	Rotate string `name:"rotate" placeholder:"KEYRING" help:"The current keyring: the result keeps every version of it and adds the next, which new values are encrypted with."`
 }

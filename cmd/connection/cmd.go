@@ -24,7 +24,7 @@ import (
 // derives the dialect from the `<domain>-<dialect>` name suffix
 // (dialectFromConnectionName).
 //
-// Public-split Block 2 (§8.2): the console owns the lock. These commands
+// The console owns the lock. These commands
 // treat `w17/lock.yaml` as opaque bytes — reads go through the console's
 // DescribeLock RPC, mutations through EditLock (which re-maps + re-signs
 // server-side). The client constructs no lockpb and signs nothing.
@@ -57,7 +57,7 @@ type AddCmd struct {
 }
 
 func (c *AddCmd) Run() error {
-	// Q58-console-1: serialise the read → EditLock → write below against
+	// Serialise the read → EditLock → write below against
 	// concurrent lock-mutating runs so the second write can't clobber the
 	// first's edit. Held across the wizard too, so the user's decision is
 	// made against state no concurrent run can swap underneath it.

@@ -1,6 +1,6 @@
 // Package remotesync builds and runs the one-shot rsync that pushes a
 // project's tree to a remote docker host in remote-stack mode
-// (docs/experiments/remote-stack.md §5). Local is the sole authority —
+// Local is the sole authority —
 // the transfer is strictly one-way local→remote, with `--delete` so a
 // file codegen removed locally is removed remote too (else it lingers and
 // gets baked into the image).
@@ -24,7 +24,7 @@ import (
 const (
 	// BaseIgnoreFile is the console-GENERATED rsync ignore list, relative
 	// to the project root. It lives under w17/ (DO NOT EDIT — regenerated
-	// by codegen, Slice 7) even though its patterns exclude paths in the
+	// by codegen) even though its patterns exclude paths in the
 	// parent tree: rsync resolves --exclude-from patterns against the
 	// transfer root (the project root), independent of where the file sits.
 	BaseIgnoreFile = "w17/rsync.ignore"

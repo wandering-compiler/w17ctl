@@ -1,9 +1,9 @@
 // Package tunnel opens the SSH local-forwards that make a remote stack
-// feel local (docs/experiments/remote-stack.md §2.1): docker publishes
+// feel local: docker publishes
 // each port on the REMOTE host, and w17ctl runs `ssh -N -L
 // <local>:127.0.0.1:<remote>` so `localhost:<port>` behaves identically.
 //
-// The forwards serve two masters (§6): user-facing app ports AND w17ctl's
+// The forwards serve two masters: user-facing app ports AND w17ctl's
 // own control-plane connections (the remote DB for migrate/reconcile).
 // Both are just Forward entries.
 //

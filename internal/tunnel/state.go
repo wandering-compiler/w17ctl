@@ -66,7 +66,7 @@ func StatePath(project string) (string, error) {
 // or withRemoteDB asking whether a tunnel is already open — must never
 // observe an empty or half-written record, and a w17ctl killed mid-write
 // must leave the previous record intact rather than a corrupt one that
-// every later run fails to parse (T3-7 pass #9, C-F9).
+// every later run fails to parse.
 func SaveState(project string, st State) error {
 	path, err := StatePath(project)
 	if err != nil {

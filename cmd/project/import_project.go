@@ -12,7 +12,7 @@ import (
 )
 
 // ImportFromCmd implements `w17ctl project import-from` — folding a whole
-// source project into this one (docs/decisions/project-import.md).
+// source project into this one.
 //
 // Named `import-from` because `project import` already means something
 // else and older: registering an existing project in the LOCAL registry
@@ -27,7 +27,7 @@ import (
 // the target's scope. The console verifies each body under its original
 // scope first and refuses the whole import if any fails — that ordering
 // is what separates an import from a laundering machine, and it is not
-// something a client may be trusted with (D4).
+// something a client may be trusted with.
 //
 // The console also refuses unless the source's history is CONSISTENT
 // (`w17ctl migrate verify-history` asks the same question), and unless no

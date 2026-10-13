@@ -44,7 +44,7 @@ import (
 //	                            doesn't cover).
 
 // devCACert is the committed dev CA certificate (public — the private key is
-// dev-only and lives in dev/certs). It is trusted ONLY for loopback dials so a
+// dev-only and never ships). It is trusted ONLY for loopback dials so a
 // zero-env `w17ctl login localhost:…` verifies the dev terminator's cert. Kept
 // a copy in this package because go:embed can't reach outside the module.
 //
@@ -123,7 +123,7 @@ func splitConsoleScheme(addr string) (scheme, target string) {
 // readability prefix and is stripped; what is left has no port, so gRPC dials
 // 443, where the console's WEB front answers with a 404 in text/plain. That
 // arrived as "rpc error: code = Unimplemented … unexpected HTTP status code
-// 404" (found verifying rc.60, 2026-10-01), which names nothing the reader
+// 404" (found verifying rc.60), which names nothing the reader
 // did. A bare host:port, a host with a port behind a scheme, and a resolver
 // target (dns://, unix://) all pass untouched.
 func CheckConsoleAddr(addr string) error {

@@ -1,12 +1,11 @@
 // Package snapstore is the on-disk home for branch-scoped DB
-// snapshots in the dev DB lifecycle
-// (`docs/specs/storage/dev-db-lifecycle.md` S3). It owns the
+// snapshots in the dev DB lifecycle. It owns the
 // `w17/tmp/<branch>/db/<conn>.<ext>` layout, the atomic write/read of
 // each store's dump, the `.gitignore` guarantee for the scratch tree,
 // and a max-N LRU eviction policy.
 //
 // It is deliberately dialect-agnostic: it moves opaque byte streams to
-// and from disk and drives the per-store migrate.Snapshotter (S1/S2) for
+// and from disk and drives the per-store migrate.Snapshotter for
 // the actual dump/restore. The caller pairs each connection with its
 // Snapshotter + file extension via Conn; snapstore knows nothing about
 // SQL vs gob.
@@ -18,8 +17,8 @@
 // which is the half that matters: snapstore never infers from a DSN or an
 // extension which rule applies. It was allowed in because the alternative is
 // worse. A dump that succeeds and contains nothing was written out as a valid
-// snapshot, and reconcile then wiped the store on the strength of it; a consumer lost
-// six dev databases to eleven silently-empty snapshots (#68).
+// snapshot, and reconcile then wiped the store on the strength of it; six dev
+// databases were lost to eleven silently-empty snapshots that way.
 //
 // Snapshots are disposable dev scratch, never a backup/DR mechanism —
 // the whole `w17/tmp/` tree is git-ignored and freely evictable.
@@ -180,7 +179,7 @@ func (s *Store) Branches() ([]string, error) {
 // two savers interleaving at connection granularity can leave conn1 from
 // one run beside conn2 from another — a cross-connection-inconsistent
 // snapshot no serial order of the two saves could produce, applied
-// silently by a later restore (T3-7 pass #9, C-F8).
+// silently by a later restore.
 //
 // Serialising is the right shape here, not "one owner, second refused":
 // a saver dumps LIVE store state from inside its critical section rather
@@ -276,7 +275,7 @@ func (s *Store) saveOneTo(ctx context.Context, dbDir string, c Conn) error {
 	}
 	// A dump that SUCCEEDED and created nothing has two causes, and accepting
 	// either is how reconcile came to restore a 722-byte file over a live
-	// database (a consumer): the store is EMPTY, or the dump reached a different
+	// database: the store is EMPTY, or the dump reached a different
 	// database than the one this store names.
 	//
 	// This used to infer the second from the first and refuse both, telling the
@@ -289,7 +288,7 @@ func (s *Store) saveOneTo(ctx context.Context, dbDir string, c Conn) error {
 	// So the premise gets MEASURED instead. The store is asked whether it holds
 	// anything; an empty dump of an empty store is a faithful snapshot of
 	// nothing and is kept. Only a store that holds objects whose dump carries
-	// none is #68's shape, and that still refuses — now naming the cause rather
+	// none is the wiped-database shape, and that still refuses — now naming the cause rather
 	// than offering two.
 	//
 	// A Snapshotter that cannot answer keeps the old refusal: an unanswerable
@@ -488,7 +487,7 @@ func (s *Store) ensureGitignored() error {
 	return nil
 }
 
-// --- Named savepoints (workflow-modes M3) -------------------------------
+// --- Named savepoints -------------------------------------------------
 //
 // A named savepoint is a manual point-in-time dump scoped to ONE
 // initiative, living beside the initiative's branch state:
@@ -511,8 +510,7 @@ const namedSchemaFile = "schema"
 // moment anybody wants it is AFTER that change has happened — when the
 // initiative's schema no longer matches the one the savepoint was taken at,
 // by construction. The consistency guard, reading only the taken-at hash,
-// therefore refused exactly the case the savepoint exists for (a consumer,
-// 2026-09-19).
+// therefore refused exactly the case the savepoint exists for.
 //
 // So the sync writes down where it was going. `activate` allows the return
 // trip without --force when the initiative is standing on precisely that

@@ -1,5 +1,5 @@
 // Package egress checks the project's egress clients
-// (`<proto root>/clients/<name>/`, docs/todos/egress-rest-client.md) against
+// (`<proto root>/clients/<name>/`) against
 // the console — the one check `w17ctl verify` (the release gate) and
 // `w17ctl codegen` (before it compiles them) share.
 package egress
@@ -32,7 +32,7 @@ type DriftError struct{ Name, Msg string }
 func (e *DriftError) Error() string { return e.Msg }
 
 // Verify asks the console to check each committed client's
-// signature (docs/todos/egress-rest-client.md). The client holds no
+// signature. The client holds no
 // verifier; it ships the proto and client.yaml, and the document's digest
 // rather than the document — with CRLF read as LF, as the console's own
 // digest is (a Windows checkout rewrites line endings).

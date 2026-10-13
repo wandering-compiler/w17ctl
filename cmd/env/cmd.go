@@ -226,7 +226,7 @@ func (c *SetDeployedCmd) Run(parent *Cmd) error {
 	ctx, cancel := core.ClientCtx()
 	defer cancel()
 	// Carries the baseline read a line above: SetDeployed is a compare-and-set
-	// since T3-7 D-F1, so a `review merge --env` that lands in between makes
+	// so a `review merge --env` that lands in between makes
 	// this pin fail loudly rather than silently reverting the env baseline the
 	// prod compat gate diffs against.
 	if _, err := sc.EM.SetDeployed(ctx, &reviewpb.SetEnvDeployedReq{

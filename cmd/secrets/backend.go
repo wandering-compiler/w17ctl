@@ -11,8 +11,8 @@ import (
 )
 
 // BackendCmd implements `w17ctl secrets backend <name>`. The lock mutation
-// (secrets.backend) goes through the console's EditLock (Block 2 §8.2 — the
-// console owns the lock); the sops side-file render stays client-side.
+// (secrets.backend) goes through the console's EditLock (the console owns
+// the lock); the sops side-file render stays client-side.
 type BackendCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
 	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`

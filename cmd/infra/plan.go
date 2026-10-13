@@ -17,8 +17,7 @@ import (
 
 // PlanCmd is `w17ctl infra plan` — what a deploy of one environment would
 // change, before it changes anything. deploy/ is generated and not in git, so
-// this replaces the review of its diff (docs/decisions/
-// infra-targets-workloads-and-a-tuning-file.md §5):
+// this replaces the review of its diff:
 //   - swarm: the rendered stack against what the last deploy left on the
 //     server — files added, changed (with their diff) and removed, and the
 //     image tag the colours run — plus a fingerprint of the server's state for

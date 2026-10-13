@@ -16,8 +16,7 @@ import (
 // w17/infra.yaml — the project's infrastructure (targets, environments,
 // workloads, CI). The person's file, committed: the client only carries its
 // bytes to the console, which decodes, validates, edits and renders it, and
-// writes back what the console returns (docs/decisions/
-// infra-targets-workloads-and-a-tuning-file.md).
+// writes back what the console returns.
 
 // InfraPath is w17/infra.yaml beside the lock at lockPath.
 func InfraPath(lockPath string) string {

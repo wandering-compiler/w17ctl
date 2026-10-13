@@ -17,8 +17,7 @@ const (
 
 	// ModeRemote runs the docker stack on a registered remote docker host
 	// over SSH, tunneling each published port back to the identical
-	// localhost port so the dev experience is unchanged
-	// (docs/experiments/remote-stack.md).
+	// localhost port so the dev experience is unchanged.
 	ModeRemote Mode = "remote"
 )
 

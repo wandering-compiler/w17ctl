@@ -61,8 +61,7 @@ func (c *RegisterCmd) Run() error {
 	// It covers the missing-lock case and only that. A registration that
 	// succeeds and a subsequent lock WRITE that fails still leaves the same
 	// litter, and this ordering cannot prevent it: the id being written is
-	// the one the console just minted, so the write cannot come first
-	// (hosted review 2026-08-30, HOST-D-2).
+	// the one the console just minted, so the write cannot come first.
 	//
 	// What keeps that window small rather than harmful: RegisterProject is
 	// idempotent on (org, name), so re-running the command after a failed

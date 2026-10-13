@@ -19,8 +19,7 @@ import (
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 )
 
-// The codegen worker connection — the SECOND dial a `w17ctl codegen` run makes
-// (docs/specs/console/codegen-on-the-cluster.md §6).
+// The codegen worker connection — the SECOND dial a `w17ctl codegen` run makes.
 //
 // The console places the run (PlaceGenerate) and answers with the address of a
 // relay's proxy, the SHA-256 of that proxy's certificate and a single-use
@@ -41,7 +40,7 @@ import (
 //
 // The pin is TRANSPORT, not lock crypto: it answers "is this the proxy the
 // console named?", exactly as a CA would for a domain. Nothing about the lock
-// is signed or verified here (D4 §4).
+// is signed or verified here.
 
 // WorkerTicketHeader is the metadata key the relay's proxy redeems the
 // placement ticket from. The relay defines the same string

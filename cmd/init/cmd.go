@@ -24,8 +24,8 @@ import (
 
 // Wizard prompt defaults. These are UX defaults the operator Enters through;
 // the console owns the canonical lock conventions + the CI taxonomy and
-// re-applies/validates them when it builds the lock (Block 2 §8.2 — the client
-// holds no lock types). ciProviderHint mirrors the console's provider list for
+// re-applies/validates them when it builds the lock (the client holds no lock
+// types). ciProviderHint mirrors the console's provider list for
 // the prompt text only; the server rejects an unknown provider authoritatively.
 const (
 	defaultProtoDir     = "proto"
@@ -147,8 +147,8 @@ func (c *Cmd) Run() error {
 	}
 	projectID := resp.GetProjectId()
 
-	// The console builds + signs the lock from the wizard answers (§8.2 — the
-	// client constructs no lockpb and signs nothing). EditLock with empty bytes
+	// The console builds + signs the lock from the wizard answers (the client
+	// constructs no lockpb and signs nothing). EditLock with empty bytes
 	// + a bootstrap intent returns the re-signed lock to write.
 	var conns []*codegenpb.LockConnection
 	for _, c := range answers.connections {
@@ -406,8 +406,8 @@ func scaffoldGoModule(projectRoot, goModule, stubsRoot string) error {
 		}
 		// The project's hand-written srcgo module imports ONLY the
 		// public sdk/go runtime — NEVER the private compiler `srcgo`
-		// (that is closed IP and will never be publicly importable
-		// [→ CLAUDE.md D4 / rule #5]). So `srcgo` gets a co-dev
+		// (that is closed IP and will never be publicly importable).
+		// So `srcgo` gets a co-dev
 		// `replace` above (inert unless a workspace sibling needs it)
 		// but is deliberately absent from `require`: a require would
 		// make published-mode `go build` try to fetch the private

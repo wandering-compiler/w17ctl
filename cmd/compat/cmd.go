@@ -14,8 +14,7 @@ import (
 // compiled snapshots, with the dev/prod policy gate. w17ctl is a thin
 // client: it fetches the two snapshots' compiled IR from console storage
 // and ships them to the console's ClassifyIR RPC, which classifies +
-// applies the gate (thin-client refactor Step 3d — the engine moved
-// behind the API). CI can fail a build on a prod-mode block (non-zero
+// applies the gate (the engine lives behind the API). CI can fail a build on a prod-mode block (non-zero
 // exit).
 type Cmd struct {
 	Console string `name:"console" placeholder:"HOST:PORT" env:"CONSOLE_STORAGE_ADDR" help:"Console storage endpoint. Defaults to the logged-in console (w17ctl login), else the compiled-in default."`

@@ -22,7 +22,7 @@ import (
 // opt-in now, and the next codegen SWEEPS the manifests of a target that is
 // not declared, so a project does not keep a file nothing regenerates.
 //
-// Block 2 §8.2: the console owns the lock. add / remove go through the
+// The console owns the lock. add / remove go through the
 // console's EditLock (which validates the target name + re-signs); list reads
 // through DescribeLock.
 type DeployCmd struct {

@@ -211,7 +211,7 @@ func (c *PushCmd) Run(parent *Cmd) error {
 	if len(c.Protos) > 0 {
 		ctx, cancel := core.ClientCtx()
 		// Snapshot IR carries the descriptor set so compat WIRE/API fire
-		// for relational schemas too (G6) — distinct from `migrate
+		// for relational schemas too — distinct from `migrate
 		// generate`, whose IR stays descriptor-free. The IR is opaque bytes
 		// (the client never decodes it); the proto dir + default connection
 		// resolve server-side via DescribeLock inside the compile.
@@ -236,7 +236,7 @@ func (c *PushCmd) Run(parent *Cmd) error {
 
 	// Atomic: store the snapshot + advance the head in one generated
 	// multi-op handler (one transaction) — no window where a snapshot is
-	// stored but the head is stale (G7).
+	// stored but the head is stale.
 	pushCtx, pushCancel := core.ClientCtx()
 	pushed, err := sc.SM.PushSnapshot(pushCtx, &initiativespb.PushSnapshotReq{
 		ProjectId: project, InitiativeId: initiative.GetId(), IrSchema: irSchema,

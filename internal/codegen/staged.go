@@ -98,8 +98,8 @@ func GenerateClientViaConsole(root, console, protoDir, lockPath string) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	// The languages dir comes from the console's lock projection (§8.2 — the
-	// client holds no lock types).
+	// The languages dir comes from the console's lock projection (the client
+	// holds no lock types).
 	dctx, dcancel := core.ClientCtx()
 	view, err := cl.DescribeLock(dctx, &codegenpb.DescribeLockRequest{Lock: lockBytes})
 	dcancel()
@@ -229,8 +229,8 @@ func GuideViaConsole(root, console string) error {
 // stale exactly when the compiler has moved — and the loop that moves with
 // the compiler is the adoption loop, which runs codegen and has no reason to
 // re-run guide. A consumer read an old copy, concluded a shipped annotation
-// did not exist, and went looking for a gap that had already been closed
-// (a consumer, 2026-07-28). Refreshing where the compiler is contacted anyway
+// did not exist, and went looking for a gap that had already been closed.
+// Refreshing where the compiler is contacted anyway
 // costs one RPC and removes the drift entirely.
 func refreshPlatformSpecs(cl core.CodegenConsole, root string) (int, error) {
 	ctx, cancel := core.ClientCtx()

@@ -250,7 +250,7 @@ func DevSync(ctx context.Context, base, current []byte, applierFor migrate.Appli
 // console did with it — which depends on the console. A current one plans it
 // from the checkpoint (it said so by returning one); an older one leaves it
 // alone entirely, and saying "planned from the checkpoint" to that user would
-// be the F13 lie again (a warning describing a plan that does not exist).
+// be the same lie again (a warning describing a plan that does not exist).
 func warnUnreadable(conns []string, consoleKnowsTargets bool) {
 	for _, conn := range conns {
 		if consoleKnowsTargets {
@@ -362,13 +362,12 @@ func isAlreadyExists(err error) bool {
 //     plans a store it heard nothing about from the checkpoint this request
 //     carries (the record of the last sync; none → a full CREATE), and
 //     `examples/pg-native` ships exactly that pairing. Refusing it made every
-//     mixed-dialect project unbuildable (pass #48 F13); planning it as
-//     "already converged", which is what the console did until pass #49 M1,
-//     froze it while this warning described a plan that did not exist;
+//     mixed-dialect project unbuildable; planning it as "already
+//     converged", which is what older consoles did, froze it while this warning described a plan that did not exist;
 //   - the observation itself fails.
 //
 // warnf writes an operator-facing warning. A variable so a test can prove the
-// message is actually EMITTED: the property F13 cares about is loudness, and a
+// message is actually EMITTED: the property that matters is loudness, and a
 // warning nobody can observe in a test is the same silence under a new name.
 var warnf = func(format string, a ...any) { fmt.Fprintf(os.Stderr, format, a...) }
 
@@ -388,7 +387,7 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 			if schemaless {
 				continue
 			}
-			// F13, corrected after `make ci`: this was a hard refusal, and it
+			// This was a hard refusal once, and it
 			// made every mixed-dialect project unbuildable — `examples/pg-native`
 			// ships a MySQL store beside its Postgres one and stopped dead.
 			//
@@ -396,12 +395,11 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 			// nobody can read is planned against no observation at all, so the
 			// plan for it is made blind. Saying so leaves the behaviour that
 			// works and removes the part that was a defect. Refusing instead
-			// is the "right about the defect, wrong about the remedy" shape
-			// this dimension recorded in round 1 (pass #40 XF4, where the
-			// proposed reject broke a shipped feature).
+			// is the "right about the defect, wrong about the remedy" shape: a
+			// reject that breaks a shipped feature.
 			//
-			// What the console does with it depends on the console (pass #49
-			// M1), so the warning is printed once the plan says which one this
+			// What the console does with it depends on the console, so the
+			// warning is printed once the plan says which one this
 			// is — see warnUnreadable.
 			unreadable = append(unreadable, conn)
 			continue
@@ -422,14 +420,14 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 				PrimaryKey: t.PrimaryKey,
 				// The key CONSTRAINT's name: `<table>_pkey` is only
 				// Postgres's default, and a key change that drops a name
-				// that does not exist fails with 42P16 (pass #49 B49-6).
+				// that does not exist fails with 42P16.
 				PrimaryKeyName: t.PrimaryKeyName,
 				Checks:         t.Checks,
 				CheckDefs:      t.CheckDefs,
 			}
 			// The UNIQUE constraints, with presence: only a reader that
 			// LOOKED sends the message, so the console can tell "none"
-			// from "not read" (pass #49 B49-10).
+			// from "not read".
 			if t.UniquesRead {
 				ot.UniqueConstraints = &codegenpb.ObservedUniqueConstraints{}
 				for _, u := range t.Uniques {
@@ -454,7 +452,7 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 					// The observation already reads attgenerated/attidentity;
 					// dropping them here would leave the server unable to tell
 					// a generation expression from a default, because both
-					// arrive through the same slot (F35).
+					// arrive through the same slot.
 					Generated: c.Generated, Identity: c.Identity,
 				})
 			}
@@ -469,8 +467,7 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 					TargetTable: fk.TargetTable, TargetColumn: fk.TargetColumn,
 					OnDelete: fk.OnDelete,
 					// A target's identity is (schema, name), and a
-					// composite key is all of its columns (pass #49
-					// B49-12 / B49-15).
+					// composite key is all of its columns.
 					TargetSchema: fk.TargetSchema, TargetColumns: fk.TargetColumns,
 					// SET NULL (col) and a bare SET NULL report one rule;
 					// the list tells them apart (PostgreSQL 15+).
@@ -481,7 +478,7 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 		}
 		// The native enum types with their labels: a column names its type,
 		// the labels it admits live here, and without them a label the
-		// author added never reached the database (pass #49 A49-1).
+		// author added never reached the database.
 		for _, et := range live.EnumTypes {
 			store.EnumTypes = append(store.EnumTypes, &codegenpb.ObservedEnumType{
 				Schema: et.Schema, Name: et.Name, Type: et.Type, Labels: et.Labels,

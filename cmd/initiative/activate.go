@@ -10,8 +10,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/snapstore"
 )
 
-// Manual-mode initiative pointer (docs/specs/storage/dev-db-lifecycle.md
-// §workflow modes). When autosync is OFF, the active initiative is a
+// Manual-mode initiative pointer. When autosync is OFF, the active initiative is a
 // persistent per-project pointer in `~/.w17/config.yaml` that
 // `stack build` + `db snapshot` scope to — so the dev switches DB
 // lineages with `initiative activate <name>` instead of a per-command

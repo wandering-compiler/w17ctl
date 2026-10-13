@@ -13,7 +13,7 @@ import (
 // lock file at `path` and returns a release closure. Hold it across a
 // read-modify-write of the lock (Load → mutate → Save) so two concurrent
 // `w17ctl push` runs pinning per-connection targets can't lose one
-// another's pins to a last-writer-wins race (Q58-console-1): without it
+// another's pins to a last-writer-wins race: without it
 // both load the same baseline, each updates its own connection, and the
 // second Save (a non-atomic os.WriteFile) clobbers the first.
 //

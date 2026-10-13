@@ -3,7 +3,7 @@
 // other w17ctl command dials). The console mints the bearer; the client only
 // stores it in the machine-local credential store (~/.w17/auth.yaml) and caches
 // the caller's org memberships. Missing inputs are prompted interactively
-// (email → password → host). See docs/specs/plugins/auth-cli-login-and-orgs.md.
+// (email → password → host).
 package login
 
 import (

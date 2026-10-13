@@ -13,12 +13,11 @@ import (
 
 // ====================================================================
 // `w17ctl migrate squash` — freeze a change request together with its
-// migrations (docs/decisions/squash-supersede-and-adopt.md)
+// migrations
 // ====================================================================
 //
 // The client half of `ResetHistory(SUPERSEDE)`. The server half shipped
-// with docs/decisions/squash-supersede-and-adopt.md and had no command
-// in front of it, so the feature existed and was unreachable.
+// first and had no command in front of it, so the feature existed and was unreachable.
 //
 // Two calls, exactly like reset: the console marks WHAT is collapsing,
 // and the ORDINARY push derives the baseline that replaces it. The

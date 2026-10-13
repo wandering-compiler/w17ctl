@@ -7,7 +7,7 @@
 // proto set (including the committed locks) to the console's VerifyAcl /
 // VerifyEventbus RPCs, which recompute + compare server-side. The lock's
 // SIGNATURE is likewise checked server-side via VerifyLock — the client
-// holds no verifier key (public-split boundary §4).
+// holds no verifier key.
 package verify
 
 import (
@@ -43,13 +43,13 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 	}
 	// The committed lock bytes feed both the proto-dir projection (DescribeLock)
 	// and the signature check (VerifyLock) — the client holds no lock types
-	// (public-split §8.2), so it asks the console for the proto dir. Read
+	// so it asks the console for the proto dir. Read
 	// BEFORE dialing: a local problem should surface without a round trip.
 	lockBytes, err := os.ReadFile(filepath.Join(root, "w17", "lock.yaml"))
 	if err != nil {
 		return fmt.Errorf("verify: read lock: %w", err)
 	}
-	// T2-5 pass #9 (B-F1). Zero bytes is a SUCCESSFUL read, and the server
+	// Zero bytes is a SUCCESSFUL read, and the server
 	// answers its `len(lock) == 0` branch with ok=true plus an empty LockView.
 	// The empty proto_dir then steered the surface detectors at the `proto`
 	// convention, so a project on a non-default proto_dir had both drift checks
@@ -82,7 +82,7 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 	}
 	protoDir := view.GetProtoDir()
 
-	// T2-5 pass #9 (D-F1). A committed lock is verified because it EXISTS, not
+	// A committed lock is verified because it EXISTS, not
 	// because the project still declares the surface that produced it. The
 	// detector greps for `w17.acl_`, and the generated lock carries that
 	// literal in its own header comment — which neither `(w17.lock_checksum)`
@@ -112,7 +112,7 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 	var errs []error
 
 	// The lock signature is always checked server-side — the client holds
-	// no verifier key (public-split boundary §4). Ship the raw committed
+	// no verifier key. Ship the raw committed
 	// bytes (already read above); a hand-edited / tampered / unsigned lock
 	// surfaces as drift.
 	fmt.Fprintln(out, "verifying lock signature…")
@@ -211,7 +211,7 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 		// a wrong diagnosis printed above a correct detail. A consumer read
 		// "drift detected — re-run codegen and commit the locks", did that,
 		// and only then read to the end of the line: the locks were fine,
-		// the role was missing three permissions (a consumer, 2026-09-23).
+		// the role was missing three permissions.
 		//
 		// Advice that cannot apply to the case it is printed for is worse
 		// than no advice: it is the part people act on first.
@@ -225,7 +225,7 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 		// Same shape one floor further out: a plugin TREE that disagrees with
 		// its pin is not lock drift, and `codegen` will not touch it. The fix
 		// is a `plugin update`, which the detail already names — the headline
-		// used to send people at the wrong one first (a consumer, 2026-09-23).
+		// used to send people at the wrong one first.
 		if names, only := PluginTreeDrift(errs); only {
 			return fmt.Errorf("verify: %s — the committed plugin tree is not the one the lock pins, "+
 				"so this is not lock drift and `codegen` will not repair it. "+
@@ -256,7 +256,7 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 	// from the proto, and they drift the same silent way: codegen rewrites
 	// `fixtures/<domain>/acl-roles.json` with a new permission, nobody
 	// re-renders, and the seeded roles lack it — an endpoint answering
-	// PERMISSION_DENIED with nothing pointing at the seed (a consumer, twice).
+	// PERMISSION_DENIED with nothing pointing at the seed.
 	//
 	// Its own refusal with its own fix, NOT one more line in the drift list
 	// above: that list's headline says "re-run codegen", which is the one
@@ -319,11 +319,11 @@ func verifyErr(res *codegenpb.VerifyResult, rpcErr error) error {
 // surfacesToVerify decides which drift checks run. Extracted so the decision
 // is testable on its own: it lives inside a method that needs a console
 // connection, and a rule this load-bearing should not be reachable only
-// through a dialled RPC (T2-5 pass #13, D13-4).
+// through a dialled RPC.
 //
 // BOTH arms trigger on the committed LOCK as well as on the declared surface.
 // The eventbus arm did not, so an orphaned eventbus lock was never verified —
-// the same defect the ACL arm was hardened against in pass #9, surviving on
+// the same defect the ACL arm was hardened against earlier, surviving on
 // the sibling that was not revisited at the time.
 func surfacesToVerify(root, protoDir string) (hasAcl, hasEventbus bool) {
 	hasAcl = core.HasAclLockFile(root, protoDir) || core.DetectAclSurface(root, protoDir)

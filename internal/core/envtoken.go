@@ -32,7 +32,7 @@ const EnvConsoleAddrVar = envConsoleAddrVar
 // DIALED, or "" when there is none to present.
 //
 // The address check is the whole point, and it is the same narrowing
-// instanceFor applies to the credential store (T2-5 D11-9): a bearer is
+// instanceFor applies to the credential store: a bearer is
 // presented to the console it was issued for, never to a host the caller
 // names. Without it this variable would be the wider version of the very bug
 // that narrowing fixed — and worse, because the token it leaks belongs to an

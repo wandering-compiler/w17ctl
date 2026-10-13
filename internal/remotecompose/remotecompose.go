@@ -1,5 +1,5 @@
 // Package remotecompose runs `docker compose` on a remote docker host
-// over SSH in remote-stack mode (docs/experiments/remote-stack.md §2.3).
+// over SSH in remote-stack mode.
 //
 // It uses remote-exec compose — `ssh host 'cd <dir> && <env> docker
 // compose ...'` — deliberately, NOT DOCKER_HOST=ssh://: this way the

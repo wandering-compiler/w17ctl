@@ -15,7 +15,7 @@ import (
 // generated components into ONE binary instead of the default
 // one-binary-per-component layout.
 //
-// Block 2 §8.2: the console owns the lock. compose / decompose go
+// The console owns the lock. compose / decompose go
 // through the console's EditLock (which validates the combo + re-signs);
 // list reads through DescribeLock. The component-combo rules + the
 // derived binary name live server-side.

@@ -145,7 +145,7 @@ func DialectByEnginePort(containerPort int) (string, bool) {
 // Asked of compose rather than of `docker ps`, so the answer is scoped to this
 // project by construction: a host port is unique per MACHINE, so "who publishes
 // 16209" is a question about the machine — the question whose answer reached
-// another workspace's database (a consumer).
+// another workspace's database.
 func PublishedPorts(root string) (map[string]map[int]int, bool) {
 	raw, err := docker.CaptureComposeFn(root, append(docker.FileArgs(root), "ps", "--format", "json")...)
 	if err != nil || len(raw) == 0 {
@@ -194,7 +194,7 @@ func PublishedPorts(root string) (map[string]map[int]int, bool) {
 //	                                    remembered port now belongs to something
 //	                                    else, so there is no honest DSN to return.
 //	compose not askable              -> the memory. No docker, no compose file,
-//	                                    nothing to check against: the pre-#75
+//	                                    nothing to check against: the older
 //	                                    behaviour, and the only case where the
 //	                                    remembered number is still the best answer.
 func ResolveLive(connName string, p *devconfig.Project, published map[string]map[int]int, asked bool) (dsn, skipReason, note string) {

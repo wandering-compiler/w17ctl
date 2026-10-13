@@ -145,8 +145,7 @@ func (p *stdinPrompter) Select(question string, options []string, defaultValue s
 // could never be signed into from this CLI: the form stored a hash of what was
 // typed, the terminal sent something shorter, and the console answered
 // `invalid credentials` with no way for anybody to see why. Found onboarding a
-// colleague who had registered on the web and could not log in from w17ctl
-// (2026-09-23).
+// user who had registered on the web and could not log in from w17ctl.
 //
 // Trimming a password can only ever turn a correct one into a wrong one; it
 // cannot turn a wrong one into a correct one. There was nothing on the other

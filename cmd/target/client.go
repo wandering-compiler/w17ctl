@@ -15,7 +15,7 @@ import (
 // ClientCmd is the parent of `w17ctl target client <leaf>` commands —
 // add / list / generate.
 //
-// Block 2 §8.2: the console owns the lock. The add wizard appends one entry to
+// The console owns the lock. The add wizard appends one entry to
 // `generated_code.clients[]` (the FE client codegen output declarations) via
 // the console's EditLock (which maps the framework/language/wire tokens to the
 // lock enums + re-signs); list reads through DescribeLock. (generate is codegen
@@ -33,8 +33,7 @@ type ClientCmd struct {
 // client codegen formerly shipped as the standalone `w17client` binary. As
 // a thin client it uploads the proto set + the signed lock to the
 // console's GenerateClient RPC, which runs the generator server-side, and
-// writes the returned trees under each client's output_root (thin-client
-// refactor Step 3a).
+// writes the returned trees under each client's output_root.
 type ClientGenerateCmd struct {
 	Lock        string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file (relative paths resolve from cwd)."`
 	ProtoRoot   string `name:"proto-root" placeholder:"DIR" help:"Directory to walk for .proto sources (relative to --project-root; default the lock's proto dir)."`
@@ -57,8 +56,8 @@ func (c *ClientGenerateCmd) Run() error {
 	}
 	protoDir := c.ProtoRoot
 	if protoDir == "" {
-		// Default proto dir from the console's lock projection (§8.2 — the
-		// client holds no lock types).
+		// Default proto dir from the console's lock projection (the client
+		// holds no lock types).
 		lockBytes, rerr := os.ReadFile(lockPath)
 		if rerr != nil {
 			return fmt.Errorf("client generate: read lock: %w", rerr)
@@ -116,7 +115,7 @@ var clientWires = []string{"unspecified", "json", "protobuf"}
 // parseClientFramework / parseClientLanguage / parseClientWire validate the
 // wizard's input (alias-tolerant) and return the canonical token the EditLock
 // intent carries; the console maps the token to the lock enum. They no longer
-// reference lockpb (Block 2 §8.2 — the client holds no lock types).
+// reference lockpb (the client holds no lock types).
 func parseClientFramework(s string) (string, error) {
 	switch strings.ToLower(s) {
 	case "core":
@@ -154,7 +153,7 @@ func parseClientWire(s string) (string, error) {
 }
 
 func (c *ClientAddCmd) Run() error {
-	// Q58-console-1: serialise the read → EditLock → write below against
+	// Serialise the read → EditLock → write below against
 	// concurrent lock-mutating runs so the second write can't clobber the
 	// first's edit. Held until this function returns.
 	release, lockErr := lockfile.ForUpdate(c.LockPath)
@@ -314,7 +313,7 @@ func surfaceLabel(s string) string {
 
 // ClientSetCmd implements `w17ctl target client set <output-root>` — the edit
 // `add` could not make. Switching an entry to another rest_surface used to
-// mean editing the signed lock by hand (a consumer, 2026-10-01). Only the
+// mean editing the signed lock by hand. Only the
 // flags GIVEN change; `--rest-surface ""` clears the scoping.
 type ClientSetCmd struct {
 	OutputRoot  string  `arg:"" name:"output-root" help:"The entry's output root, as 'target client list' prints it."`

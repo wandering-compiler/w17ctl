@@ -1,10 +1,10 @@
 // Package remote holds the small, shared primitives for w17ctl's remote
-// dev-stack mode (docs/experiments/remote-stack.md): parsing an SSH
+// dev-stack mode: parsing an SSH
 // destination and turning it into the argv fragments that rsync, the
 // remote docker-compose runner, and the tunnel supervisor all need.
 //
 // It carries NO w17 know-how — it is pure transport plumbing, in keeping
-// with the dumb-client boundary (D4): the remote is merely the docker leg
+// with the dumb-client boundary: the remote is merely the docker leg
 // reached over SSH.
 package remote
 

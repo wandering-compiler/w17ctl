@@ -45,7 +45,7 @@
 // share a `finding:` key: each gets its own file. A file without `id:`
 // (written before ids existed) is never sent — it could approve a different
 // change — and `--write` asks again; the choice it held is quoted in the new
-// file (pass #49 M2 / C49-10).
+// file.
 //
 // The client holds no knowledge of WHAT a decision means: the key, the
 // offered options and the change summary all come from the console's
@@ -209,7 +209,7 @@ func readOne(path string) File {
 	readChoice(&f, d.Choose)
 	if f.ID == "" {
 		// Not sent: a key-only decision could approve a different change of
-		// the same column than the one it was written for (M2).
+		// the same column than the one it was written for.
 		f.Unbound, f.Undecided = true, false
 		f.Problem = "no `id:` — written before a decision recorded WHICH change it decides, so it could approve a different one; `w17ctl migrate check --write` asks again"
 	}

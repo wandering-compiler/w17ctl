@@ -26,8 +26,8 @@ func displaySnapshot(id string) string {
 
 // Cmd is `w17ctl review` — the PR-analog flow over compiled
 // snapshots. Pure client orchestration over the generated storage
-// services + the console's ClassifyIR RPC (semantic diff over the API,
-// thin-client refactor Step 3d); no server facade. v1 ships
+// services + the console's ClassifyIR RPC (semantic diff over the API);
+// no server facade. v1 ships
 // self-approval. The prod-mode gate (merge into a prod environment) is
 // the point where the compat engine becomes a hard ENFORCEMENT.
 type Cmd struct {
@@ -181,8 +181,8 @@ func (c *ApproveCmd) Run(parent *Cmd) error {
 	})
 	acancel()
 	if err != nil {
-		// `approvals` carries a (org_id, review_id, actor) unique index since
-		// T3-7 D-F4 — one decision row per actor, so a future quorum count
+		// `approvals` carries a (org_id, review_id, actor) unique index —
+		// one decision row per actor, so a future quorum count
 		// cannot be satisfied by one actor firing N invocations. A retried CI
 		// step is the ordinary way to hit it, and a retry was always a no-op
 		// here, so it stays one: the database refuses the duplicate, we say so
@@ -197,7 +197,7 @@ func (c *ApproveCmd) Run(parent *Cmd) error {
 		Id: review.GetId(), Status: reviewpb.Review_APPROVED, DecidedBy: actor,
 		// The status this command READ. Without it an approve that lost a race
 		// to a merge overwrote MERGED with APPROVED and told both callers they
-		// had succeeded (D-F3).
+		// had succeeded.
 		ExpectedStatus: review.GetStatus(),
 	})
 	dcancel()
@@ -252,12 +252,12 @@ func (c *MergeCmd) Run(parent *Cmd) error {
 	// the trunk tip at open; if trunk has advanced since, re-validate the
 	// semantic diff against the CURRENT trunk tip and surface it.
 	//
-	// SCOPE NOTE (T3-7 D-F1). This block still only RENDERS — it re-classifies
+	// SCOPE NOTE. This block still only RENDERS — it re-classifies
 	// in "dev" mode and never blocks, so a merge whose base is stale proceeds.
 	// That is deliberately left alone here and tracked as its own finding: it
 	// is a POLICY question (should a stale base block, and in which mode?)
-	// that is equally true of a purely sequential run, whereas D-F1 was a
-	// concurrency defect — two merges producing an outcome no serial order
+	// that is equally true of a purely sequential run, whereas a lost merge
+	// is a concurrency defect — two merges producing an outcome no serial order
 	// can. The compare-and-set below closes the concurrency half exactly:
 	// it refuses a write whose premise expired DURING this merge, and says
 	// nothing about a premise that was already stale when the merge started.
@@ -270,7 +270,7 @@ func (c *MergeCmd) Run(parent *Cmd) error {
 	}
 	// The premise of everything below: the trunk head as it was when this
 	// merge read it. SetHead re-asserts it, so a merge that raced this one
-	// makes the advance fail loudly instead of overwriting it (D-F1).
+	// makes the advance fail loudly instead of overwriting it.
 	trunkHeadAtRead := trunk.GetHeadSnapshotId()
 	if trunk.GetHeadSnapshotId() != "" && trunk.GetHeadSnapshotId() != review.GetBaseSnapshotId() {
 		fmt.Fprintf(core.Stdout, "⚠ trunk advanced since the review opened — re-validating against current trunk tip:\n")
@@ -333,10 +333,10 @@ func (c *MergeCmd) Run(parent *Cmd) error {
 	// review is closed, and SetHead to the same head is idempotent, so the
 	// operator's recovery is simply to re-run `review merge`. Making this
 	// truly atomic requires a server-side multi-op RPC (as `initiative push`
-	// already has, G7); tracked for when one lands.
+	// already has); tracked for when one lands.
 	//
-	// That reasoning is about a partial FAILURE, and T3-7 D-F1 found what it
-	// does not cover: under two CONCURRENT merges nothing fails and nothing
+	// That reasoning is about a partial FAILURE, and it does not cover the
+	// concurrent case: under two CONCURRENT merges nothing fails and nothing
 	// replays. Both read this trunk head, both wrote it, last writer won, and
 	// the loser's review stayed recorded MERGED while trunk pointed at the
 	// winner's snapshot — unfindable afterwards, since snapshots carry no
@@ -388,8 +388,8 @@ func (c *MergeCmd) Run(parent *Cmd) error {
 	// Deploy to the target environment (advance its baseline). Conditional on
 	// the baseline the gate above actually diffed against: if it moved, this
 	// merge was classified against a snapshot that is no longer deployed, and
-	// letting the write land is what turns D-F1 into "the prod gate passes a
-	// breaking change".
+	// letting the write land is what turns a lost merge into "the prod gate
+	// passes a breaking change".
 	if env != nil {
 		edctx, edcancel := core.ClientCtx()
 		_, err = sc.EM.SetDeployed(edctx, &reviewpb.SetEnvDeployedReq{

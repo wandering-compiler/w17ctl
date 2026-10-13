@@ -4,17 +4,15 @@
 //
 // The offline read is deliberate and stays. What changed is what it CLAIMS:
 // printing an identity and a list of organizations reads as "you are logged
-// in", and what it actually knows is "this file says so". a consumer took that as
-// confirmation before a regeneration and found out at the first real call that
-// the token was dead (2026-09-12).
+// in", and what it actually knows is "this file says so". It has been taken as
+// confirmation before a regeneration, and the first real call then found the
+// token dead.
 //
 // A recycled port makes it worse than stale. A dev console publishes an
 // ephemeral port, docker hands freed ports on, and this store keys credentials
 // by address — so the identity and organizations printed here can belong to a
 // console that no longer exists, while some OTHER project's console answers at
 // that address now. Same confident output, no relation to what is listening.
-//
-// See docs/specs/plugins/auth-cli-login-and-orgs.md.
 package whoami
 
 import (
@@ -47,7 +45,7 @@ func (c *Cmd) Run() error {
 	// — advice a CI runner must not take. `login` is the wrong act for a
 	// machine account and would not even work: it is `kind = BOT`, and the
 	// plugin refuses a password sign-in for one. Reported from a real CI run
-	// where the token was valid (a consumer, 2026-09-21), and AGENTS.md points at
+	// where the token was valid, and AGENTS.md points at
 	// this very command as the arbiter of "is the credential the problem".
 	if core.EnvTokenIsSet() {
 		return c.reportMachineAccount()
@@ -214,7 +212,7 @@ func (c *Cmd) reportMachineAccount() error {
 	// is a role that does not include it far more often than a bad token. A
 	// pipeline minting migrations needs ci-push, a deploy fetching them
 	// deploy-fetch — and before this printed the role, a consumer could not
-	// tell from the client which one a token held (2026-10-01).
+	// tell from the client which one a token held.
 	fmt.Fprintf(core.Stdout, "  organizations (%d):\n", len(orgs))
 	for _, o := range orgs {
 		role := o.Role

@@ -228,8 +228,7 @@ func Run(args []string) {
 		// runs to fix all three. Printed under a failed `login` it answers a
 		// question nobody asked and hides the one they did: a colleague being
 		// onboarded was told "no stored credential for this console" and
-		// "interactive: w17ctl login …" by the login they had just run
-		// (2026-09-23).
+		// "interactive: w17ctl login …" by the login they had just run.
 		if explainsNothingHere(ctx) {
 			ctx.FatalIfErrorf(err)
 			return

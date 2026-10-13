@@ -1,5 +1,5 @@
 // Package reconcile is the branch-switch reconcile of the dev DB
-// lifecycle (docs/specs/storage/dev-db-lifecycle.md S7). When a
+// lifecycle. When a
 // DB-touching command (`stack build`, `stack up --build`) notices the
 // current git branch differs from the branch w17 last built live, it
 // snapshots the outgoing branch's stores and swaps in the incoming
@@ -46,7 +46,7 @@ type Deps struct {
 	// branch's dev data stops being recoverable, so switching back to it
 	// later finds no snapshot and builds fresh. The default refuses, because
 	// the alternative is a command that silently destroys the database of
-	// the branch you just left (a consumer).
+	// the branch you just left.
 	SkipSnapshot bool
 
 	// LastLive / SetLastLive read + persist the branch w17 last built

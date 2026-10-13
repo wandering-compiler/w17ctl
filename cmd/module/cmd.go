@@ -76,12 +76,11 @@ func (c *AddCmd) Run() error {
 	// reused under another group, is refused by codegen (protopath.Validate,
 	// on entry to every build) — the same thin-client rule as the next note.
 
-	// F1 (plugin-system track) — a module name that collides with an
-	// active plugin's `registered_as` is caught at codegen time by the IR
-	// validator (D3). The early-warning pre-flight that recomputed it here
-	// needed the proto loader (DiscoverActivations); a thin client doesn't
-	// embed the loader, so the check moved fully to codegen-time (the real
-	// gate) per the thin-client refactor (Step 3a).
+	// A module name that collides with an active plugin's `registered_as`
+	// is caught at codegen time by the IR validator. The early-warning
+	// pre-flight that recomputed it here needed the proto loader
+	// (DiscoverActivations); a thin client doesn't embed the loader, so the
+	// check lives at codegen time only (the real gate).
 
 	// The prefix the DOMAIN already uses wins over the one derived from the
 	// project name. Deriving it here put a hand-shortened domain's new module

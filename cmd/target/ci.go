@@ -16,7 +16,7 @@ import (
 // that the consumer copies into its CI's canonical location (the
 // compiler never touches the repo root — Zero-Code Isolation).
 //
-// Block 2 §8.2: the console owns the lock. add / remove go through the
+// The console owns the lock. add / remove go through the
 // console's EditLock (which validates the provider name + re-signs); list
 // reads through DescribeLock.
 type CiCmd struct {
@@ -38,7 +38,7 @@ func (c *CiAddCmd) Run() error {
 	if c.Provider == "" {
 		return fmt.Errorf("ci add: provider required")
 	}
-	// Q58-console-1: serialise the read → EditLock → write below against
+	// Serialise the read → EditLock → write below against
 	// concurrent lock-mutating runs so the second write can't clobber the
 	// first's edit. Held until this function returns.
 	release, lockErr := lockfile.ForUpdate(c.LockPath)

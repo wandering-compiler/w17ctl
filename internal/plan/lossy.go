@@ -84,8 +84,7 @@ func describeLoss(l *codegenpb.LossyChange) string {
 		// The console says what the change DOES, consequence included — it
 		// is the side that knows the op. Appending "is retyped …, which can
 		// fail or truncate" here described a decided DELETE of the rows a
-		// narrowed choice list no longer allows as a cast (T1-1 pass #49
-		// A49-11). A table-level decision (a primary-key change) carries the
+		// narrowed choice list no longer allows as a cast. A table-level decision (a primary-key change) carries the
 		// table alone.
 		subject := "the column " + l.GetObject()
 		if !strings.Contains(l.GetObject(), ".") {

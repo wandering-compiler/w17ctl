@@ -12,13 +12,13 @@ import (
 // proxy feature): the per-service PROD replica counts the generated
 // Compose / k8s render.
 //
-// Block 2 §8.2: the console owns the lock. These commands treat
+// The console owns the lock. These commands treat
 // w17/lock.yaml as opaque bytes — the replica edit goes through the
 // console's EditLock (which re-signs + runs the pre-sign Validate: count
 // >= 1, no folded tier scaled past 1), the list read through DescribeLock.
 //
 // The one load-bearing effect: a `<domain>-storage` bundle set past 1
-// materializes the storage gRPC proxy in the prod artifacts (S4).
+// materializes the storage gRPC proxy in the prod artifacts.
 // Single-replica tiers and composed single binaries never do.
 type ScaleCmd struct {
 	Set   ScaleSetCmd   `cmd:"" help:"Set a service's PROD replica count. Re-signs on save. A <domain>-storage bundle past 1 materializes the storage gRPC proxy."`

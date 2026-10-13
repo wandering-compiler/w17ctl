@@ -3,8 +3,7 @@
 // age keypair (encrypted when the key is present, plain otherwise);
 // `encrypt` turns a plain `.secrets` into a committable `.secrets.age`;
 // `backend` sets the deploy-boundary materialiser. The runtime
-// resolution chain (sdk/go/service/secret) consumes the result. Spec:
-// docs/specs/secrets/production-secrets.md.
+// resolution chain (sdk/go/service/secret) consumes the result.
 package secrets
 
 import (
@@ -21,7 +20,7 @@ type Cmd struct {
 	Backend BackendCmd `cmd:"" help:"Set the deploy-boundary materialiser the generated deploy artefacts target: plain (in-process / env_file) | sops (sops exec-env) | eso (ExternalSecret) | vault | cloud-csi. For sops it also writes a .sops.yaml for the lock's age recipients. Re-signs the lock."`
 
 	// The infrastructure's deploy env files (deploy/<env>/services/*/.env → .env.enc,
-	// sops dotenv + age). docs/decisions/infra-targets.md §4.3, §8.
+	// sops dotenv + age).
 	Keygen KeygenCmd `cmd:"" help:"Mint the age key of a deploy environment: prints the private key ONCE (password manager + GitHub environment secret SOPS_AGE_KEY), writes the public key to deploy/.sops.yaml."`
 	Seal   SealCmd   `cmd:"" help:"Validate every deploy/<env>/services/*/.env against its .env.example and seal it to .env.enc (sops dotenv, age) — only the files whose values changed."`
 	Unseal UnsealCmd `cmd:"" help:"Decrypt deploy/<env>/services/*/.env.enc back to .env for editing."`

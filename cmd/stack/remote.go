@@ -10,7 +10,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/remotesync"
 )
 
-// Remote-mode registry + mode-selection verbs (docs/experiments/remote-stack.md).
+// Remote-mode registry + mode-selection verbs.
 // All state lives in `~/.w17/config.yaml` (devconfig, per-user), never the
 // signed lock — a remote docker host + which mode a project runs in are
 // dev-machine concerns, exactly like the port map and run presets. These

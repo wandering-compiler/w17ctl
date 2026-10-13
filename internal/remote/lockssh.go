@@ -96,7 +96,7 @@ func (t Target) Fingerprint(stackDir string) (string, error) {
 	var out strings.Builder
 	script := "cd " + ShellQuote(stackDir) + " 2>/dev/null || { echo none; exit 0; }; " +
 		"find " + strings.Join(StackFiles, " ") + " hooks -type f ! -name '.env*' 2>/dev/null | LC_ALL=C sort | " +
-		"xargs -r sha256sum | sha256sum | cut -c1-16"
+		"xargs -r sha256sum | sha256sum | cut -c 1-16"
 	if err := t.Run(nil, &out, t.Sudo("sh -c "+ShellQuote(script))); err != nil {
 		return "", fmt.Errorf("fingerprint of %s on %s: %w", stackDir, t.Dest(), err)
 	}

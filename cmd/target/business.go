@@ -16,7 +16,7 @@ import (
 // HandlerRegistry / ClientSet) the project's hand-written RegisterBusiness
 // consumes.
 //
-// Block 2 §8.2: the console owns the lock. add goes through the console's
+// The console owns the lock. add goes through the console's
 // EditLock (which parses + validates the env specs, rejects a duplicate
 // domain, and re-signs); list reads through DescribeLock.
 type BusinessCmd struct {
@@ -67,7 +67,7 @@ func (c *BusinessAddCmd) Run() error {
 	// and a tree that does not build, with an error naming an import path
 	// rather than a decision they made two steps earlier.
 	//
-	// That is the shape a consumer reported (#24): a path that only fails
+	// That is the shape a consumer reported: a path that only fails
 	// several commands later. The path is not wrong and codegen is not wrong;
 	// what was missing is that `add` never said the package is theirs to
 	// write.

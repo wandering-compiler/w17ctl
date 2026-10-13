@@ -171,8 +171,7 @@ func (c *DumpCmd) write(rows []json.RawMessage) error {
 	// the two happen to be spelled alike. `--connection core-postgres` wrote
 	// `fixtures/core-postgres/`, `render` read the domain from that directory,
 	// resolved none of the models under it, and reported 0 statement(s) with
-	// exit 0 — 642 rows dumped, nothing seeded, no word said (a consumer,
-	// 2026-09-21).
+	// exit 0 — 642 rows dumped, nothing seeded, no word said.
 	//
 	// Deriving it is not available: the dumped rows carry `<module>.<Message>`
 	// and a module is a PLUGIN ACTIVATION as often as a domain (a fixture
@@ -223,7 +222,7 @@ func (c *DumpCmd) resolveDSN() (string, error) {
 	}
 	// By the lock's `project:`, like `stack build`. This reads and writes a
 	// STORE, so a duplicate registry entry picked silently is a dump of — or
-	// into — another project's database (a consumer).
+	// into — another project's database.
 	_, p, pnote, rerr := cfg.ResolveProject(lockProjectName(root), root)
 	if pnote != "" {
 		fmt.Fprintf(core.Stdout, "fixtures dump: %s\n", pnote)
@@ -233,8 +232,8 @@ func (c *DumpCmd) resolveDSN() (string, error) {
 	}
 	// What compose publishes NOW, not what this machine's config remembers: this
 	// reads and writes a STORE, and a remembered port for a store that is not
-	// running names whatever else took it (a consumer, the half the lock-based
-	// project resolution did not cover).
+	// running names whatever else took it (the half the lock-based project
+	// resolution did not cover).
 	published, asked := localtarget.PublishedPorts(root)
 	dsn, skip, note := localtarget.ResolveLive(c.Connection, p, published, asked)
 	if note != "" {

@@ -54,8 +54,7 @@ type Config struct {
 
 	// Remotes are named remote docker hosts, keyed by a user-chosen name.
 	// Populated by `stack remote add`; consumed in remote mode to run the
-	// docker stack on a beefy SSH-reachable box (see
-	// docs/experiments/remote-stack.md). Empty = local-only, the default.
+	// docker stack on a beefy SSH-reachable box. Empty = local-only, the default.
 	Remotes map[string]*Remote `yaml:"remotes,omitempty"`
 
 	// DefaultMode is the global default execution mode when a project does
@@ -100,8 +99,7 @@ type Project struct {
 	Presets map[string]*Preset `yaml:"presets,omitempty"`
 
 	// Autosync is this dev's local override of the project's
-	// dev-DB workflow mode (docs/specs/storage/dev-db-lifecycle.md
-	// §workflow modes). nil = no override (follow the lock's project
+	// dev-DB workflow mode. nil = no override (follow the lock's project
 	// default); non-nil wins over the lock. true = Mode A (autosync —
 	// the initiative follows the git branch, with auto snapshot/restore),
 	// false = Mode B (manual — active initiative set via `initiative
@@ -328,7 +326,7 @@ func (p *Project) ClearActivePreset() {
 // one, `stack build` dialled another, and their lock named a third — so a dump
 // reached a database in a DIFFERENT WORKSPACE on the same machine, and the
 // empty snapshots that came back are what a branch switch then restored over
-// their live stores (a consumer, and the mechanism behind #68).
+// their live stores.
 //
 // Sorting makes the wrong answer at least a STABLE wrong answer, which is what
 // makes it findable. Duplicates themselves are refused by DuplicatePaths, and
@@ -428,7 +426,7 @@ func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, 
 			// one tree.
 			//
 			// What the name is FOR is disambiguating several entries on one
-			// path (a consumer). With exactly one entry here there is nothing to
+			// path. With exactly one entry here there is nothing to
 			// disambiguate, so the single entry is the answer — said out loud,
 			// with the command that aligns the two names and keeps the ports.
 			// DuplicatePaths only reports paths carrying MORE than one entry, so
@@ -470,7 +468,7 @@ func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, 
 			// The two refusals that remain are the ones with a genuine ambiguity
 			// or a genuine hazard: several entries under other names (below), and
 			// an entry whose PATH is another checkout (further down) — that one
-			// would hand back another tree's ports, which is #75's whole point,
+			// would hand back another tree's ports, which is the whole point,
 			// and a shared runner is exactly where it could happen.
 			return lockProject, nil, fmt.Sprintf(
 				"this machine's registry (~/.w17/config.yaml) has no entry for this checkout, so no local " +

@@ -73,8 +73,8 @@ func For(ctx context.Context, dsn string) *Snapshotter {
 // project the fallback engaged for one and not the other, and the only thing
 // the person saw was the host error — `pg_dump: executable file not found in
 // $PATH` — which names the host and says nothing about the route that was
-// tried and refused. a consumer could not tell whether the fallback had failed or
-// simply did not exist (#62/3). A fallback that declines without a word is
+// tried and refused. Nobody could tell whether the fallback had failed or
+// simply did not exist. A fallback that declines without a word is
 // indistinguishable from one that is not there.
 func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 	u, err := url.Parse(dsn)
@@ -99,8 +99,7 @@ func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 	default:
 		return nil, fmt.Sprintf("%q has no in-container dump route", u.Scheme)
 	}
-	// ⛔ The DSN must address THIS machine, and nothing checked that until
-	// 2026-09-24.
+	// ⛔ The DSN must address THIS machine, and nothing used to check that.
 	//
 	// This route matches a container by the PORT the caller is dialling, on the
 	// premise that the port is one the host publishes. The host half of the DSN
@@ -114,8 +113,8 @@ func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 	// Measured on two throwaway stores: a DSN for `10.9.9.9:17004` — an address
 	// that exists nowhere on the machine — produced a 724-byte dump with zero
 	// CREATE TABLE and no error, while the correct DSN produced 1277 bytes with
-	// the table in it. a consumer's silently-empty branch snapshots are 722 bytes
-	// (#68), and this is how a snapshot of a populated store becomes a dump of
+	// the table in it. Silently-empty branch snapshots of 722 bytes have been
+	// seen, and this is how a snapshot of a populated store becomes a dump of
 	// somebody else's empty one.
 	//
 	// So: refuse a non-local host rather than guess. The caller falls back to
@@ -127,12 +126,9 @@ func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 			"its DSN names host %q, which is not this machine — the in-container route matches a container by the PUBLISHED port, so it can only be trusted for a local DSN (a remote host with the same port digits would dump a different server's database of the same name)",
 			u.Hostname())
 	}
-	// THIS PROJECT'S container first. The machine-wide lookup answers about the
-	// DAEMON — a host port is unique there — so on a shared box it finds another
-	// workspace's store just as readily (a consumer).
 	// THIS PROJECT'S container first. The machine-wide match answers about the
 	// DAEMON — a host port is unique there — so on a shared box it finds another
-	// workspace's store just as readily (a consumer).
+	// workspace's store just as readily.
 	cid := containerPublishingInProject(ctx, u.Port())
 	scoped := cid != ""
 	if !scoped {
@@ -156,8 +152,8 @@ func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 		// one fact that was missing: Dump names the container AND the compose
 		// project it belongs to, so a dump going somewhere else says so. The
 		// prevention lives at the other end — a snapshot with no tables in it is
-		// refused before it can be restored (#68) — and upstream, where a consumer's
-		// real cause was a project resolved by path instead of by its lock.
+		// refused before it can be restored — and upstream, where the real cause
+		// was a project resolved by path instead of by its lock.
 		cid = containerPublishingAnywhere(ctx, u.Port())
 	}
 	if cid == "" {
@@ -257,10 +253,9 @@ func (s *Snapshotter) Dump(ctx context.Context, w io.Writer) error {
 	where := s.container
 	if !s.scoped {
 		// Matched by PORT across the daemon rather than inside this project's
-		// compose stack. Name the compose project it actually belongs to: a
-		// consumer spent half a day on a dump that was reaching another
-		// workspace's database, and nothing in the output said whose container
-		// it was (a consumer).
+		// compose stack. Name the compose project it actually belongs to: half
+		// a day went into a dump that was reaching another workspace's
+		// database, and nothing in the output said whose container it was.
 		if proj := composeProjectOf(ctx, s.container); proj != "" {
 			where = fmt.Sprintf("%s, compose project %q — matched by port, not by this project's stack", s.container, proj)
 		} else {
@@ -378,8 +373,8 @@ func isLocalHost(host string) bool {
 // names from a list of SERVICE names, so where the two differed the store was
 // stopped like anything else — and the snapshot arranged to run inside that
 // container then failed with "pg_dump: executable file not found", which reads
-// like a missing tool rather than a container that is no longer running (a consumer
-// #57). Crossing the namespaces through the container is the one comparison
+// like a missing tool rather than a container that is no longer running.
+// Crossing the namespaces through the container is the one comparison
 // that does not depend on the two names matching.
 func ComposeServiceFor(ctx context.Context, dsn string) string {
 	u, err := url.Parse(dsn)

@@ -2,14 +2,12 @@
 // w17ctl-owned view of the routing fields the deploy path needs to read from
 // w17/lock.yaml WITHOUT a console round-trip. Apply and rollback are
 // deliberately offline — they never contact the console; FETCH is the single
-// ONLINE step, and it is the caller that opens this file first. (The header
-// listed fetch among the offline commands until T2-5 pass #14, D14-13.) It reads only the
+// ONLINE step, and it is the caller that opens this file first. It reads only the
 // raw stored fields (connection names + their pinned migration targets +
 // project_id); it does NOT resolve Effective* defaults (those are a console
 // concern via DescribeLock) and does NOT verify the signature (verification is
-// a console concern per the public-split boundary — the client does zero
-// crypto). The lock is treated as local config data the client may read, never
-// as the private srcgo lockpb/console-lock types.
+// a console concern — the client does zero crypto). The lock is treated as
+// local config data the client may read, never as the console's lock types.
 package lockfile
 
 import (
@@ -110,7 +108,7 @@ type GeneratedCode struct {
 	// codegen writes into `w17/` cannot cover a root outside it — there is no
 	// file for the console to fix, and the console never sees the consumer's
 	// repo anyway. A consumer put a React client at
-	// `frontend/apps/rehab/api` and committed 91 generated files without being
+	// `frontend/apps/web/api` and committed 91 generated files without being
 	// told; the warning that now says so needs these roots.
 	//
 	// ⚠️ An EMPTY `output_root` is not a root outside `w17/` — it means the

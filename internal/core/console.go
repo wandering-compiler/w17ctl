@@ -50,13 +50,12 @@ var DefaultConsoleAddr string
 //
 // All empty → an actionable error listing every surface.
 //
-// The lock's `w17_url` is deliberately NOT a source here (public-split §8.2 —
-// the client treats the lock as opaque bytes and can't dial the console to
+// The lock's `w17_url` is deliberately NOT a source here (the client treats the lock as opaque bytes and can't dial the console to
 // learn where the console is). It still rides the lock as a stored field.
 func ResolveConsoleAddr(flagValue string) (string, error) {
 	// Resolve the winner, then validate IT — whichever source it came from.
 	// A web-style address stored by a login or compiled in as the default
-	// fails the same way one passed as a flag does (review of #152).
+	// fails the same way one passed as a flag does.
 	for _, addr := range []string{flagValue, os.Getenv(EnvConsoleAddrVar), ActiveInstanceURL(), DefaultConsoleAddr} {
 		if addr != "" {
 			return addr, CheckConsoleAddr(addr)

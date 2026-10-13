@@ -2,7 +2,7 @@
 // logged-in user belongs to and choose the default one. The active org is a
 // per-instance default in ~/.w17/auth.yaml; w17ctl threads it as the
 // X-W17-Org selector so the console scopes requests to it (membership is
-// validated server-side). See docs/specs/plugins/auth-cli-login-and-orgs.md.
+// validated server-side).
 package org
 
 import (

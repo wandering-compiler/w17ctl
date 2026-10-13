@@ -32,7 +32,7 @@ import (
 
 // Marker matches the server's gofmtx.EmitMarker. Duplicated rather than
 // imported: w17ctl is the PUBLIC client and must not pull in the compiler
-// core (see the public-split architecture). A constant this small, pinned by
+// core. A constant this small, pinned by
 // a test on both sides, is the cheaper half of that trade.
 const Marker = "// emit-sha256: "
 

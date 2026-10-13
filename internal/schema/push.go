@@ -211,8 +211,7 @@ func RunSchemaPush(args SchemaPushArgs) error {
 	// connections this run stored for. A lock that missed an earlier pin (a
 	// CI mint that stored its migrations and then failed at EditLock) would
 	// otherwise catch up only for the connections the NEXT change happened to
-	// touch, and print "lock: pinned" over the rest (a consumer, 2026-10-02;
-	// review of #153). The heads include what this run just stored.
+	// touch, and print "lock: pinned" over the rest. The heads include what this run just stored.
 	listResp, listErr := cl.ListMigrations(ctx, &w17registrypb.ListMigrationsRequest{ProjectId: args.ProjectID})
 	if listErr != nil {
 		return fmt.Errorf("list migrations to pin lock: %w", listErr)
@@ -261,7 +260,7 @@ func PinLockTargets(console, path, projectID string, migrations []*w17registrypb
 		return false, nil
 	}
 
-	// Q58-console-1: serialise the read → EditLock → write below across
+	// Serialise the read → EditLock → write below across
 	// concurrent `w17ctl push` runs so the second write can't clobber the
 	// first's pins. Held until this function returns.
 	release, lockErr := lockfile.ForUpdate(path)
@@ -296,7 +295,7 @@ func PinLockTargets(console, path, projectID string, migrations []*w17registrypb
 	}
 	// Same bytes back = the lock already pinned every head. Said so rather
 	// than "pinned": a consumer's rerun printed "lock: pinned" over a lock
-	// that had not moved, and read it as done (2026-10-02).
+	// that had not moved, and read it as done.
 	if bytes.Equal(newBytes, lockBytes) {
 		return false, nil
 	}
@@ -307,7 +306,7 @@ func PinLockTargets(console, path, projectID string, migrations []*w17registrypb
 // the same RPC, credential and lock the pin after a mint will use — and
 // discards the result. Run BEFORE a mint: a mint that stores its migrations
 // and then cannot pin leaves history the lock does not point at (a CI role
-// without EditLock did exactly that, 2026-10-02). Refusing here stores
+// without EditLock did exactly that). Refusing here stores
 // nothing. Writes nothing.
 func CheckCanPinLock(console, path, projectID string) error {
 	lockBytes, err := os.ReadFile(path)

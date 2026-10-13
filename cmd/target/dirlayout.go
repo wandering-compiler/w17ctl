@@ -19,7 +19,7 @@ import (
 // which is the normal first week for anyone adopting w17 on an existing
 // codebase, not an edge case.
 //
-// Block 2 §8.2: the console owns the lock. This treats w17/lock.yaml as opaque
+// The console owns the lock. This treats w17/lock.yaml as opaque
 // bytes; the edit goes through EditLock, which validates and re-signs.
 type LayoutCmd struct {
 	Set LayoutSetCmd `cmd:"" help:"Re-point proto/stubs/languages directories in the lock. Moves no files. Re-signs on success."`

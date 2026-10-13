@@ -44,7 +44,7 @@ func DetectAclSurface(root, protoDir string) bool {
 // reports, and it is unreachable if a missing surface skips the check. The
 // detector is also a content grep, and a generated lock names `w17.acl_` in a
 // header comment that no checksum or signature covers — so the file being
-// verified could switch off its own verification (T2-5 pass #9, D-F1).
+// verified could switch off its own verification.
 //
 // Filename lookup, not content: a name is what the emitter guarantees, and it
 // cannot be edited without the file ceasing to be the lock.
@@ -76,8 +76,7 @@ func hasLockFileNamed(root, protoDir, name string) bool {
 // HasEventbusLockFile reports whether a committed `w17.lock.events.proto`
 // exists under `<root>/<protoDir>/domains/`.
 //
-// Sibling of HasAclLockFile, and it exists for the same reason (T2-5 pass #13,
-// D13-4). The ACL arm was hardened to trigger on the LOCK as well as on the
+// Sibling of HasAclLockFile, and it exists for the same reason. The ACL arm was hardened to trigger on the LOCK as well as on the
 // surface, precisely because a lock that outlived its surface is the drift the
 // verifier reports and is unreachable if a missing surface skips the check.
 // The eventbus arm triggered on surface detection alone, so an orphaned

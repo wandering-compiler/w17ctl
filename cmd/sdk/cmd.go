@@ -93,7 +93,7 @@ func (c *UpdateCmd) Run() error {
 
 // pinAdvice names the version to pin. "<version>" sent a consumer to go.mod
 // to find it, where the first sdk/go version they met was the zero
-// placeholder of a `replace` block — which they pinned (#87).
+// placeholder of a `replace` block — which they pinned.
 func pinAdvice(resolved string) string {
 	pin := "<version>"
 	if resolved != "" {

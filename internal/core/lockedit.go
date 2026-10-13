@@ -14,7 +14,7 @@ import (
 )
 
 // EditLockOnDisk runs the read → EditLock → write lock-mutation pipeline
-// under the cross-process update lock (Q58-console-1): it acquires the
+// under the cross-process update lock: it acquires the
 // ForUpdate lock on lockPath, reads the current bytes, applies intent
 // through the console's EditLock (which validates + re-signs), and writes
 // the result atomically — holding the lock across the whole read→write
@@ -49,8 +49,8 @@ func EditLockOnDisk(prefix, console, lockPath string, intent *codegenpb.LockEdit
 }
 
 // EditLock ships the current lock bytes + a typed intent to the console's
-// EditLock RPC and returns the re-signed bytes to write back (public-split
-// Block 2 §8.2). The console owns the lock: the thin client constructs no
+// EditLock RPC and returns the re-signed bytes to write back. The console
+// owns the lock: the thin client constructs no
 // lockpb and signs nothing — it just sends the intent and writes the bytes.
 //
 // The console address is resolved WITHOUT the lock (nil) — w17_url no longer
@@ -74,7 +74,7 @@ func EditLock(console string, lockBytes []byte, intent *codegenpb.LockEditIntent
 
 // DescribeLock asks the console for the lock's routing projection (the
 // connection set, default, dir layout) — replacing client-side
-// lock.Effective* / lockpb parsing (Block 2 §8.2).
+// lock.Effective* / lockpb parsing.
 func DescribeLock(console string, lockBytes []byte) (*codegenpb.LockView, error) {
 	cl, conn, err := dialLockConsole(console)
 	if err != nil {

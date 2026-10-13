@@ -16,7 +16,7 @@ import (
 // what the author edits. When they disagree, rendering the registry's
 // copy silently is the failure that matters.
 //
-// a consumer, 2026-09-04: a 356-row local fixture, a 1-row copy in the
+// The shape it was found in: a 356-row local fixture, a 1-row copy in the
 // registry, and `--out` wrote the 1-row version under a "DO NOT EDIT"
 // header claiming "the fixture is the source of truth" — a sentence
 // about a file that was not the one rendered. The output goes into

@@ -1,6 +1,5 @@
 // Package deploy implements `w17ctl deploy` — one person's way from the
-// laptop to an environment, swarm or cloud (docs/decisions/infra-targets.md
-// §4.5, docs/decisions/infra-targets-workloads-and-a-tuning-file.md §6). It
+// laptop to an environment, swarm or cloud. It
 // runs what the deploy workflow runs, on the same generated scripts, with the
 // operator's own credentials; what it skips is the review, the release branch
 // and the record a CI run leaves — which is why it says so every time.

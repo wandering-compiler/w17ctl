@@ -12,7 +12,7 @@ import (
 )
 
 // The values the wizard offers. The console's lock validator owns the truth
-// (srcgo/domains/console/lock/infra.go) and refuses anything else; these
+// and refuses anything else; these
 // copies only drive the prompt, so a value missing here is one the prompt does
 // not offer, never one the lock accepts silently.
 var (
@@ -24,7 +24,7 @@ var (
 	onOff   = []string{"on", "off"}
 )
 
-// Defaults of a new environment (docs/decisions/infra-targets.md §4.2).
+// Defaults of a new environment.
 const (
 	defaultEnv            = "prod"
 	defaultKeepDays       = 30
