@@ -67,8 +67,7 @@ func (c *BusinessAddCmd) Run() error {
 	// and a tree that does not build, with an error naming an import path
 	// rather than a decision they made two steps earlier.
 	//
-	// That is the shape a consumer reported: a path that only fails
-	// several commands later. The path is not wrong and codegen is not wrong;
+	// That is the shape: a path that only fails several commands later. The path is not wrong and codegen is not wrong;
 	// what was missing is that `add` never said the package is theirs to
 	// write.
 	fmt.Fprintf(core.Stdout, "\n  Next: write %s — it is YOUR code, not generated.\n", reg)

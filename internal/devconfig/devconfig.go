@@ -416,11 +416,11 @@ func (c *Config) ResolveProject(lockProject, absPath string) (string, *Project, 
 		if !ok {
 			// ⚠️ This used to REFUSE, and refusing was wrong in the ordinary
 			// case. Renaming a project in the console is a legitimate act an
-			// owner is allowed to perform — a consumer renamed theirs to match a
-			// GitHub branch — while the registry key was written at `init` from
-			// the org slug and nothing ever paired the two. Eight client
-			// releases did not care; rc.52 blocked `stack build` outright and
-			// took their dev stack down, so a rename was punished and the
+			// owner is allowed to perform — to match a GitHub branch, say —
+			// while the registry key was written at `init` from the org slug
+			// and nothing ever paired the two. Refusing blocked `stack build`
+			// outright and took the dev stack down, so a rename was punished and
+			// the
 			// advice ("run stack up") repaired nothing: `stack up` resolves by
 			// PATH, so it kept working, and the two commands disagreed about
 			// one tree.

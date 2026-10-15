@@ -361,7 +361,7 @@ func isAlreadyExists(err error) bool {
 //     implements Observe) — a WARNING rather than a refusal: the console
 //     plans a store it heard nothing about from the checkpoint this request
 //     carries (the record of the last sync; none → a full CREATE), and
-//     `examples/pg-native` ships exactly that pairing. Refusing it made every
+//     `examples/databases` ships exactly that pairing. Refusing it made every
 //     mixed-dialect project unbuildable; planning it as "already
 //     converged", which is what older consoles did, froze it while this warning described a plan that did not exist;
 //   - the observation itself fails.
@@ -388,7 +388,7 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 				continue
 			}
 			// This was a hard refusal once, and it
-			// made every mixed-dialect project unbuildable — `examples/pg-native`
+			// made every mixed-dialect project unbuildable — `examples/databases`
 			// ships a MySQL store beside its Postgres one and stopped dead.
 			//
 			// The finding's complaint is the SILENCE, not the skip: a store

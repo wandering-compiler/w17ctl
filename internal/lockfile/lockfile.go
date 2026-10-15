@@ -120,29 +120,54 @@ type GeneratedCode struct {
 }
 
 // GeneratedRoot is one `generated_code` entry's output location. Only the root
-// is read here — the language and wire format are the console's business.
+// and the language are read here — the language because an empty Go root is
+// derived under the stubs root; the wire format is the console's business.
 type GeneratedRoot struct {
 	OutputRoot string `yaml:"output_root"`
+	Language   string `yaml:"language"`
 }
 
-// OutputRoots returns every declared, non-default generated root beside the
-// stubs root: the set a project's own `.gitignore` has to cover.
+// OutputRoots returns every generated root beside `w17/`: the set a project's
+// own `.gitignore` has to cover.
+//
+// ⚠️ A root that IS, or contains, the hand-written module root is not a
+// generated root. The stubs root is usually `<gen-dir>/gen`, wholly generated,
+// but a project may set it to the module root itself (e.g. `stubs: w17src`,
+// where its go.mod and every hand-written handler live). Reporting it told the
+// author to ignore all their own code. Such a root is replaced by what codegen
+// actually writes inside it: the Go pb and grpc-client trees, derived the way
+// the console derives them (`<stubs>/pb`, `<stubs>/clients`) when an entry
+// leaves its root empty.
 func (g GeneratedCode) OutputRoots() []string {
+	modRoot := g.GenDir()
+	holdsHandWritten := func(r string) bool {
+		return modRoot != "" && (r == modRoot || strings.HasPrefix(modRoot, r+"/"))
+	}
 	var out []string
 	add := func(r string) {
-		if r = strings.Trim(strings.TrimSpace(r), "/"); r != "" {
+		if r = strings.Trim(strings.TrimSpace(r), "/"); r != "" && !holdsHandWritten(r) {
 			out = append(out, r)
 		}
 	}
-	add(g.Stubs)
+	stubs := strings.Trim(strings.TrimSpace(g.Stubs), "/")
+	// Derive the empty Go roots only when the stubs root itself was dropped;
+	// otherwise it already covers them and naming both says the same twice.
+	derive := stubs != "" && holdsHandWritten(stubs)
+	add(stubs)
+	goRoot := func(e GeneratedRoot, sub string) string {
+		if e.OutputRoot == "" && derive && strings.EqualFold(e.Language, "go") {
+			return stubs + "/" + sub
+		}
+		return e.OutputRoot
+	}
 	for _, e := range g.PbStubs {
-		add(e.OutputRoot)
+		add(goRoot(e, "pb"))
 	}
 	for _, e := range g.Clients {
 		add(e.OutputRoot)
 	}
 	for _, e := range g.GrpcClients {
-		add(e.OutputRoot)
+		add(goRoot(e, "clients"))
 	}
 	return out
 }

@@ -69,8 +69,8 @@ type Conn struct {
 	// host has no pg_dump can be dumped inside its own container instead;
 	// where that route declined too, the only error a person saw named the
 	// host's missing binary — true of every store in the project and an
-	// explanation of none, so they could not tell a failed fallback from an
-	// absent one (reported by a consumer).
+	// explanation of none, so a failed fallback could not be told from an
+	// absent one.
 	//
 	// Carried on the Conn rather than printed when the route is chosen,
 	// because the conns are built on EVERY build and the dump happens on a

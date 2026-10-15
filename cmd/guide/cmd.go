@@ -49,10 +49,9 @@ func (c *Cmd) Run() error {
 		//
 		// The guide is compiled in, so the version that wrote the existing
 		// file is whatever w17ctl the author last ran — possibly a newer one,
-		// on another machine or for another domain. A consumer lost advice
-		// that way: their AGENTS.md carried lines their local binary had never
-		// heard of, and --force replaced them silently. They restored it from
-		// git, which is the only reason they noticed.
+		// on another machine or for another domain. Advice is lost that way:
+		// an AGENTS.md carrying lines the local binary has never heard of,
+		// replaced silently by --force.
 		//
 		// Overwriting is still what --force means, so this does not refuse.
 		// It says what is happening, because a one-way replacement the user

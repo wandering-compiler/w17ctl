@@ -615,8 +615,7 @@ func (c *InstallCmd) Run() error {
 // Installing writes the plugin's tree and records it in the lock. It does not
 // switch anything on: a plugin is activated by naming it in a domain's
 // `(w17.domain).plugins`, and until that happens `codegen` emits nothing for
-// it — no file, no mention, no warning. A consumer reported that as a broken
-// plugin, which is the right reading of the evidence they had.
+// it — no file, no mention, no warning, which reads as a broken plugin.
 //
 // Printed here rather than documented somewhere because this is the moment the
 // question is asked, and everything needed to answer it is in hand.

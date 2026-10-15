@@ -135,6 +135,7 @@ w17ctl finds your project by walking parent directories to the nearest
 |---|---|---|
 | `w17/lock.yaml` | the **signed** project lock — connections, targets, generated-code config, pinned schema | edited by scaffolding commands; signed by the console |
 | `~/.w17/auth.yaml` | console credentials (bearer + org memberships) per console | written by `login` |
+| `~/.w17/device-<hash>.key` | this machine's device key for one console (PKCS #8 PEM, mode 0600; refused when others can read it) — signs DPoP proofs for consoles that bind devices | made by the first `login` to that console; `W17_DPOP_KEY` names one file for every console |
 | `~/.w17/config.yaml` | dev-machine project registry + per-project host-port assignments + presets | written by `init` / `project` |
 | `w17/certs/`, `w17/snapshots/` | local dev PKI + branch schema snapshots | `certs` / `db` / `initiative` |
 
@@ -170,6 +171,7 @@ bearer out.
 |---|---|
 | `login [<host>]` | Sign in over gRPC (`AuthService.SignIn`) and store the bearer + org memberships in `~/.w17/auth.yaml`. Prompts interactively for anything not given (email → password (hidden) → host); `--email` + `--password` (or `W17_PASSWORD`) keep it non-interactive for CI. |
 | `logout [<url>]` | Drops a console's stored credential from `~/.w17/auth.yaml`. |
+| `key public [<console>]` | Prints a device key's public half as a JWK on stdout (making the key first if there is none): the file `W17_DPOP_KEY` names, else this machine's key for the console (default: the active one). It is what the console needs to issue a machine account's token. Stderr names the file and its thumbprint (the device id the console shows). |
 | `whoami` | Prints the stored identity + orgs for the active console (`--all` = every logged-in console), and the session expiry when one is known (with a warning once it has passed). Pure local read. |
 | `org list` / `org use <slug>` | List orgs you belong to (server read) and pick the default; the default org scopes subsequent commands. |
 
@@ -191,6 +193,52 @@ a compiled-in `DefaultConsoleAddr` — every released binary — uses that when
 
 Nothing here is required locally: with no token set, the credential store
 answers exactly as before.
+
+**Device-bound sessions (DPoP).** A console whose auth binds devices ties every
+token to a key and accepts it only with a proof (RFC 9449) signed by that key,
+so a token copied off a machine is useless without the key file.
+
+- `login` signs its sign-in with this machine's key for that console,
+  `~/.w17/device-<hash>.key` (the hash is of the dialed console's origin), made on the
+  first login to it. One key per console: a console that revokes its key
+  cannot take another console's session with it. When the console binds the
+  session, `auth.yaml` records the key's thumbprint beside the token
+  (`device:`) and every later call carries `Authorization: DPoP <token>` plus a
+  fresh proof. A console that binds nothing gets plain `Bearer`, as before;
+  w17ctl learns which from the console's answer to the sign-in, not from its
+  version.
+- A key file in `~/.w17` that other users can read or write is refused
+  (`chmod 600 <file>`). A key `W17_DPOP_KEY` names is refused only when others
+  could replace it (group- or world-writable), so the usual secret mounts work:
+  a Kubernetes Secret volume (mode 0644 by default; set `defaultMode: 0400` if
+  you can) or a swarm secret under `/run/secrets` (0444).
+- Proofs are signed for `https://<host>[:<port>]` of the address you dial (port
+  443 left out), and the console checks that against the origin it is
+  configured with. The local dev console behind its TLS terminator is
+  `https://localhost:13444`: a deploy that binds devices sets its rpc DPoP
+  origin to that, and logging in as `127.0.0.1:13444` is then refused on the
+  proof's origin. Dial the console by the name its configuration uses, or set
+  `W17_CONSOLE_DPOP_ORIGIN` to its origin; w17ctl says so when this happens.
+  The override changes only the origin proofs are signed for — the key file is
+  chosen by the address you dial, so setting it never switches keys.
+- **Revoked device:** the console refuses a revoked key for good. w17ctl deletes
+  that console's key file and says to `login` again, which makes a new key —
+  the console sees a new device. Deleting a key file yourself does the same.
+- **An older w17ctl** rewriting `auth.yaml` (any `login`, `org use`, …) drops the
+  `device:` field it does not know. The bound session then goes out as Bearer
+  and the console refuses it (`DEVICE_PROOF_REQUIRED`): log in again with the
+  current w17ctl.
+- **Machine accounts (CI, deployments):** `W17_TOKEN` is a machine account's
+  token, and on a console that binds devices it is issued for the account's
+  public key. Make the key once with `W17_DPOP_KEY=./ci-device.key w17ctl key
+  public` and issue the token for the printed JWK. A machine account has
+  exactly one key: every job and replica using its token shares that key file,
+  and a token for a different key is refused (`BOT_KEY_MISMATCH`) until the
+  account's device is revoked. Give the job `W17_DPOP_KEY` (the key file, kept
+  secret like the token) beside `W17_TOKEN` and `W17_CONSOLE_ADDR`; `W17_TOKEN`
+  is sent with a proof only when `W17_DPOP_KEY` is set. w17ctl never deletes a
+  key named by `W17_DPOP_KEY`; when it is revoked, make a new key and issue a
+  new token for it.
 
 ### Project setup & scaffolding
 These **edit the signed lock** and write starter proto files. No codegen — they

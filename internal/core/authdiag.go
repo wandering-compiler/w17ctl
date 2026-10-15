@@ -1,11 +1,15 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/wandering-compiler/sdk/go/lib/dpop/dpopclient"
+	w17pb "github.com/wandering-compiler/sdk/go/pb/w17"
 )
 
 // ExplainAuthFailure turns a bare auth refusal into one that names the causes
@@ -38,6 +42,12 @@ func ExplainAuthFailure(addr string, err error) error {
 	if !ok {
 		return err
 	}
+	if line := explainRevokedDevice(addr, err, st); line != "" {
+		return fmt.Errorf("%w\n%s", err, line)
+	}
+	if line := htuMismatchHint(addr, err); line != "" {
+		return fmt.Errorf("%w\n%s", err, line)
+	}
 	switch st.Code() {
 	case codes.Unauthenticated:
 		if line := explainExpiredSession(addr, st); line != "" {
@@ -52,6 +62,52 @@ func ExplainAuthFailure(addr string, err error) error {
 		return fmt.Errorf("%w\n%s", err, hint)
 	}
 	return err
+}
+
+// explainRevokedDevice answers DEVICE_REVOKED: the console revoked this
+// machine's device key (from its Devices page, or an administrator did), and a
+// revoked device is refused for good. The key was discarded when the refusal
+// arrived (revokedUnary), so the fix is a fresh login, which makes a new key —
+// unless the key is the operator's own (W17_DPOP_KEY), which w17ctl never
+// deletes.
+func explainRevokedDevice(addr string, err error, st *status.Status) string {
+	if !errors.Is(err, dpopclient.ErrDeviceRevoked) && !hasErrorDetailCode(st, string(dpopclient.ReasonDeviceRevoked)) {
+		return ""
+	}
+	if _, explicit, _ := DeviceKeyPath(addr); explicit {
+		return "  the console revoked the device key " + EnvDPoPKeyVar + " names; a revoked key is refused for good.\n" +
+			"  fix: point " + EnvDPoPKeyVar + " at a new key file (w17ctl key public makes one and prints its\n" +
+			"       public key), revoke the machine account's old device, and issue its token for the new key.\n"
+	}
+	return "  the console revoked this machine's device key; a revoked key is refused for good,\n" +
+		"  so w17ctl discarded it.\n" +
+		"  fix: w17ctl login " + displayAddr(addr) + " (a new key is made; the console sees a new device)\n"
+}
+
+// htuMismatchHint answers a proof the console refused because its htu — the
+// origin w17ctl signed for plus the method — is not the origin the console is
+// configured with. w17ctl derives the origin from the address it dialed, so
+// the same console reached by another name (127.0.0.1 for a console
+// configured as https://localhost:13444, an internal name behind a proxy)
+// signs for the wrong one. Only this side knows what it signed for.
+func htuMismatchHint(addr string, err error) string {
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Unauthenticated || !strings.Contains(st.Message(), "htu does not match") {
+		return ""
+	}
+	return "  the console refused the DPoP proof's origin: w17ctl signed for " + DPoPOrigin(addr) + ",\n" +
+		"  and the console is configured with another (its rpc surface's DPoP origin).\n" +
+		"  fix: dial the console by the name its configuration uses, or set\n" +
+		"       " + EnvDPoPOriginVar + " to that origin (e.g. https://localhost:13444).\n"
+}
+
+func hasErrorDetailCode(st *status.Status, code string) bool {
+	for _, d := range st.Details() {
+		if ed, ok := d.(*w17pb.ErrorDetail); ok && ed.GetCode() == code {
+			return true
+		}
+	}
+	return false
 }
 
 func explainUnauthenticated(addr string) string {

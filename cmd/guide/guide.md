@@ -170,6 +170,20 @@ the credential store at all.
 The same pair drives the generated binary's `migrate apply --fetch`, so a
 deployment sets one name whichever program runs.
 
+**Device-bound sessions.** A console that binds devices accepts a token only
+with a DPoP proof signed by the key it was bound to. `login` signs with this
+machine's key for that console (`~/.w17/device-<hash>.key`, made on the first
+login, mode 0600) and the session is bound to it; nothing else is needed. A
+machine account's `W17_TOKEN` on such a console is issued for the account's
+public key: make the key with `W17_DPOP_KEY=<file> w17ctl key public`, issue the
+token for the printed JWK, and set `W17_DPOP_KEY=<file>` beside `W17_TOKEN`
+wherever the token is used — a machine account has exactly one key, shared by
+all its jobs and replicas. A revoked device is refused for good: run
+`w17ctl login` again (w17ctl discards the revoked key and makes a new one). A
+proof refused on its origin means the console was dialed by a name its
+configuration does not use: dial it by that name or set
+`W17_CONSOLE_DPOP_ORIGIN`.
+
 `W17_INITIATIVE` answers a different question: **which** line of work this run
 belongs to. Normally that comes from the git branch, and on a developer's
 machine it always does. A CI runner is the exception — most providers check

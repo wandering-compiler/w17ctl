@@ -4,6 +4,10 @@
 // stores it in the machine-local credential store (~/.w17/auth.yaml) and caches
 // the caller's org memberships. Missing inputs are prompted interactively
 // (email → password → host).
+//
+// The sign-in carries a DPoP proof signed by this machine's key for that console
+// (~/.w17/device-<hash>.key, made on the first login): a console whose auth binds
+// devices binds the token to that key, and the store records which key.
 package login
 
 import (
@@ -49,7 +53,7 @@ func (c *Cmd) Run() error {
 
 	// Orgs — best-effort with the freshly minted bearer (a token already
 	// exists; the cache can refresh later via `w17ctl org list`).
-	orgs, orgErr := core.ListMyOrgs(ctx, host, signed.Token)
+	orgs, orgErr := core.ListMyOrgsAs(ctx, host, signed.Token, signed.Device)
 	if orgErr != nil {
 		fmt.Fprintf(core.Stdout, "warning: logged in, but couldn't list organizations: %v\n", orgErr)
 	}
@@ -123,10 +127,11 @@ func store(host string, signed core.SignedIn, email string, orgs []core.AuthOrg)
 		return err
 	}
 	inst := &authstore.Instance{
-		URL:   host,
-		Token: signed.Token,
-		User:  &authstore.User{ID: signed.UserID, Email: email},
-		Orgs:  toStoreOrgs(orgs),
+		URL:    host,
+		Token:  signed.Token,
+		Device: signed.Device,
+		User:   &authstore.User{ID: signed.UserID, Email: email},
+		Orgs:   toStoreOrgs(orgs),
 	}
 	inst.RecordSessionExpiry(signed.ExpiresAt)
 	// Read BEFORE the pointer moves, and used after the prune below — a login

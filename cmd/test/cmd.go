@@ -16,7 +16,9 @@ import (
 // the gateway's assigned host port, builds the e2erunner as a host
 // binary (cross-compiled in Docker — no local Go needed), runs it
 // against http://localhost:<port> as a true external client, and tears
-// the stack down.
+// the stack down. Against a surface that binds devices (DPoP), the suite
+// signs for the gateway's configured public origin while it dials that
+// port — w17ctl reads the origin from the stack (internal/testsuite/dpop.go).
 type Cmd struct {
 	ComposeFile    string `name:"compose-file" placeholder:"PATH" help:"Compose file that launches the stack (default: compose.yaml at the project root)."`
 	Project        string `name:"project" help:"COMPOSE_PROJECT_NAME for the run (default: <compose-name>-e2e-<random> so runs never collide)."`

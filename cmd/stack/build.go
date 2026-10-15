@@ -491,9 +491,9 @@ func (c *BuildCmd) ResolveTargets(root string) ([]factory.TargetSpec, error) {
 	for _, s := range skipped {
 		fmt.Fprintf(core.Stdout, "stack build: skipping store %s\n", s)
 	}
-	// Say WHICH project and WHICH port each store resolved to. Half a day went
-	// into working out that three registry entries were answering differently,
-	// and the commands never said which answer they had taken (reported by a consumer).
+	// Say WHICH project and WHICH port each store resolved to: when several
+	// registry entries answer differently, the commands must say which answer
+	// they took.
 	for _, sp := range specs {
 		fmt.Fprintf(core.Stdout, "stack build: store %s → %s (project %s)\n",
 			sp.Connection, redactDSN(sp.DSN), projName)

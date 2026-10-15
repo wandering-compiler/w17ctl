@@ -32,6 +32,7 @@ import (
 	infracmd "github.com/wandering-compiler/w17ctl/cmd/infra"
 	initcmd "github.com/wandering-compiler/w17ctl/cmd/init"
 	initiativecmd "github.com/wandering-compiler/w17ctl/cmd/initiative"
+	keycmd "github.com/wandering-compiler/w17ctl/cmd/key"
 	logincmd "github.com/wandering-compiler/w17ctl/cmd/login"
 	logoutcmd "github.com/wandering-compiler/w17ctl/cmd/logout"
 	migratecmd "github.com/wandering-compiler/w17ctl/cmd/migrate"
@@ -81,10 +82,11 @@ var root struct {
 	// same screen. An adopter reported it: someone expecting a browser does
 	// not read "Email:" on stdin as normal progress, and someone reading only
 	// --help concludes there is no unattended path when there is one.
-	Login   logincmd.Cmd   `cmd:"" help:"Log in to a console — email + password over gRPC (AuthService.SignIn), no browser. Prompts on stdin; --email + the W17_PASSWORD env var make it unattended for CI. Stores the bearer + org memberships in ~/.w17/auth.yaml. 'login grpcs://api.w17.app:50051' (or an enterprise self-host URL)."`
+	Login   logincmd.Cmd   `cmd:"" help:"Log in to a console — email + password over gRPC (AuthService.SignIn), no browser. Prompts on stdin; --email + the W17_PASSWORD env var make it unattended for CI. Stores the bearer + org memberships in ~/.w17/auth.yaml; a console that binds devices binds the session to this machine's key for that console, ~/.w17/device-<hash>.key (made on first login). 'login grpcs://api.w17.app:50051' (or an enterprise self-host URL)."`
 	Logout  logoutcmd.Cmd  `cmd:"" help:"Log out of a console — drop its stored credential from ~/.w17/auth.yaml. Defaults to the active console."`
 	Whoami  whoamicmd.Cmd  `cmd:"" help:"Show the stored identity + organizations for the active console (--all for every logged-in console)."`
 	Org     orgcmd.Cmd     `cmd:"" help:"Organizations on the active console — list the ones you belong to (list) and pick the default (use <slug>). The default org scopes subsequent commands."`
+	Key     keycmd.Cmd     `cmd:"" help:"The device keys that sign the DPoP proofs a console that binds devices asks for — one per console (~/.w17/device-<hash>.key), or the file W17_DPOP_KEY names. 'key public [console]' prints a key's public JWK — what the console needs to issue a machine account's token."`
 	Console consolecmd.Cmd `cmd:"" help:"Consoles you are logged into — list them and pick the active one (use <url>). Two are normal: a local console for development, and the one holding the signing key for publishing. 'login' makes whatever it authenticated against active, so this is how it moves back."`
 
 	// --- Project setup ---

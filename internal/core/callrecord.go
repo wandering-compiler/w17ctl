@@ -18,8 +18,8 @@ import (
 // The `ci-push` role is an allow-list, deliberately: for a credential nobody
 // is watching, an endpoint that did not exist when the role was written must
 // be DENY. The cost is that the list is written by hand, and it has been
-// short FIVE times — four found by a consumer's pipeline going red, and the
-// fifth found here, having never turned anything red at all: `push` stamps a
+// short FIVE times — four found by a pipeline going red, and the fifth found
+// here, having never turned anything red at all: `push` stamps a
 // migration with the branch's initiative, the refused lookup was folded into
 // "initiative lookup failed", and the push then SUCCEEDED, unstamped. An
 // unstamped migration is one no freeze can collapse, and a pipeline would
@@ -134,10 +134,18 @@ func recordUnaryCalls() grpc.DialOption {
 		// the role answers is "which permissions does this command DEMAND", and
 		// a call that came back PermissionDenied is the clearest possible
 		// instance of demanding one.
-		recordConsoleCall(method)
+		if ctx.Value(unrecordedCallKey{}) == nil {
+			recordConsoleCall(method)
+		}
 		return invoker(ctx, method, req, reply, cc, opts...)
 	})
 }
+
+// unrecordedCallKey marks a call w17ctl makes for itself rather than for the
+// command — the DPoP nonce probe before a stream (consolecreds.go). It demands
+// nothing of the role, so recording it would put a permission in the role that
+// no command needs.
+type unrecordedCallKey struct{}
 
 func recordStreamCalls() grpc.DialOption {
 	return grpc.WithChainStreamInterceptor(func(

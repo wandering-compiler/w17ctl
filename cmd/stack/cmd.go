@@ -11,6 +11,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/autosync"
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/docker"
+	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	"github.com/wandering-compiler/w17ctl/internal/remotecompose"
 
 	"github.com/wandering-compiler/w17ctl/internal/devconfig"
@@ -27,7 +28,7 @@ import (
 // top-level: it removes codegen output, not the compose stack.
 type Cmd struct {
 	Build   BuildCmd   `cmd:"" help:"SYNC the local dev database to the current proto (diff-apply), and build images on the way. This is how a schema change reaches a database that ALREADY EXISTS — 'schema apply' builds one from empty and leaves an existing schema alone, and 'migrate apply' is for deployed environments."`
-	Up      UpCmd      `cmd:"" help:"Bring the local compose stack (or named services) up: docker compose up -d. Pass --build to rebuild images first; run 'stack build' for dev diff-apply."`
+	Up      UpCmd      `cmd:"" help:"Bring the local compose stack (or named services) up: docker compose up -d. The stores start first and their schema is synced from the console before the rest starts (--no-sync skips both). Pass --build to rebuild images first; run 'stack build' for dev diff-apply."`
 	Down    DownCmd    `cmd:"" help:"Tear the local compose stack down: docker compose down -v (drops volumes unless --keep-volumes)."`
 	Reset   ResetCmd   `cmd:"" help:"Recover a tangled local dev DB: wipe the stores, re-apply db/init (current schema), and adopt it as the checkpoint baseline so the next 'stack build' is a no-op. The fix for the first-build db/init collision + any wiped-volume/checkpoint drift."`
 	Logs    LogsCmd    `cmd:"" help:"Follow service logs: docker compose logs -f."`
@@ -125,11 +126,11 @@ func (c *UpCmd) Run() error {
 	if err := preflightPorts(root, p, slots, services); err != nil {
 		return err
 	}
-	args := []string{"up", "-d"}
+	upArgs := []string{"up", "-d"}
 	if c.Build {
-		args = append(args, "--build")
+		upArgs = append(upArgs, "--build")
 	}
-	args = append(args, services...)
+	args := append(append([]string{}, upArgs...), services...)
 	// With --build this lands on the project's own builder, the same one
 	// `stack build` uses, so a developer who only ever runs `up --build` gets the
 	// bounded cache too. Without --build there is nothing to build on, and the
@@ -138,6 +139,20 @@ func (c *UpCmd) Run() error {
 	if c.Build && !c.NoReclaim {
 		builder = docker.EnsureBuilder(root, docker.ComposeProjectName(root), c.cacheCap())
 		env = append(env, docker.BuilderEnv(builder)...)
+	}
+	// The stores first, and their schema, before anything that reads a table
+	// starts: a one-shot seed (`fixtures apply`) that depends on the database
+	// runs as soon as the database is healthy, and on a fresh volume it found
+	// no tables, because the sync below ran only after the whole `up`.
+	stores := c.storesFirst(root, services)
+	if len(stores) > 0 {
+		if err := docker.RunComposeEnvFn(root, env, append(docker.FileArgs(root), append(append(append([]string{}, upArgs...), "--wait"), stores...)...)...); err != nil {
+			return err
+		}
+		if err := c.syncStores(); err != nil {
+			return fmt.Errorf("stack up: the stores (%s) are running and nothing else was started, because the schema sync failed: %w",
+				strings.Join(stores, ", "), err)
+		}
 	}
 	if err := docker.RunComposeEnvFn(root, env, append(docker.FileArgs(root), args...)...); err != nil {
 		return err
@@ -153,8 +168,9 @@ func (c *UpCmd) Run() error {
 			fmt.Fprintln(core.Stdout, line)
 		}
 	}
-	// The stores now hold whatever they held before — which, on a fresh
-	// volume, is nothing. Sync them.
+	// Without stores started first (none the lock names, or a selection
+	// naming none of them), the stores sync here, after the `up`; they hold
+	// whatever they held before — which, on a fresh volume, is nothing.
 	//
 	// This is what `<binary> schema apply` used to do from a rendered file,
 	// and the file is gone: the schema a database should hold is computed
@@ -171,12 +187,62 @@ func (c *UpCmd) Run() error {
 		}
 		return nil
 	}
-	{
-		if err := (&BuildCmd{NoBuild: true, NoCodegen: true, Console: c.Console, modeFlags: c.modeFlags}).Run(); err != nil {
-			return fmt.Errorf("stack up: the containers are running, but the schema sync failed: %w", err)
-		}
+	if len(stores) > 0 {
+		return nil // synced above, before the rest started
+	}
+	if err := c.syncStores(); err != nil {
+		return fmt.Errorf("stack up: the containers are running, but the schema sync failed: %w", err)
 	}
 	return nil
+}
+
+// syncStores brings the running stores' schema to the protos (stack build
+// --no-build).
+func (c *UpCmd) syncStores() error {
+	return upSyncFn(&BuildCmd{NoBuild: true, NoCodegen: true, Console: c.Console, modeFlags: c.modeFlags})
+}
+
+// upSyncFn is the seam the tests substitute: the order of the sync against the
+// compose calls is what they pin, and a real sync needs a console.
+var upSyncFn = func(b *BuildCmd) error { return b.Run() }
+
+// storesFirst names the store services `up` starts and syncs before the rest:
+// the lock's connections that the compose file declares (composegen names a
+// store's service after its connection). None with --no-sync, which syncs
+// nothing; and when services are named, only the stores among them, so `up
+// <service>` does not start a store the developer did not ask for.
+func (c *UpCmd) storesFirst(root string, services []string) []string {
+	if c.NoSync {
+		return nil
+	}
+	lf, err := lockfile.Load(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil || lf == nil || len(lf.Connections) == 0 {
+		return nil
+	}
+	declared, err := composeServicesFn(root)
+	if err != nil {
+		return nil
+	}
+	want := map[string]bool{}
+	for _, s := range declared {
+		want[s] = true
+	}
+	if len(services) > 0 {
+		named := map[string]bool{}
+		for _, s := range services {
+			named[s] = true
+		}
+		for s := range want {
+			want[s] = named[s]
+		}
+	}
+	var stores []string
+	for _, conn := range lf.Connections {
+		if want[conn.Name] {
+			stores = append(stores, conn.Name)
+		}
+	}
+	return stores
 }
 
 // runRemote brings the stack up on the resolved remote docker host: push

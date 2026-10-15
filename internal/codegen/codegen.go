@@ -593,9 +593,8 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 		// else here is a hiccup (a proxy outage, an unreadable go.mod) where
 		// the files are already written and warning is right.
 		//
-		// They shared one arm until a consumer measured what shipped: the
-		// floor check came out as one warning among nine with exit 0, so a
-		// client released as "refuses a stale pin" did not.
+		// In one arm, the floor check would come out as one warning among
+		// nine with exit 0, and a client that "refuses a stale pin" would not.
 		if errors.Is(err, ErrSdkFloor) {
 			return err
 		}
@@ -906,8 +905,8 @@ func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[stri
 		// written at that version, so no module carries a placeholder — and
 		// this function used to return here, which skipped the floor entirely
 		// for exactly the projects that had once been told to fix their pin.
-		// A consumer measured it: refused on day one, pinned, and on day two a
-		// newer console's code exited 0 and failed in the build image.
+		// The case: refused on day one, pinned, and on day two a newer
+		// console's code exits 0 and fails in the build image.
 		//
 		// Only modules Go resolves FROM the pin: a module that replaces
 		// sdk/go with a local checkout builds against that checkout, and its
@@ -1361,13 +1360,12 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 		// so a plain `w17ctl codegen` over a freshly generated tree collided on
 		// every create-once scaffold file and refused the whole run.
 		//
-		// A consumer measured it: 683 files recognised as "already held in this
-		// exact form", six go.mod / .w17-client.json files reported as
+		// The result: hundreds of files recognised as "already held in this
+		// exact form", a few go.mod / .w17-client.json files reported as
 		// conflicts, exit 1, nothing written. The cycle could not close —
 		// --force rewrote them and the next plain run rejected them again. Worse,
 		// files that genuinely HAD to change landed in the same refusal, so the
-		// command did nothing and said only "already exist"; they lost a morning
-		// to two conclusions drawn from runs that never generated anything.
+		// command did nothing and said only "already exist".
 		//
 		// After the merge, because for a go.mod the thing to compare against is
 		// what would actually be written, not the server's unmerged body.

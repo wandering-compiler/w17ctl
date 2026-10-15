@@ -120,7 +120,7 @@ func realDialWorker(address, certFingerprint, ticket string) (codegenpb.CodegenS
 	}
 	conn, err := grpc.NewClient(address,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-		// The ticket — and ONLY the ticket. No bearerPerRPC, no recorder: see
+		// The ticket — and ONLY the ticket. No console credential, no recorder: see
 		// the file comment.
 		grpc.WithPerRPCCredentials(workerTicket(ticket)),
 		grpc.WithDefaultCallOptions(

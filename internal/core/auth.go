@@ -1,11 +1,8 @@
 package core
 
 import (
-	"context"
 	"net"
 	"strings"
-
-	"google.golang.org/grpc/credentials"
 
 	"github.com/wandering-compiler/w17ctl/internal/authstore"
 )
@@ -130,57 +127,6 @@ func ActiveInstanceURL() string {
 	}
 	return ""
 }
-
-// bearerPerRPC attaches `authorization: Bearer <token>` to every console gRPC
-// call, sourcing the token fresh per call from AuthTokenFn. With no token set
-// (not logged in) it adds nothing — identical to the pre-auth behavior, so it
-// is safe to wire onto every dial unconditionally. The console's auth plugin
-// reads exactly this header (HeaderName "Authorization", scheme "Bearer").
-//
-// RequireTransportSecurity returns false on purpose: a console dial is TLS for
-// a remote endpoint but PLAINTEXT on loopback (the local gateway serves
-// plaintext; the kernel is the trust boundary — see ConsoleTransportCreds).
-// Returning true would make gRPC refuse to send the bearer over that loopback
-// hop and break local login. The token still rides the encrypted channel
-// whenever the transport is TLS (remote); on loopback a bearer is only as safe
-// as the local machine, which is the intended dev posture.
-// addr is the console this credential set is dialing — see AuthTokenFn for
-// why the credential is resolved per address rather than from the active
-// instance.
-// BearerPerRPC is the console credential: the bearer for `addr`, plus the
-// active-org header that every scoped call needs. Exported so the storage-tier
-// dials use THIS one rather than a second copy — a second copy is how the org
-// half went missing from half the CLI for as long as it did.
-func BearerPerRPC(addr string) credentials.PerRPCCredentials { return bearerPerRPC{addr: addr} }
-
-type bearerPerRPC struct{ addr string }
-
-func (b bearerPerRPC) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
-	token := AuthTokenFn(b.addr)
-	if token == "" {
-		return nil, nil
-	}
-	notePresentedToken(b.addr, token)
-	md := map[string]string{"authorization": "Bearer " + token}
-	// The ACTIVE org rides every console call, not just `init`.
-	//
-	// The console stamps scopes["org_id"] from this header after validating
-	// membership, and a scoped model refuses a request that carries no scope.
-	// Server-side there is an inference for the single-org case, so a
-	// one-org user never noticed — but a user in TWO orgs got a refusal from
-	// every scoped command, because `init` was the only place that ever sent
-	// the header. `w17ctl org use <slug>` meanwhile printed "Default
-	// organization set to …" and stored a value nothing transmitted.
-	//
-	// It belongs here rather than at each call site for the reason the
-	// bearer does: a per-call decision is one somebody forgets.
-	if slug := OrgSlugForRequestFn(b.addr); slug != "" {
-		md["w17-org"] = slug
-	}
-	return md, nil
-}
-
-func (bearerPerRPC) RequireTransportSecurity() bool { return false }
 
 // ActiveOrgSlug returns the slug of the active instance's default
 // organization, or "" when none is set (or it cannot be resolved).

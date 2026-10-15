@@ -23,7 +23,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
@@ -47,29 +46,13 @@ var DefaultStorageAddr = "localhost:50051"
 // large schema and would otherwise trip ResourceExhausted.
 const storageMaxRecvMsgSize = 256 << 20
 
-// bearerPerRPC attaches `authorization: Bearer <token>` to every storage-tier
-// gRPC call, sourcing the token fresh per call from core.AuthTokenFn — the
-// SAME seam core.Dial* uses for the codegen/registry/fetch dials, so the
-// storage tier stays consistent for when these RPCs become auth-gated. With no
-// token (not logged in) it adds nothing, identical to the pre-auth behavior, so
-// it is safe to wire on unconditionally. RequireTransportSecurity is false
-// because w17ctl may dial a console over PLAINTEXT; the bearer rides the encrypted channel unchanged once TLS lands.
-// addr is the console being dialed — the credential is resolved per
-// address, not from the active instance (see core.AuthTokenFn).
-// The storage tier uses core's credential rather than its own. It used to have
-// a copy, and the copy sent the bearer and NOT the active-org header — so
-// `initiative`, `checkpoint`, `review` and `env` reached the console with no org
-// scope, the grant narrowing fell back to realm-wide roles, and an org-admin was
-// refused on every one of them while codegen and migrate (which dial through
-// core) worked. The comment here claimed it was "the SAME seam core.Dial* uses";
-// it was the same shape with half the content, which is exactly the kind of
-// claim a reader believes.
-//
-// core.BearerPerRPC is the one implementation now. A second copy is how this
-// happened, and core's own comment already says why the header belongs in the
-// credential rather than at each call site: "a per-call decision is one somebody
-// forgets."
-func bearerFor(addr string) credentials.PerRPCCredentials { return core.BearerPerRPC(addr) }
+// The storage tier uses core's console credential rather than its own. It used
+// to have a copy, and the copy sent the bearer and NOT the active-org header —
+// so `initiative`, `checkpoint`, `review` and `env` reached the console with no
+// org scope, the grant narrowing fell back to realm-wide roles, and an org-admin
+// was refused on every one of them while codegen and migrate (which dial through
+// core) worked. core.ConsoleCredentials is the one implementation, DPoP proofs
+// included; a second copy is how the org half went missing.
 
 // ResolveStorageAddr resolves the console endpoint the storage-tier clients
 // dial. The storage tier (initiative / review / env / snapshot / checkpoint)
@@ -130,14 +113,15 @@ var DialStorageFn = DialStorage
 // DialStorage opens the shared connection and constructs every client.
 func DialStorage(addr string) (*StorageClients, error) {
 	a := ResolveStorageAddr(addr)
-	conn, err := grpc.NewClient(core.ConsoleTarget(a),
+	opts := []grpc.DialOption{
 		// Always TLS — mirrors core.Dial*.
 		core.ConsoleTransportCreds(a),
-		// Attach the logged-in bearer (no-op when not logged in) + lift the
-		// receive cap, mirroring core.Dial*. See bearerPerRPC above.
-		grpc.WithPerRPCCredentials(bearerFor(a)),
+		// Lift the receive cap, mirroring core.Dial*.
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(storageMaxRecvMsgSize)),
-	)
+	}
+	// The console credential (no-op when not logged in), mirroring core.Dial*.
+	opts = append(opts, core.ConsoleCredentials(a)...)
+	conn, err := grpc.NewClient(core.ConsoleTarget(a), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial console %s: %w", a, err)
 	}
@@ -211,8 +195,8 @@ var GitUnbornBranchFn = realGitUnbornBranch
 // The message it then prints names detached HEAD and a missing repo, and on a
 // fresh `git init` + `git checkout -b` NEITHER is true — the user can see the
 // branch with `git branch --show-current` and is sent to check a repo that is
-// fine. Reported by a consumer who lost two rounds to it, in the first minute
-// of a new project, which is the only minute this state exists.
+// fine — in the first minute of a new project, which is the only minute this
+// state exists.
 //
 // `symbolic-ref` reads the ref HEAD NAMES rather than the commit it resolves
 // to, so it answers on an unborn branch and stays empty on a detached HEAD —

@@ -196,7 +196,10 @@ var PreGenerateTimeout = 20 * time.Second
 // abandoned (its subprocesses end with this process) and ok is false.
 func reportWithin(d time.Duration, console, root string) (updatecheck.Report, bool) {
 	done := make(chan updatecheck.Report, 1)
-	go func() { done <- reportFn(console, root, clientLatest) }()
+	// Read here, not in the goroutine: an abandoned check keeps running, and
+	// it must not read the package variable while it is reassigned.
+	fn := reportFn
+	go func() { done <- fn(console, root, clientLatest) }()
 	select {
 	case r := <-done:
 		return r, true

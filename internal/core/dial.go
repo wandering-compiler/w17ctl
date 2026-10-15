@@ -92,18 +92,9 @@ func realDialCodegen(addr string) (CodegenConsole, *grpc.ClientConn, error) {
 	// (handlers, bundles, AND the full pb stub set(s)), comfortably
 	// exceeding gRPC's 4 MiB default receive cap. Lift it so large
 	// projects don't trip ResourceExhausted on the client.
-	conn, err := grpc.NewClient(ConsoleTarget(addr),
-		// Always TLS (dev console is fronted by a TLS-terminating proxy).
-		// See ConsoleTransportCreds.
-		ConsoleTransportCreds(addr),
-		// Records every console call when W17_RECORD_CONSOLE_CALLS is set; a
-		// no-op otherwise. See callrecord.go for why the role needs this.
-		recordUnaryCalls(),
-		recordStreamCalls(),
-		// Attach the logged-in bearer (no-op when not logged in). See auth.go.
-		grpc.WithPerRPCCredentials(bearerPerRPC{addr: addr}),
+	conn, err := grpc.NewClient(ConsoleTarget(addr), consoleDialOptions(addr, true,
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(codegenMaxRecvMsgSize)),
-	)
+	)...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -129,18 +120,9 @@ func realDialMigrationFetch(addr string) (applyfetchpb.MigrationFetchClient, *gr
 	// Mirror DialCodegen: a fetch response carries every migration body up to
 	// the pinned target, which can exceed gRPC's 4 MiB default cap on a large
 	// schema history, so lift the receive cap to the same generous bound.
-	conn, err := grpc.NewClient(ConsoleTarget(addr),
-		// Always TLS (dev console is fronted by a TLS-terminating proxy).
-		// See ConsoleTransportCreds.
-		ConsoleTransportCreds(addr),
-		// Records every console call when W17_RECORD_CONSOLE_CALLS is set; a
-		// no-op otherwise. See callrecord.go for why the role needs this.
-		recordUnaryCalls(),
-		recordStreamCalls(),
-		// Attach the logged-in bearer (no-op when not logged in). See auth.go.
-		grpc.WithPerRPCCredentials(bearerPerRPC{addr: addr}),
+	conn, err := grpc.NewClient(ConsoleTarget(addr), consoleDialOptions(addr, true,
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(codegenMaxRecvMsgSize)),
-	)
+	)...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -166,18 +148,9 @@ func realDialFixtureFetch(addr string) (applyfetchpb.FixtureFetchClient, *grpc.C
 	// Mirror DialCodegen: a fixture-seed response carries every rendered upsert
 	// statement for the named fixture, which can exceed gRPC's 4 MiB default cap
 	// on a large seed set, so lift the receive cap to the same generous bound.
-	conn, err := grpc.NewClient(ConsoleTarget(addr),
-		// Always TLS (dev console is fronted by a TLS-terminating proxy).
-		// See ConsoleTransportCreds.
-		ConsoleTransportCreds(addr),
-		// Records every console call when W17_RECORD_CONSOLE_CALLS is set; a
-		// no-op otherwise. See callrecord.go for why the role needs this.
-		recordUnaryCalls(),
-		recordStreamCalls(),
-		// Attach the logged-in bearer (no-op when not logged in). See auth.go.
-		grpc.WithPerRPCCredentials(bearerPerRPC{addr: addr}),
+	conn, err := grpc.NewClient(ConsoleTarget(addr), consoleDialOptions(addr, true,
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(codegenMaxRecvMsgSize)),
-	)
+	)...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -203,21 +176,12 @@ func realDialProjectRegistry(addr string) (w17registrypb.ProjectRegistryClient, 
 	// A PushSchema request carries the whole compiled-IR blob, which can exceed
 	// gRPC's 4 MiB default cap on a large schema, so lift both send + receive
 	// caps to the same generous bound.
-	conn, err := grpc.NewClient(ConsoleTarget(addr),
-		// Always TLS (dev console is fronted by a TLS-terminating proxy).
-		// See ConsoleTransportCreds.
-		ConsoleTransportCreds(addr),
-		// Records every console call when W17_RECORD_CONSOLE_CALLS is set; a
-		// no-op otherwise. See callrecord.go for why the role needs this.
-		recordUnaryCalls(),
-		recordStreamCalls(),
-		// Attach the logged-in bearer (no-op when not logged in). See auth.go.
-		grpc.WithPerRPCCredentials(bearerPerRPC{addr: addr}),
+	conn, err := grpc.NewClient(ConsoleTarget(addr), consoleDialOptions(addr, true,
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(codegenMaxRecvMsgSize),
 			grpc.MaxCallSendMsgSize(codegenMaxRecvMsgSize),
 		),
-	)
+	)...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -231,28 +195,40 @@ var DialAuthServiceFn = realDialAuthService
 
 // DialAuthService dials the console's auth surface (the rpc gateway's re-hosted
 // `w17lock.console.rpc.AuthService`) at addr — the ONE gRPC endpoint w17ctl
-// logs in through. SignIn is unauthenticated (it mints the bearer); ListMyOrgs
-// is bearer-gated, so callers thread the freshly minted token via per-call
-// metadata. The dial therefore attaches NO stored bearer (unlike the other
-// console dials) — login must work before any token is stored.
+// logs in through. SignIn is unauthenticated (it mints the bearer, and carries
+// a DPoP proof the console binds it to); ListMyOrgs is bearer-gated, so callers
+// hand the freshly minted token to the call. The dial therefore attaches NO
+// stored bearer (unlike the other console dials) — login must work before any
+// token is stored.
 func DialAuthService(addr string) (consolerpcpb.AuthServiceClient, *grpc.ClientConn, error) {
 	return DialAuthServiceFn(addr)
 }
 
 func realDialAuthService(addr string) (consolerpcpb.AuthServiceClient, *grpc.ClientConn, error) {
-	conn, err := grpc.NewClient(ConsoleTarget(addr),
-		// Always TLS (dev console is fronted by a TLS-terminating proxy). See
-		// ConsoleTransportCreds. NO bearerPerRPC — see the doc above.
-		ConsoleTransportCreds(addr),
-		// Records every console call when W17_RECORD_CONSOLE_CALLS is set; a
-		// no-op otherwise. See callrecord.go for why the role needs this.
-		recordUnaryCalls(),
-		recordStreamCalls(),
-	)
+	// No STORED token — see the doc above: the credential here carries the
+	// sign-in's proof and the token a caller hands a call (withCallToken).
+	conn, err := grpc.NewClient(ConsoleTarget(addr), consoleDialOptions(addr, false)...)
 	if err != nil {
 		return nil, nil, err
 	}
 	return consolerpcpb.NewAuthServiceClient(conn), conn, nil
+}
+
+// consoleTransportFn is the transport half of every console dial: always TLS
+// (see ConsoleTransportCreds). Tests swap it for an in-process listener.
+var consoleTransportFn = func(addr string) []grpc.DialOption {
+	return []grpc.DialOption{ConsoleTransportCreds(addr)}
+}
+
+// consoleDialOptions is what every console dial carries: the transport, the
+// call recorder (a no-op unless W17_RECORD_CONSOLE_CALLS is set — see
+// callrecord.go), and the console credential (consolecreds.go). stored says
+// whether the credential presents the stored login; extra follows.
+func consoleDialOptions(addr string, stored bool, extra ...grpc.DialOption) []grpc.DialOption {
+	opts := append([]grpc.DialOption{}, consoleTransportFn(addr)...)
+	opts = append(opts, recordUnaryCalls(), recordStreamCalls())
+	opts = append(opts, newConsolePerRPC(addr, stored).dialOptions()...)
+	return append(opts, extra...)
 }
 
 // codegenMaxRecvMsgSize caps the codegen response the client will accept

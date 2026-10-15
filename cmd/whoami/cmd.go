@@ -101,7 +101,7 @@ func verify(inst *authstore.Instance) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	orgs, err := core.ListMyOrgs(ctx, inst.URL, inst.Token)
+	orgs, err := core.ListMyOrgsAs(ctx, inst.URL, inst.Token, inst.Device)
 	if err != nil {
 		// Returned, not printed: the top-level handler decorates an auth
 		// refusal with the causes only this machine can see.
@@ -146,6 +146,9 @@ func printInstance(active bool, inst *authstore.Instance) {
 			id = inst.User.Email + " (" + id + ")"
 		}
 		fmt.Fprintf(core.Stdout, "    identity: %s\n", id)
+	}
+	if inst.Device != "" {
+		fmt.Fprintf(core.Stdout, "    device: %s (the session is bound to this machine's device key)\n", inst.Device)
 	}
 	printSessionExpiry(inst)
 	if len(inst.Orgs) == 0 {

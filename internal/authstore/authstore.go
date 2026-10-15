@@ -56,9 +56,17 @@ type Instance struct {
 	URL string `yaml:"url"`
 
 	// Token is the opaque bearer the console minted for this user at
-	// login. w17ctl attaches it as `authorization: Bearer <token>` on its
-	// console gRPC calls and never inspects it.
+	// login. w17ctl attaches it to its console gRPC calls — as
+	// `authorization: Bearer <token>`, or as `authorization: DPoP <token>`
+	// with a proof when Device is set — and never inspects it.
 	Token string `yaml:"token,omitempty"`
+
+	// Device is the thumbprint (RFC 7638) of the device key the console
+	// bound Token to at login: the token is then presented with a DPoP proof
+	// signed by that key (the key file, see core.DeviceKeyPath). Empty = the
+	// console did not bind the token to a key, and it is sent as a plain
+	// bearer.
+	Device string `yaml:"device,omitempty"`
 
 	// User is the cached identity behind the token (display only).
 	User *User `yaml:"user,omitempty"`

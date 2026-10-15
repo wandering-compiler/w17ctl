@@ -65,6 +65,11 @@ type Config struct {
 	Keep           bool
 	Timeout        int
 	Console        string
+
+	// suiteEnv is what the suite's environment gains for this run: the
+	// public origins device proofs name (dpop.go), when the stack declares
+	// them.
+	suiteEnv []string
 }
 
 // Seams over the exec primitives so every docker-driving helper (and the
@@ -150,6 +155,17 @@ func (c *Config) Run() (err error) {
 		files = append(files, override)
 		defer func() { _ = os.Remove(override) }()
 	}
+
+	// A surface that binds devices: its proofs name the configured public
+	// origins, not the ports this run published (dpop.go). Resolved before
+	// anything is built or started, so an origin the suite cannot sign for
+	// costs no build and no boot.
+	rest, adminO, err := c.deviceOrigins(files, root, runnerDir, gatewaySvc, resolveAdminService(files, project, root))
+	if err != nil {
+		return err
+	}
+	restOrigin, adminOrigin := rest.value, adminO.value
+	c.suiteEnv = dpopEnv(restOrigin, adminOrigin)
 
 	_ = runCmd(exec.Command("docker", "volume", "create", c.GomodVolume))
 
@@ -284,8 +300,14 @@ func (c *Config) Run() (err error) {
 	}
 
 	// --- running: drive the suite as an external client over the port -----
-	c.status("running", fmt.Sprintf("gateway %s → %s — running the suite", gatewaySvc, target),
-		map[string]any{"target": target, "gateway": gatewaySvc, "mcp": mcp, "admin": admin})
+	running := map[string]any{"target": target, "gateway": gatewaySvc, "mcp": mcp, "admin": admin}
+	if restOrigin != "" {
+		running["dpop_origin"] = restOrigin
+	}
+	if adminOrigin != "" {
+		running["admin_dpop_origin"] = adminOrigin
+	}
+	c.status("running", fmt.Sprintf("gateway %s → %s — running the suite", gatewaySvc, target), running)
 	err = c.runSuite(bin, target, mcp, admin)
 	return err
 }
@@ -1166,15 +1188,16 @@ func (c *Config) buildRunner(root, runnerDir, bin string) error {
 func buildRunnerBin(root, runnerDir, bin, image, gomodVolume string) error {
 	mountRoot := workspaceMountRoot(root, runnerDir)
 	script := fmt.Sprintf("apk add --no-cache git >/dev/null 2>&1; go test -c -o %s .", shSingleQuote(bin))
-	cmd := exec.Command("docker", "run", "--rm",
-		"-v", mountRoot+":"+mountRoot,
-		"-v", gomodVolume+":/go/pkg/mod",
+	args := []string{"run", "--rm",
+		"-v", mountRoot + ":" + mountRoot,
+		"-v", gomodVolume + ":/go/pkg/mod",
 		"-w", runnerDir,
 		"-e", "CGO_ENABLED=0",
-		"-e", "GOOS="+runtime.GOOS,
-		"-e", "GOARCH="+runtime.GOARCH,
-		image, "sh", "-c", script,
-	)
+		"-e", "GOOS=" + runtime.GOOS,
+		"-e", "GOARCH=" + runtime.GOARCH,
+	}
+	args = append(args, moduleProxyEnv()...)
+	cmd := exec.Command("docker", append(args, image, "sh", "-c", script)...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return runCmd(cmd)
@@ -1215,6 +1238,9 @@ func (c *Config) runSuite(bin, target, mcp, admin string) error {
 	}
 
 	cmd := exec.Command(bin, args...)
+	if len(c.suiteEnv) > 0 {
+		cmd.Env = append(os.Environ(), c.suiteEnv...)
+	}
 	cmd.Stderr = os.Stderr
 	if c.Format != "json" {
 		cmd.Stdout = os.Stdout
@@ -1378,4 +1404,18 @@ func commonAncestor(paths []string) string {
 
 func shSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// moduleProxyEnv hands the module proxy settings of the caller's environment
+// to the container that builds the runner: a project behind a mirror, or a
+// CI job serving its own module cache, downloads through it there too.
+// Unset ones are left unset, so the container keeps Go's defaults.
+func moduleProxyEnv() []string {
+	var out []string
+	for _, k := range []string{"GOPROXY", "GOSUMDB", "GODEBUG"} {
+		if os.Getenv(k) != "" {
+			out = append(out, "-e", k)
+		}
+	}
+	return out
 }

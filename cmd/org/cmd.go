@@ -61,7 +61,7 @@ func (c *ListCmd) Run() error {
 	if c.Refresh {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
-		orgs, err := core.ListMyOrgs(ctx, inst.URL, inst.Token)
+		orgs, err := core.ListMyOrgsAs(ctx, inst.URL, inst.Token, inst.Device)
 		if err != nil {
 			return fmt.Errorf("org list: refresh from %s: %w", inst.URL, err)
 		}

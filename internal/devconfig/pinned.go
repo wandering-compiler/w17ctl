@@ -22,7 +22,7 @@ import (
 // got 14003 and no explanation. On a host where each workspace has its own
 // tunnelled block of ports, a number outside the block is not merely
 // surprising: nothing outside it is reachable at all, so the stack comes up
-// and cannot be used. A consumer reported exactly that.
+// and cannot be used.
 //
 // The registry keeps its real job — picking a port for a slot nobody has
 // chosen, and not handing the same one to two projects. A pinned value is
