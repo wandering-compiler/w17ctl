@@ -98,6 +98,16 @@ func (c *RegisterCmd) Run() error {
 		return fmt.Errorf("project register: no project name — the lock carries none, pass --name")
 	}
 
+	// Every call from here on acts in the organization the project is being
+	// registered under — --org, or (none given) the machine default / the
+	// console's inference — never in the one the lock on disk names: that lock
+	// is the one being replaced, and after a console rebuild or a move to
+	// another console its org_id is not one the caller has here. Read for the
+	// lock edit below, it refused the edit after the registration had
+	// succeeded, leaving the lock unwritten.
+	core.ActInOrg(strings.TrimSpace(c.Org))
+	defer core.ClearActInOrg()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

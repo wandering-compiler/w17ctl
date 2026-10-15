@@ -59,6 +59,9 @@ func (c *GenPbCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	// The organization comes from the lock above the plugin, as for `plugin
+	// sign` (see there).
+	core.ActInOrgOfLockAbove(dir)
 	_, conn, err := core.DialCodegen(addr)
 	if err != nil {
 		return err

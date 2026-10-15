@@ -67,7 +67,17 @@ type Lock struct {
 	// OrgID is the organization this project belongs to, stamped by the
 	// console when it signs the lock. Empty on a lock written before the
 	// field existed, or one the console has not re-signed since.
-	OrgID       string       `yaml:"org_id"`
+	OrgID string `yaml:"org_id"`
+	// OrgSlug is the same organization's slug, stamped beside OrgID for a
+	// reader of the diff. Never authoritative: OrgID decides. w17ctl uses it
+	// only to ASK the console which organizations the caller belongs to when
+	// the caller's grants are all org-scoped (see core.orgSlugForRequest),
+	// and the answer is then matched by OrgID.
+	OrgSlug string `yaml:"org_slug"`
+	// W17URL is the console the lock belongs to — whose organization OrgID
+	// is. The client never DIALS it (core.ResolveConsoleAddr); it only checks
+	// that the console being dialed is that one before sending OrgID's org.
+	W17URL      string       `yaml:"w17_url"`
 	Connections []Connection `yaml:"connections"`
 	// Plugins is the installed-plugin set (the offline read the plugin
 	// list/install/update commands use to cross-reference + dedup; the WRITE

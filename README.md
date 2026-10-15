@@ -174,6 +174,7 @@ bearer out.
 | `key public [<console>]` | Prints a device key's public half as a JWK on stdout (making the key first if there is none): the file `W17_DPOP_KEY` names, else this machine's key for the console (default: the active one). It is what the console needs to issue a machine account's token. Stderr names the file and its thumbprint (the device id the console shows). |
 | `whoami` | Prints the stored identity + orgs for the active console (`--all` = every logged-in console), and the session expiry when one is known (with a warning once it has passed). Pure local read. |
 | `org list` / `org use <slug>` | List orgs you belong to (server read) and pick the default; the default org scopes subsequent commands. |
+| `org pin <slug>` | Writes a minimal `w17/lock.yaml` (`org_id`, `org_slug`, `w17_url`, nothing else) in a directory that is **not** a project, e.g. a plugins repository. Every w17ctl run there then acts in that organization, a `W17_TOKEN` run included. Refuses inside a project, whose lock is the console's. |
 
 **Unattended callers don't log in.** CI and a production deployment have no
 terminal to run `login` on and no home directory worth writing a credential
@@ -193,6 +194,23 @@ a compiled-in `DefaultConsoleAddr` — every released binary — uses that when
 
 Nothing here is required locally: with no token set, the credential store
 answers exactly as before.
+
+**The organization comes from the lock.** A token carries no organization of
+its own, and an account in several organizations is refused on every org-scoped
+call that names none (`missing permission …`): the console will not guess.
+Inside a project, the lock's `org_id` decides. w17ctl translates it to the
+slug the `w17-org` header carries, asking the console (`ListMyOrgs`, once per
+run) when there is no login cache to do it, which is always the case for
+`W17_TOKEN`. A lock naming an organization the account is not in stops the
+command with an error that names both. The lock's organization is translated through
+the login cache wherever that cache knows the id, and asked of the console only
+when its `w17_url` names the console being dialed; never beside an explicit
+`--org`. `project register` and `init`, which replace the lock, act in the
+organization they register under for every call. A directory that is not a project, such
+as a plugins repository where `plugin sign` / `plugin gen` run, gets its
+organization from `w17ctl org pin <slug>`: run it once, signed in as a person,
+and commit the file. `plugin sign <dir>` and `plugin gen <dir>` read the lock
+above `<dir>` first, then the working directory's.
 
 **Device-bound sessions (DPoP).** A console whose auth binds devices ties every
 token to a key and accepts it only with a proof (RFC 9449) signed by that key,

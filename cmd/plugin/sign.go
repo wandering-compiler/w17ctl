@@ -33,6 +33,11 @@ type SignCmd struct {
 }
 
 func (c *SignCmd) Run() error {
+	// The organization the signing acts in is the one the lock above the
+	// plugin names (the plugins repository pins one: `w17ctl org pin`), then
+	// the one above the working directory. A signer in several organizations
+	// is refused without it — the console will not guess which.
+	core.ActInOrgOfLockAbove(c.Dir)
 	cl, conn, err := dialCodegen(c.Console)
 	if err != nil {
 		return fmt.Errorf("plugin sign: %w", err)

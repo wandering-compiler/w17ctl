@@ -41,17 +41,11 @@ func LockProjectIDBestEffort() string {
 // Best-effort by design: outside a project, or on a lock the console has not
 // stamped yet, the answer is "" and the caller falls back to the machine
 // default. A command run outside any project still has to work.
-func LockOrgIDBestEffort() string {
-	root, err := FindProjectRoot()
-	if err != nil {
-		return ""
-	}
-	lk, err := lockfile.Load(filepath.Join(root, "w17", "lock.yaml"))
-	if err != nil {
-		return ""
-	}
-	return lk.OrgID
-}
+//
+// A command that acts on a directory other than the working one (`plugin
+// sign <dir>`, `plugin gen <dir>`) names it with ActInOrgOfLockAbove, and the
+// lock above THAT directory is consulted first.
+func LockOrgIDBestEffort() string { return lockOrgBestEffort().ID }
 
 // FindProjectRootFn defaults to the real walk-up; tests override it.
 var FindProjectRootFn = realFindProjectRoot

@@ -179,29 +179,65 @@ func explainEnvToken(addr string) string {
 // permission refusal — the caller named an organization and lacks the grant —
 // gets nothing added, because inventing an explanation for THAT sends the
 // reader to the wrong fix.
+//
+// The cause it can see is "no organization was sent, and the account has
+// several". The memberships come from the login cache, or — for an
+// environment token, which has none — from the console. A console that will
+// not list them without an organization is itself the answer: the request had
+// no organization and the account's grants need one, which is what an account
+// in several organizations looks like to an api-realm token.
 func explainPermissionDenied(addr string) string {
-	if orgSlugForRequest(addr) != "" {
-		return ""
-	}
-	inst := instanceFor(addr)
-	if inst == nil || len(inst.Orgs) == 0 {
+	if slug, err := orgSlugForRequest(addr); slug != "" || err != nil {
 		return ""
 	}
 	var slugs []string
-	for _, o := range inst.Orgs {
-		if o != nil && o.Slug != "" {
-			slugs = append(slugs, o.Slug)
+	switch inst := instanceFor(addr); {
+	case inst != nil && len(inst.Orgs) > 0:
+		for _, o := range inst.Orgs {
+			if o != nil && o.Slug != "" {
+				slugs = append(slugs, o.Slug)
+			}
 		}
+	case AuthTokenFn(addr) != "":
+		l := listOrgsOnce(addr, AuthTokenFn(addr), "")
+		switch {
+		case l.err == nil:
+			slugs = orgSlugs(l.orgs)
+		case status.Code(l.err) == codes.PermissionDenied:
+			return "  no organization was sent with this request, and the console would not even list\n" +
+				"  " + accountFor(addr) + "'s organizations without one: its grants are all scoped\n" +
+				"  to an organization, so a request that names none narrows them to nothing.\n" +
+				noOrgFix(addr)
+		default:
+			return ""
+		}
+	default:
+		return ""
 	}
 	if len(slugs) < 2 {
 		return ""
 	}
-	return "  no organization was selected, and you belong to " + fmt.Sprint(len(slugs)) + ": " +
-		strings.Join(slugs, ", ") + "\n" +
-		"  your grants are scoped to an organization, so a request that names none\n" +
+	return "  no organization was sent with this request, and " + accountFor(addr) + " belongs to " +
+		fmt.Sprint(len(slugs)) + ": " + strings.Join(slugs, ", ") + "\n" +
+		"  the grants are scoped to an organization, so a request that names none\n" +
 		"  narrows them to nothing — which arrives as this refusal.\n" +
-		"  fix: `w17ctl org use <slug>`, or run inside a project whose lock records one\n" +
-		"       (the console stamps it when it signs the lock)\n"
+		noOrgFix(addr)
+}
+
+// noOrgFix says how to name the organization, starting with the way that works
+// for every caller: a lock in the directory.
+func noOrgFix(addr string) string {
+	var b strings.Builder
+	b.WriteString("  fix: run inside a project whose lock records its organization\n" +
+		"       (the console stamps org_id when it signs the lock); a directory that is not a\n" +
+		"       project — a plugins repository — records one with `w17ctl org pin <slug>`.\n")
+	if envTokenFor(addr) != "" {
+		b.WriteString("       " + EnvTokenVar + " carries no organization of its own: the lock is how an\n" +
+			"       unattended run names one.\n")
+	} else {
+		b.WriteString("       Or set this machine's default: `w17ctl org use <slug>`.\n")
+	}
+	return b.String()
 }
 
 func isLoopback(url string) bool {

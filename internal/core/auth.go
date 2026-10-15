@@ -141,42 +141,16 @@ func ActiveInstanceURL() string {
 // deliberately refuses when there are several.
 func ActiveOrgSlug() string { return OrgSlugFor("") }
 
-// OrgSlugFor returns the chosen organization's slug for ONE console. Same
-// per-address rule as AuthTokenFn: the org a user picked on the deployed
-// console must not ride a call to their dev console, where that slug may
-// name a different organization or none.
-// orgSlugForRequest picks the organization THIS command acts in: the project's
-// if the directory has one, the machine default otherwise.
-//
-// The lock wins because it is the specific answer. A default in
-// ~/.w17/auth.yaml is one value for every checkout on the machine, so with two
-// projects in two organizations it is right for at most one of them — and
-// being wrong is silent, since the console checks the header against
-// membership rather than against the project.
-//
-// The lock stores an ID and the wire wants a SLUG, so it is translated through
-// the login-time membership cache. An id that resolves to no membership falls
-// back rather than sending nothing: it means the lock names an organization
-// this login cannot see, and the console's own refusal says that far better
-// than a request with no scope at all, which reads as "you picked nothing".
-// OrgSlugForRequestFn is indirected for the same reason AuthTokenFn is: a test
+// OrgSlugForRequestFn is the organization a console call acts in (see
+// orgSlugForRequest), indirected for the same reason AuthTokenFn is: a test
 // that wants to assert the credential's SHAPE should not have to stand up an
 // authstore and a project lock to do it.
 var OrgSlugForRequestFn = orgSlugForRequest
 
-func orgSlugForRequest(addr string) string {
-	if orgID := LockOrgIDBestEffort(); orgID != "" {
-		if inst := instanceFor(addr); inst != nil {
-			for _, o := range inst.Orgs {
-				if o != nil && o.ID == orgID {
-					return o.Slug
-				}
-			}
-		}
-	}
-	return OrgSlugFor(addr)
-}
-
+// OrgSlugFor returns the chosen organization's slug for ONE console. Same
+// per-address rule as AuthTokenFn: the org a user picked on the deployed
+// console must not ride a call to their dev console, where that slug may
+// name a different organization or none.
 func OrgSlugFor(addr string) string {
 	inst := instanceFor(addr)
 	if inst == nil || inst.DefaultOrg == "" {

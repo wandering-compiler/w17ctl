@@ -282,11 +282,26 @@ func (c *consolePerRPC) GetRequestMetadata(ctx context.Context, uri ...string) (
 		//
 		// It belongs here rather than at each call site for the reason the
 		// token does: a per-call decision is one somebody forgets.
-		if slug := OrgSlugForRequestFn(c.addr); slug != "" {
-			md["w17-org"] = slug
+		//
+		// A call that names its organization itself (`project register
+		// --org`, `init`) is left alone: the explicit choice is the answer,
+		// and adding the resolved one sent the header twice.
+		if !outgoingNamesOrg(ctx) {
+			slug, err := OrgSlugForRequestFn(c.addr)
+			if err != nil {
+				return nil, err
+			}
+			if slug != "" {
+				md["w17-org"] = slug
+			}
 		}
 	}
 	return md, nil
+}
+
+func outgoingNamesOrg(ctx context.Context) bool {
+	md, _ := metadata.FromOutgoingContext(ctx)
+	return len(md.Get("w17-org")) > 0
 }
 
 // RequireTransportSecurity implements credentials.PerRPCCredentials.

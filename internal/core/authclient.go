@@ -125,12 +125,22 @@ func ListMyOrgsAs(ctx context.Context, addr, token, device string) ([]AuthOrg, e
 }
 
 func listMyOrgs(ctx context.Context, addr, token string, b tokenBinding) ([]AuthOrg, error) {
+	return listMyOrgsIn(ctx, addr, token, b, "")
+}
+
+// listMyOrgsIn is listMyOrgs sent as acting in orgSlug ("" = none): the form
+// an api-realm token needs, whose ListMyOrgs grant is itself org-scoped
+// (listOrgsOnce).
+func listMyOrgsIn(ctx context.Context, addr, token string, b tokenBinding, orgSlug string) ([]AuthOrg, error) {
 	cl, conn, err := DialAuthService(addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial console: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 	authCtx := withCallToken(ctx, token, b)
+	if orgSlug != "" {
+		authCtx = metadata.AppendToOutgoingContext(authCtx, "w17-org", orgSlug)
+	}
 	resp, err := cl.ListMyOrgs(authCtx, &authpb.ListMyOrgsReq{})
 	if err != nil {
 		return nil, err

@@ -127,6 +127,11 @@ func (c *Cmd) Run() error {
 	if err := rememberDefaultOrg(orgSlug); err != nil {
 		return err
 	}
+	// And for the rest of THIS run: the lock does not exist yet, so the calls
+	// that build and sign it act in the chosen organization rather than in
+	// whatever a lock above this directory (or the machine default) names.
+	core.ActInOrg(orgSlug)
+	defer core.ClearActInOrg()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
