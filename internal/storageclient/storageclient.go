@@ -101,6 +101,10 @@ type StorageClients struct {
 	CQ consolerpcpb.CheckpointQueryClient
 	CM consolerpcpb.CheckpointMutationClient
 
+	// ES is an environment's env values and secrets (`w17ctl secrets
+	// set|unset|list|import`, and the deploy's fetch).
+	ES consolerpcpb.EnvironmentSecretsClient
+
 	Close func()
 }
 
@@ -138,6 +142,7 @@ func DialStorage(addr string) (*StorageClients, error) {
 		EM:    consolerpcpb.NewEnvironmentMutationClient(conn),
 		CQ:    consolerpcpb.NewCheckpointQueryClient(conn),
 		CM:    consolerpcpb.NewCheckpointMutationClient(conn),
+		ES:    consolerpcpb.NewEnvironmentSecretsClient(conn),
 		Close: func() { _ = conn.Close() },
 	}, nil
 }

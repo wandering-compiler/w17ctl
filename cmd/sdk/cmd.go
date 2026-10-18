@@ -19,16 +19,18 @@ import (
 //
 // `update` and `pin` are two halves of one job and neither subsumes the
 // other. `update` moves the FILES — go.mod + go.sum, in every module,
-// including the hand-written one — over the module proxy alone, with no
-// console and no Go toolchain, which is the whole reason it exists. `pin`
-// records the version in the LOCK, which needs the console because the lock
-// is signed.
+// including the hand-written one — over the module proxy, with no console:
+// the SDK and every module the project lists below what the new SDK needs,
+// hashed without a Go toolchain, then a `go mod tidy` of each module (a local
+// go of the module's version, or docker) for the modules the new SDK pulls in
+// that the project does not list yet. `pin` records the version in the LOCK,
+// which needs the console because the lock is signed.
 //
 // Without the pin, an update does not survive: codegen re-emits every
 // GENERATED module's go.mod from the lock, so the next codegen run puts the
 // old version back. `update` says so when it cannot reach the lock itself.
 type Cmd struct {
-	Update UpdateCmd `cmd:"" help:"Move this project onto a new public sdk/go release — rewrites the require + go.sum hashes in every module, including the hand-written one codegen won't touch."`
+	Update UpdateCmd `cmd:"" help:"Move this project onto a new public sdk/go release — rewrites the require + go.sum hashes in every module, including the hand-written one codegen won't touch, raises what the new SDK needs, and tidies each module (local go or docker)."`
 	Pin    PinCmd    `cmd:"" help:"Record the sdk/go version in the lock, so codegen emits it into every generated module and an update survives regeneration."`
 	Unpin  UnpinCmd  `cmd:"" help:"Clear the recorded version — generated modules go back to resolving sdk/go independently."`
 }
@@ -44,6 +46,7 @@ type Cmd struct {
 type UpdateCmd struct {
 	ProjectRoot string `arg:"" optional:"" default:"." help:"Project root. Defaults to cwd."`
 	Version     string `name:"version" placeholder:"VERSION" help:"Pin this exact version (e.g. v0.0.0-20260716201145-36e33cc8168a). Default: the proxy's @latest."`
+	NoTidy      bool   `name:"no-tidy" help:"Skip the closing go mod tidy of each module (a local go of the module's version, or docker). The update then writes only what the module proxy answers: the SDK and the modules the project already lists, raised to what the SDK needs."`
 }
 
 // Run delegates to the implementation, rendering progress to the shared
@@ -54,7 +57,7 @@ func (c *UpdateCmd) Run() error {
 	// the caller named — without one, "already up to date" means whatever
 	// the proxy's @latest turns out to be, which is known only after the run.
 	settled := c.Version != "" && sdkupdate.AlreadyAt(c.ProjectRoot, sdkupdate.SdkModule, c.Version)
-	resolved, err := sdkupdate.Run(core.Stdout, c.ProjectRoot, c.Version)
+	resolved, err := sdkupdate.RunOpts(core.Stdout, c.ProjectRoot, c.Version, sdkupdate.Options{Tidy: !c.NoTidy})
 	if err != nil {
 		return err
 	}

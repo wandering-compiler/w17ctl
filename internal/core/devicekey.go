@@ -140,6 +140,11 @@ func readDeviceKey(path string) (*dpop.Key, error) {
 			"  fix: chmod 600 %s", path, fi.Mode().Perm(), path)
 	}
 	k, err := dpop.LoadKeyFile(path)
+	if err != nil && mask == 0o022 {
+		// The operator's key: a new one would not be the key their token was
+		// issued for, so deleting it fixes nothing.
+		return nil, fmt.Errorf("%w: device key %s (%s): %w", errBadDeviceKey, path, EnvDPoPKeyVar, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: device key %s: %w\n"+
 			"  the file is damaged; delete it and sign in again (w17ctl login makes a new key)", errBadDeviceKey, path, err)

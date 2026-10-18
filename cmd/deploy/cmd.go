@@ -99,11 +99,20 @@ func (c *Cmd) Run() error {
 	default:
 		return fmt.Errorf("deploy: environment %s has no known target kind (%q)", c.Env, kind)
 	}
+	// Where the environment's env values come from, decided once, before
+	// anything is built: its sealed deploy/<env>/services/*/.env.enc when
+	// there are any, else the console (`w17ctl secrets import|set`). Never
+	// both — a file present means sops, whatever the console holds.
+	encs, _ := filepath.Glob(filepath.Join(root, "deploy", c.Env, "services", "*", ".env.enc"))
+	sort.Strings(encs)
 	ids, err := sopsenv.LoadIdentities(os.Getenv, nonEmpty(c.Key)...)
 	if err != nil {
 		return fmt.Errorf("deploy: %w", err)
 	}
-	if len(ids) == 0 {
+	if len(encs) == 0 && kind != "swarm" {
+		return fmt.Errorf("deploy: deploy/%s/services holds no .env.enc, and values held by the console deploy to a swarm environment only (yet) — seal the env files (`w17ctl secrets seal --env %s`)", c.Env, c.Env)
+	}
+	if len(encs) > 0 && len(ids) == 0 {
 		return fmt.Errorf("deploy: no age key for the env files — set SOPS_AGE_KEY (or SOPS_AGE_KEY_FILE), or pass --key")
 	}
 
@@ -118,6 +127,15 @@ func (c *Cmd) Run() error {
 	selfPath, err := self()
 	if err != nil {
 		return err
+	}
+	// The server's machine is asked before anything runs: one no image can be built
+	// for is refused before the suite, the pinned migrations and the codegen, not
+	// after them.
+	var platform string
+	if kind == "swarm" {
+		if platform, err = serverPlatform(target); err != nil {
+			return fmt.Errorf("deploy: %w", err)
+		}
 	}
 	w17 := func(args ...string) error {
 		if c.Console != "" {
@@ -140,6 +158,25 @@ func (c *Cmd) Run() error {
 	// generates for this lock, whatever an older run left on disk.
 	if err := w17("codegen", "--force"); err != nil {
 		return fmt.Errorf("deploy: codegen: %w", err)
+	}
+
+	// The values are fetched once the tree is known to be deployable and is
+	// rendered for this lock: the check against each service's .env.example
+	// must see the services and keys this deploy runs, not the ones an older
+	// render left on disk; and a fetch is a hand-out the console records, so a
+	// deploy that was never going to run should not make one.
+	var fromConsole *consoleEnv
+	if len(encs) == 0 {
+		fmt.Fprintf(core.Stdout, "env values: from the console (deploy/%s/services holds no .env.enc)\n", c.Env)
+		ref := sha
+		if dirty {
+			ref += "-dirty"
+		}
+		if fromConsole, err = fetchConsoleEnv(c.LockPath, c.Console, c.Env, filepath.Join(root, "deploy", c.Env, "services"), ref); err != nil {
+			return fmt.Errorf("deploy: %w", err)
+		}
+	} else {
+		fmt.Fprintf(core.Stdout, "env values: deploy/%s/services/*/.env.enc (sops)\n", c.Env)
 	}
 
 	envDir := filepath.Join(root, "deploy", c.Env)
@@ -174,14 +211,18 @@ func (c *Cmd) Run() error {
 	pgTag = "pg-" + pgTag
 	prefix := "w17local/" + imageName(view.GetProject())
 
-	step("build the images")
+	step("build the images for " + platform + ", the server's platform")
 	var refs []string
 	for _, im := range images {
 		ref := prefix + "/" + im.name + ":" + tag
 		if im.name == "stack-postgres" {
 			ref = prefix + "/stack-postgres:" + pgTag
 		}
-		args := append([]string{"build", "-q"}, c.BuildFlags...)
+		args := []string{"build", "-q"}
+		if !ownPlatform(c.BuildFlags) {
+			args = append(args, "--platform", platform)
+		}
+		args = append(args, c.BuildFlags...)
 		for _, a := range im.buildArgs {
 			args = append(args, "--build-arg", a)
 		}
@@ -225,9 +266,18 @@ func (c *Cmd) Run() error {
 		return fmt.Errorf("deploy: rsync: %w", err)
 	}
 
-	step("the env files, decrypted into ssh")
-	encs, _ := filepath.Glob(filepath.Join(envDir, "services", "*", ".env.enc"))
-	sort.Strings(encs)
+	if fromConsole != nil {
+		step("the env files, from the console into ssh")
+		for _, f := range fromConsole.files {
+			dst := remote.ShellQuote(stack + "/env/" + f.service + ".env")
+			write := fmt.Sprintf("umask 077; mkdir -p %s && cat > %s.new && mv %s.new %s", remote.ShellQuote(stack+"/env"), dst, dst, dst)
+			if err := target.Run(bytes.NewReader(f.body), io.Discard, target.Sudo("sh -c "+remote.ShellQuote(write))); err != nil {
+				return fmt.Errorf("deploy: delivering %s.env: %w", f.service, err)
+			}
+		}
+	} else {
+		step("the env files, decrypted into ssh")
+	}
 	for _, enc := range encs {
 		svc := filepath.Base(filepath.Dir(enc))
 		b, err := os.ReadFile(enc)
@@ -255,6 +305,41 @@ func (c *Cmd) Run() error {
 	fmt.Fprintf(core.Stdout, "\ndeployed %s (%s) to %s — commit the lock: migrate generate pinned new migrations in it.\n", tag, c.Env, ssh)
 	fmt.Fprint(core.Stdout, warning)
 	return nil
+}
+
+// serverPlatform is the docker platform of the server's machine: the images
+// are built for it, whatever this one is. Without `--platform` docker builds
+// for the laptop, and an amd64 image on an arm64 server starts and dies with
+// "exec format error" on every task — a restart loop that names no cause.
+func serverPlatform(target remote.Target) (string, error) {
+	var out strings.Builder
+	if err := target.Run(nil, &out, "uname -m"); err != nil {
+		return "", fmt.Errorf("asking %s for its machine type: %w", target.Dest(), err)
+	}
+	// The last line: a shell profile that prints on a non-interactive login
+	// comes before the answer, never after it.
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	switch m := strings.TrimSpace(lines[len(lines)-1]); m {
+	case "x86_64", "amd64":
+		return "linux/amd64", nil
+	case "aarch64", "arm64":
+		return "linux/arm64", nil
+	default:
+		return "", fmt.Errorf("%s is a %q machine; the images build for linux/amd64 and linux/arm64 only", target.Dest(), m)
+	}
+}
+
+// ownPlatform reports whether the build flags already choose the platform
+// (`--build-flag=--platform=…`, the way to reach another machine before the
+// server was asked): docker's --platform is a list, and a second one would
+// turn every build into a multi-platform build the default driver refuses.
+func ownPlatform(flags []string) bool {
+	for _, f := range flags {
+		if f == "--platform" || strings.HasPrefix(f, "--platform=") {
+			return true
+		}
+	}
+	return false
 }
 
 // imageName turns the lock's project name into a docker repository component

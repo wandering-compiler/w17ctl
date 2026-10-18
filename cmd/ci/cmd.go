@@ -165,6 +165,10 @@ func printSetup(in *codegenpb.LockInfra) {
 	}
 	fmt.Fprintln(w, "      one w17-deploy-<env>.yaml per environment. Then in GitHub:")
 	fmt.Fprintln(w, "  repository secret  W17_TOKEN          a `ci-push` machine account's token (console: auth/bots)")
+	fmt.Fprintln(w, "  repository secret  W17_DEVICE_KEY     once the console binds tokens to devices: the private key the token")
+	fmt.Fprintln(w, "                                        is issued for (PKCS #8 PEM). `W17_DPOP_KEY=<file> w17ctl key public`")
+	fmt.Fprintln(w, "                                        makes it and prints the public JWK to issue the token with; the")
+	fmt.Fprintln(w, "                                        file's content goes here. Leave it unset until then.")
 	for _, env := range in.GetEnvironments() {
 		fmt.Fprintf(w, "  environment %s:\n", env.GetName())
 		if b := env.GetDeployBranch(); b != "" {

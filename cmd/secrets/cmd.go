@@ -27,6 +27,12 @@ type Cmd struct {
 	Check  CheckCmd  `cmd:"" help:"Without any private key: every .env.enc exists, carries exactly its .env.example's keys and is sealed for deploy/.sops.yaml's key. CI runs it."`
 	Rekey  RekeyCmd  `cmd:"" help:"Re-seal the data keys of an environment's .env.enc files for the keys deploy/.sops.yaml names (--add / --remove to rotate) — values untouched."`
 
+	// An environment's values held by the console instead of in sops files.
+	Set    SetCmd    `cmd:"" help:"Write one value of an environment to the console: --env E SERVICE KEY, the value on stdin. Never echoed; reading it back is not offered."`
+	Unset  UnsetCmd  `cmd:"" help:"Remove one value of an environment from the console (it is kept, marked removed, and no longer deployed)."`
+	List   ListCmd   `cmd:"" help:"The keys set in an environment on the console — never the values."`
+	Import ImportCmd `cmd:"" help:"Write every value of an environment's sealed deploy/<env>/services/*/.env.enc to the console (needs the age key). The deploy takes them from the console once those files are removed."`
+
 	FieldKey FieldKeyCmd `cmd:"" name:"field-key" help:"Print a field-encryption keyring for W17_FIELD_KEYS (the key of CRYPTED_SECRET columns): a fresh 1:<key>, or --rotate <current> to append the next version (new values then encrypt with it, the old ones keep decrypting). Put it in the service's deploy/<env>/services/<svc>/.env and seal it; keep it — without it those columns are unreadable."`
 }
 

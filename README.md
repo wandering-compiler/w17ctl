@@ -256,7 +256,15 @@ so a token copied off a machine is useless without the key file.
   secret like the token) beside `W17_TOKEN` and `W17_CONSOLE_ADDR`; `W17_TOKEN`
   is sent with a proof only when `W17_DPOP_KEY` is set. w17ctl never deletes a
   key named by `W17_DPOP_KEY`; when it is revoked, make a new key and issue a
-  new token for it.
+  new token for it. The CI configs codegen writes (`w17/ci/`, and the
+  `.github/workflows/w17-*.yaml` of `w17ctl ci`) take the key file's content
+  — the PEM, not the JWK — from the secret `W17_DEVICE_KEY` beside `W17_TOKEN`,
+  write it to a private file and point `W17_DPOP_KEY` at it. Leave the secret
+  unset until the console binds devices: a console that does not refuses a
+  signed call.
+- **`W17_DPOP_KEY` names a file that is not there** (with `W17_TOKEN`): the
+  call is refused here, and the fix is to point the variable at the key the
+  token was issued for — not `login`, which makes a session of its own.
 
 ### Project setup & scaffolding
 These **edit the signed lock** and write starter proto files. No codegen — they

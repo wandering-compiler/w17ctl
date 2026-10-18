@@ -11,6 +11,7 @@ package secrets
 // sops CLI both ways), so `sops decrypt` works on every file this writes.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/wandering-compiler/sdk/go/lib/dpop"
 	"github.com/wandering-compiler/sdk/go/lib/fieldcrypt"
 	"gopkg.in/yaml.v3"
 
@@ -333,6 +335,16 @@ func validate(root string, files []envFile) []string {
 					problems = append(problems, fmt.Sprintf("%s: %s %s", rel, l.Key, p))
 				}
 			}
+			if l.Key == envVar {
+				if p := envProblem(l.Value); p != "" {
+					problems = append(problems, fmt.Sprintf("%s: %s %s", rel, l.Key, p))
+				}
+			}
+			if l.Key == deviceKeyVar {
+				if p := deviceKeyProblem(l.Value); p != "" {
+					problems = append(problems, fmt.Sprintf("%s: %s %s", rel, l.Key, p))
+				}
+			}
 		}
 		var missing []string
 		for k := range want {
@@ -362,6 +374,45 @@ func fieldKeysProblem(v string) string {
 	}
 	if _, err := fieldcrypt.Parse(v); err != nil {
 		return "is not a keyring (" + err.Error() + ") — `w17ctl secrets field-key` prints one"
+	}
+	return ""
+}
+
+// envVar names the environment a service reports (telemetry, Sentry). Its
+// value `dev` is also what the binaries read as the development stack.
+const envVar = "W17_ENV"
+
+// envProblem: W17_ENV=dev in a deployment switches on the dev-only paths —
+// the public development field-encryption keyring is accepted, and the DPoP
+// edge runs single-replica with a per-boot nonce key.
+func envProblem(v string) string {
+	if strings.Trim(v, `"'`) != "dev" {
+		return ""
+	}
+	return "is dev — the value that switches on the development stack's paths (the public development field-encryption keyring, single-replica DPoP replay protection); set it to this environment's name"
+}
+
+// deviceKeyVar is the sealed device key the deploy's `migrate --fetch` signs
+// with (the infra generator's swarm.DeviceKeyVar): the key file, base64 on
+// one line. Empty = none.
+const deviceKeyVar = "W17_DEVICE_KEY"
+
+// deviceKeyProblem: a device key the deploy would fail on — after the images
+// moved — rather than here.
+func deviceKeyProblem(v string) string {
+	v = strings.Trim(v, `"`)
+	if v == "" || strings.Contains(v, "CHANGE_ME") {
+		return ""
+	}
+	if strings.Contains(v, "-----BEGIN") {
+		return "is the PEM itself — a .env holds one line per value: put `base64 < <key file> | tr -d '\\n'` here"
+	}
+	pem, err := base64.StdEncoding.DecodeString(v)
+	if err != nil {
+		return "is not base64 (`base64 < <key file> | tr -d '\\n'` of the file `W17_DPOP_KEY=<file> w17ctl key public` made)"
+	}
+	if _, err := dpop.ParseKeyPEM(pem); err != nil {
+		return "does not decode to a device key (" + err.Error() + ") — want `base64 < <key file> | tr -d '\\n'` of the file `W17_DPOP_KEY=<file> w17ctl key public` made"
 	}
 	return ""
 }

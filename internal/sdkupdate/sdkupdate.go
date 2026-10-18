@@ -14,7 +14,17 @@
 // So this does the whole job over plain HTTP against the module proxy: resolve
 // the version, fetch the .mod + .zip, compute the go.sum hashes with the same
 // library `go` uses (x/mod/sumdb/dirhash), and rewrite every module's go.mod +
-// go.sum. No Go toolchain anywhere.
+// go.sum. No Go toolchain needed for that.
+//
+// A new SDK can also need NEWER versions of modules a project already lists
+// (golang.org/x/sys, say): those are raised to what the SDK requires — minimum
+// version selection, which `go` would arrive at itself — with their hashes,
+// the same way. What a proxy cannot answer is a module the project does not
+// list yet but now needs because a package it imports pulls it in (a new SDK
+// dependency): that is an import-graph question, `go mod tidy`'s. So the
+// update ends with a tidy of each module, through the project's own Go
+// toolchain or a golang container (tidy.go); a module that only builds inside
+// a workspace keeps what the update wrote.
 package sdkupdate
 
 import (
@@ -58,6 +68,18 @@ var skipDirs = map[string]bool{
 // an explicit version, what "already up to date" means is whatever @latest
 // turns out to be.
 func Run(stdout io.Writer, root, version string) (string, error) {
+	return RunOpts(stdout, root, version, Options{Tidy: true})
+}
+
+// Options tune an update.
+type Options struct {
+	// Tidy runs `go mod tidy` in every updated module after the bump (see
+	// tidy.go). Off, the update writes only what the proxy can answer.
+	Tidy bool
+}
+
+// RunOpts is Run with options.
+func RunOpts(stdout io.Writer, root, version string, opts Options) (string, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return "", err
@@ -89,15 +111,105 @@ func Run(stdout io.Writer, root, version string) (string, error) {
 		return "", fmt.Errorf("sdk update: %w", err)
 	}
 
+	sdkReqs, err := moduleRequirements(ctx, SdkModule, version)
+	if err != nil {
+		return "", fmt.Errorf("sdk update: %w", err)
+	}
+	hashes := map[string]bump{SdkModule + "@" + version: {SdkModule, version, zipHash, modHash}}
 	for _, d := range mods {
-		if err := applyToModule(filepath.Join(root, d), SdkModule, version, zipHash, modHash); err != nil {
+		dir := filepath.Join(root, d)
+		bumps, err := raisesFor(dir, sdkReqs)
+		if err != nil {
 			return "", fmt.Errorf("sdk update: %s: %w", d, err)
 		}
-		fmt.Fprintf(stdout, "  %s\n", filepath.ToSlash(d))
+		bumps = append([]bump{{mod: SdkModule, ver: version}}, bumps...)
+		for i, b := range bumps {
+			key := b.mod + "@" + b.ver
+			h, ok := hashes[key]
+			if !ok {
+				if h.zipHash, h.modHash, err = moduleHashes(ctx, b.mod, b.ver); err != nil {
+					return "", fmt.Errorf("sdk update: %s: %w", key, err)
+				}
+				if err := verifyAgainstSumDB(ctx, b.mod, b.ver, h.zipHash, h.modHash); err != nil {
+					return "", fmt.Errorf("sdk update: %w", err)
+				}
+				h.mod, h.ver = b.mod, b.ver
+				hashes[key] = h
+			}
+			bumps[i] = h
+		}
+		if err := applyToModule(dir, bumps); err != nil {
+			return "", fmt.Errorf("sdk update: %s: %w", d, err)
+		}
+		line := "  " + filepath.ToSlash(d)
+		if len(bumps) > 1 {
+			raised := make([]string, 0, len(bumps)-1)
+			for _, b := range bumps[1:] {
+				raised = append(raised, b.mod+" "+b.ver)
+			}
+			line += "  (raised for the SDK: " + strings.Join(raised, ", ") + ")"
+		}
+		fmt.Fprintln(stdout, line)
 	}
 	fmt.Fprintf(stdout, "sdk update: %s → %s in %d module(s)\n", SdkModule, version, len(mods))
-	fmt.Fprintf(stdout, "  go.sum hashes computed from the module proxy — no Go toolchain used.\n")
+	fmt.Fprintf(stdout, "  go.sum hashes computed from the module proxy.\n")
+	if opts.Tidy {
+		tidyModules(stdout, root, mods)
+	}
 	return version, nil
+}
+
+// bump is one requirement the update writes, with its go.sum hashes.
+type bump struct{ mod, ver, zipHash, modHash string }
+
+// moduleRequirements reads mod@ver's own go.mod from the proxy: every module
+// it requires, at the version it requires.
+func moduleRequirements(ctx context.Context, mod, ver string) (map[string]string, error) {
+	body, err := proxyGet(ctx, mod, "@v/"+ver+".mod")
+	if err != nil {
+		return nil, err
+	}
+	f, err := modfile.ParseLax(mod+"@"+ver+"/go.mod", body, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s@%s go.mod: %w", mod, ver, err)
+	}
+	reqs := make(map[string]string, len(f.Require))
+	for _, r := range f.Require {
+		reqs[r.Mod.Path] = r.Mod.Version
+	}
+	return reqs, nil
+}
+
+// raisesFor is what minimum version selection does to one module's listed
+// requirements once the SDK it requires asks for more: every module the
+// project already lists BELOW the SDK's requirement moves up to it. A module
+// the project lists at or above it keeps its version, a module it does not
+// list is tidy's to add, and a replaced one is not the version's to decide.
+func raisesFor(dir string, sdkReqs map[string]string) ([]bump, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return nil, err
+	}
+	f, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parse go.mod: %w", err)
+	}
+	replaced := map[string]bool{}
+	for _, r := range f.Replace {
+		replaced[r.Old.Path] = true
+	}
+	var out []bump
+	for _, r := range f.Require {
+		want, ok := sdkReqs[r.Mod.Path]
+		if !ok || replaced[r.Mod.Path] || r.Mod.Path == SdkModule {
+			continue
+		}
+		if semver.Compare(want, r.Mod.Version) > 0 {
+			out = append(out, bump{mod: r.Mod.Path, ver: want})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].mod < out[j].mod })
+	return out, nil
 }
 
 // applyToModule rewrites one module's go.mod require + go.sum entries.
@@ -147,7 +259,7 @@ func requiredVersion(dir, mod string) (string, error) {
 	return "", nil
 }
 
-func applyToModule(dir, mod, ver, zipHash, modHash string) error {
+func applyToModule(dir string, bumps []bump) error {
 	goModPath := filepath.Join(dir, "go.mod")
 	data, err := os.ReadFile(goModPath)
 	if err != nil {
@@ -157,8 +269,12 @@ func applyToModule(dir, mod, ver, zipHash, modHash string) error {
 	if err != nil {
 		return fmt.Errorf("parse go.mod: %w", err)
 	}
-	if err := f.AddRequire(mod, ver); err != nil {
-		return fmt.Errorf("set require: %w", err)
+	for _, b := range bumps {
+		// AddRequire rewrites an existing line in place, so a requirement
+		// marked `// indirect` stays indirect.
+		if err := f.AddRequire(b.mod, b.ver); err != nil {
+			return fmt.Errorf("set require %s: %w", b.mod, err)
+		}
 	}
 	f.Cleanup()
 	out, err := f.Format()
@@ -176,7 +292,11 @@ func applyToModule(dir, mod, ver, zipHash, modHash string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return os.WriteFile(sumPath, []byte(goSumUpsert(string(prior), mod, ver, zipHash, modHash)), 0o644)
+	sum := string(prior)
+	for _, b := range bumps {
+		sum = goSumUpsert(sum, b.mod, b.ver, b.zipHash, b.modHash)
+	}
+	return os.WriteFile(sumPath, []byte(sum), 0o644)
 }
 
 // goSumUpsert returns go.sum content with mod's entries replaced by the given

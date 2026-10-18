@@ -64,12 +64,14 @@ func instanceFor(addr string) *authstore.Instance {
 	if err != nil {
 		return nil
 	}
-	return lookupInstance(st, addr)
+	return LookupInstance(st, addr)
 }
 
-// lookupInstance is instanceFor's matching over an already-loaded store, for
-// the callers that go on to modify and save it.
-func lookupInstance(st *authstore.Store, addr string) *authstore.Instance {
+// LookupInstance is instanceFor's matching over an already-loaded store, for
+// the callers that go on to modify and save it (and for `init`, which checks
+// --org against the console it registers with — the same matching, so an
+// address spelled differently from the stored login still finds it).
+func LookupInstance(st *authstore.Store, addr string) *authstore.Instance {
 	if addr == "" {
 		return st.ActiveInstance()
 	}

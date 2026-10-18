@@ -167,7 +167,7 @@ func recordSessionExpiry(addr, sent string, at time.Time) {
 	if err != nil {
 		return
 	}
-	inst := lookupInstance(st, addr)
+	inst := LookupInstance(st, addr)
 	if inst == nil || inst.Token == "" || inst.Token != sent || !inst.RecordSessionExpiry(at) {
 		return
 	}

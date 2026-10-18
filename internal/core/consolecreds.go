@@ -230,7 +230,38 @@ func (c *consolePerRPC) plan(ctx context.Context) (callPlan, error) {
 // anyway, and only this side can say why.
 func (c *consolePerRPC) boundKey(b tokenBinding) (*dpop.Key, error) {
 	k, err := LoadDeviceKey(c.addr)
+	if err != nil && b.device == "" {
+		// W17_TOKEN with W17_DPOP_KEY: the console issued the token for the
+		// key the operator manages, and only that key signs for it. A login
+		// makes a session of its own and leaves the token as unusable as
+		// before, so it is not the fix here. A key refused for its mode
+		// already ends with its fix, so the context goes in front of it.
+		if !errors.Is(err, errNoDeviceKey) && !errors.Is(err, errBadDeviceKey) {
+			return nil, fmt.Errorf("%s is bound to the device key %s names: %w", EnvTokenVar, EnvDPoPKeyVar, err)
+		}
+		return nil, fmt.Errorf("%w — %s is bound to the device key it was issued for, and %s names none that can be used\n"+
+			"  fix: point %s at that key file (the PKCS #8 PEM whose public JWK `w17ctl key public` printed when\n"+
+			"       the token was issued), or unset it to send %s as a plain bearer token to a console that binds no devices",
+			err, EnvTokenVar, EnvDPoPKeyVar, EnvDPoPKeyVar, EnvTokenVar)
+	}
 	if err != nil {
+		path, explicit, _ := DeviceKeyPath(c.addr)
+		switch {
+		case explicit && errors.Is(err, errBadDeviceKey):
+			// A login reads the same file W17_DPOP_KEY names and fails on
+			// it the same way, so the file has to go first.
+			return nil, fmt.Errorf("%w — the session for %s is bound to a device key, and the file %s names is not one\n"+
+				"  fix: replace %s with the key the session was bound to, or delete it and run w17ctl login %s (a new key is made there)",
+				err, displayAddr(c.addr), EnvDPoPKeyVar, path, displayAddr(c.addr))
+		case !errors.Is(err, errNoDeviceKey):
+			// The key is there but unusable — refused for its mode, or this
+			// machine's own file is damaged — and the error already ends with
+			// its fix (chmod 600; delete it and sign in again). A bare login
+			// is no fix for either: sign-in loads the same file and creates
+			// nothing over it. So the context goes in front and the fix stays
+			// the last line.
+			return nil, fmt.Errorf("the session for %s is bound to this machine's device key: %w", displayAddr(c.addr), err)
+		}
 		return nil, fmt.Errorf("%w — the session for %s is bound to this machine's device key, so it cannot be used without it\n"+
 			"  fix: w17ctl login %s (a new key is made)", err, displayAddr(c.addr), displayAddr(c.addr))
 	}

@@ -112,7 +112,7 @@ func (c *Cmd) Run() error {
 	// gateway-verified active org; we select it here (mandatory when the caller
 	// belongs to more than one) and send it as the `w17-org` header, which the
 	// console validates against the caller's membership.
-	orgSlug, err := chooseOrg(prompter, c.Org)
+	orgSlug, err := chooseOrg(prompter, c.Org, addr)
 	if err != nil {
 		return err
 	}
@@ -124,7 +124,7 @@ func (c *Cmd) Run() error {
 	// Only when no default is set yet — an operator who ran `org use` has
 	// stated a preference, and creating one project elsewhere is not a
 	// reason to silently move them.
-	if err := rememberDefaultOrg(orgSlug); err != nil {
+	if err := rememberDefaultOrg(orgSlug, addr); err != nil {
 		return err
 	}
 	// And for the rest of THIS run: the lock does not exist yet, so the calls
@@ -256,12 +256,13 @@ func (c *Cmd) Run() error {
 //   - member of >1         → MANDATORY choice (a Select with no default, so the
 //     operator can't fall through to an implicit org).
 //
-// rememberDefaultOrg records `slug` as the active instance's default org
+// rememberDefaultOrg records `slug` as the default org of the console the
+// project registers with (`console`, not necessarily the active instance)
 // when none is set yet. A no-op for an empty slug, an unknown slug, or an
 // instance that already has a default — none of those is an error worth
 // failing `init` over, since the registration itself carries the org
 // explicitly and has already been decided by the caller.
-func rememberDefaultOrg(slug string) error {
+func rememberDefaultOrg(slug, console string) error {
 	if slug == "" {
 		return nil
 	}
@@ -269,7 +270,7 @@ func rememberDefaultOrg(slug string) error {
 	if err != nil {
 		return nil
 	}
-	inst := st.ActiveInstance()
+	inst := core.LookupInstance(st, console)
 	if inst == nil || inst.DefaultOrg != "" {
 		return nil
 	}
@@ -293,14 +294,22 @@ func orgSlugs(inst *authstore.Instance) []string {
 	return slugs
 }
 
-func chooseOrg(p prompter.Prompter, flagOrg string) (string, error) {
+// chooseOrg reads the stored login for the console the project is registered
+// with — not the active one: `init --w17-url` (or W17_URL) names another
+// console, and its organizations are the ones that can own the project.
+// Checking them against the active console refused every org of the console
+// being initialised against, and offered the active console's instead. The
+// lookup is the one the dial's credential uses (core.LookupInstance), so an
+// address spelled differently from the login (no scheme, host case, a
+// loopback alias) still finds it.
+func chooseOrg(p prompter.Prompter, flagOrg, console string) (string, error) {
 	st, err := authstore.LoadDefault()
 	if err != nil {
 		return "", err
 	}
-	inst := st.ActiveInstance()
+	inst := core.LookupInstance(st, console)
 	if inst == nil {
-		return "", fmt.Errorf("init: not logged in — run `w17ctl login <host>` first")
+		return "", fmt.Errorf("init: not logged in to %s — run `w17ctl login %s` first", console, console)
 	}
 
 	// An org the caller NAMED wins. Refusing to guess is the rule below; this

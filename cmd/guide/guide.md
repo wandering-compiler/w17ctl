@@ -178,7 +178,10 @@ machine account's `W17_TOKEN` on such a console is issued for the account's
 public key: make the key with `W17_DPOP_KEY=<file> w17ctl key public`, issue the
 token for the printed JWK, and set `W17_DPOP_KEY=<file>` beside `W17_TOKEN`
 wherever the token is used — a machine account has exactly one key, shared by
-all its jobs and replicas. A revoked device is refused for good: run
+all its jobs and replicas. In CI, store the key file's content (the PEM, not
+the JWK) as the secret `W17_DEVICE_KEY`: the generated CI configs write it to a
+private file and set `W17_DPOP_KEY` for you. Leave it unset until the console
+binds devices — one that does not refuses a signed call. A revoked device is refused for good: run
 `w17ctl login` again (w17ctl discards the revoked key and makes a new one). A
 proof refused on its origin means the console was dialed by a name its
 configuration does not use: dial it by that name or set
