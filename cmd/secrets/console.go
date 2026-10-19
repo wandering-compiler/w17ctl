@@ -1,15 +1,18 @@
 package secrets
 
-// An environment's env values and secrets held by the console instead of in
-// sops files: `w17ctl secrets set|unset|list|import`. The values travel over the
-// console's TLS connection; nothing here encrypts, stores or prints one —
-// reading a value back is not offered.
+// An environment's env values and secrets, held by the console:
+// `w17ctl secrets set|unset|list`. A value is SEALED here,
+// on this machine, to a write grant only the console can open, and sent in
+// that form (decision secrets-env-and-bot-tokens-in-the-console, "Sealed
+// writes"); nothing here stores or prints one, and reading a value back is not
+// offered.
 
 import (
+	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -20,6 +23,8 @@ import (
 	"github.com/wandering-compiler/sdk/go/service/secret/sopsenv"
 	"golang.org/x/term"
 
+	"github.com/wandering-compiler/sdk/go/lib/secretseal"
+	consolerpcpb "github.com/wandering-compiler/sdk/go/pb/consoleapi/rpc"
 	secretspb "github.com/wandering-compiler/sdk/go/pb/consoleapi/secrets"
 )
 
@@ -59,12 +64,15 @@ func (f consoleFlags) project() (string, error) {
 	return lk.ProjectID, nil
 }
 
-// SetCmd is `w17ctl secrets set --env E SERVICE KEY`, the value on stdin.
+// SetCmd is `w17ctl secrets set --env E SERVICE KEY…`: each value asked for
+// without echo, or dotenv lines from stdin when no KEY is named. With --plain
+// they are environment variables, which may also be given as KEY=value.
 type SetCmd struct {
 	consoleFlags
-	Service    string `arg:"" help:"The stack service the value is for (its <service>.env on the target)."`
-	Key        string `arg:"" help:"The env var name."`
-	AllowEmpty bool   `name:"allow-empty" help:"Set the value to the empty string (empty stdin is refused otherwise: it is how a mistyped pipe blanks a production value)."`
+	Plain      bool     `name:"plain" help:"Write environment VARIABLES (shown back in the console: a domain, a port), not secrets. Only these may be given as KEY=value."`
+	AllowEmpty bool     `name:"allow-empty" help:"Accept an empty value (refused otherwise: it is how a mistyped pipe blanks a production value)."`
+	Service    string   `arg:"" help:"The stack service the values are for (its <service>.env on the target)."`
+	Keys       []string `arg:"" optional:"" help:"The env var names, each asked for without echo (or KEY=value with --plain). None: dotenv lines KEY=value from stdin."`
 }
 
 // maxSecretValue is the console's bound on a value (SetSecretReq.value).
@@ -78,25 +86,184 @@ func (c *SetCmd) Run() error {
 	if err := c.checkEnvironment(); err != nil {
 		return fmt.Errorf("secrets set: %w", err)
 	}
-	value, err := readSecretValue(os.Stdin)
+	stdinTTY := term.IsTerminal(int(os.Stdin.Fd()))
+	values, err := gatherValues(c.Service, c.Keys, c.Plain, c.AllowEmpty, os.Stdin, stdinTTY, promptHidden(os.Stdin))
 	if err != nil {
 		return fmt.Errorf("secrets set: %w", err)
 	}
-	if value == "" && !c.AllowEmpty {
-		return fmt.Errorf("secrets set: the value on stdin is empty — pipe it in (`printf %%s \"$VALUE\" | w17ctl secrets set …`), or pass --allow-empty to set it empty on purpose")
-	}
-	sc, err := storageclient.DialStorageFn(c.Console)
+	n, err := c.sealedWrite(project, values, stdinTTY)
 	if err != nil {
-		return err
+		return fmt.Errorf("secrets set: %w", err)
+	}
+	kind := "secret"
+	if c.Plain {
+		kind = "variable"
+	}
+	fmt.Fprintf(core.Stdout, "set %d %s(s) of %s in %s\n", n, kind, c.Service, c.Env)
+	return nil
+}
+
+// envValue is one value to write: its address and, with --plain, its kind.
+type envValue struct {
+	service, key, value string
+	plain               bool
+}
+
+// gatherValues collects what one command writes. Named keys are asked for one
+// by one (a terminal is needed; a secret is never echoed), KEY=value is taken
+// only for a variable — an argument lands in the shell's history and, while
+// the command runs, in every local user's `ps` — and with no key named the
+// values are dotenv lines on stdin.
+func gatherValues(service string, keys []string, plain, allowEmpty bool, stdin io.Reader, stdinTTY bool, ask func(label string) (string, error)) ([]envValue, error) {
+	var out []envValue
+	seen := map[string]bool{}
+	add := func(key, value string) error {
+		if seen[key] {
+			return fmt.Errorf("%s is named twice", key)
+		}
+		seen[key] = true
+		if value == "" && !allowEmpty {
+			return fmt.Errorf("the value of %s is empty — pass --allow-empty to set it empty on purpose", key)
+		}
+		if len(value) > maxSecretValue {
+			return fmt.Errorf("the value of %s is longer than %d bytes — an env value, not a file", key, maxSecretValue)
+		}
+		out = append(out, envValue{service: service, key: key, value: value, plain: plain})
+		return nil
+	}
+	if len(keys) == 0 {
+		if stdinTTY {
+			return nil, fmt.Errorf("name the keys (`w17ctl secrets set --env E %s KEY …`), or pipe dotenv lines KEY=value on stdin", service)
+		}
+		raw, err := io.ReadAll(io.LimitReader(stdin, 4<<20))
+		if err != nil {
+			return nil, fmt.Errorf("reading stdin: %w", err)
+		}
+		lines, err := sopsenv.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("stdin: %w", err)
+		}
+		for _, l := range lines {
+			if l.Comment {
+				continue
+			}
+			if err := add(l.Key, envUnquote(l.Value)); err != nil {
+				return nil, err
+			}
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("stdin holds no KEY=value line")
+		}
+		return out, nil
+	}
+	for _, k := range keys {
+		if key, value, ok := strings.Cut(k, "="); ok {
+			if !plain {
+				return nil, fmt.Errorf("%s=… gives a secret as an argument, which lands in the shell's history and in `ps` — name the key alone and type the value when asked, pipe dotenv lines on stdin, or pass --plain for a variable that is not secret", key)
+			}
+			if err := add(key, value); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if !stdinTTY {
+			return nil, fmt.Errorf("%s has no value: with no terminal, give the values as dotenv lines on stdin and name no keys", k)
+		}
+		v, err := ask(service + "/" + k)
+		if err != nil {
+			return nil, err
+		}
+		if err := add(k, v); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// promptHidden asks for one value on the terminal, without echo.
+func promptHidden(in *os.File) func(label string) (string, error) {
+	return func(label string) (string, error) {
+		fmt.Fprintf(os.Stderr, "%s (not echoed): ", label)
+		raw, err := term.ReadPassword(int(in.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", fmt.Errorf("reading %s: %w", label, err)
+		}
+		return strings.TrimSuffix(string(raw), "\r"), nil
+	}
+}
+
+// writeCode is the write grant's code: W17_SECRETS_CODE, for an agent with no
+// terminal, or asked for on the terminal — /dev/tty when stdin carried the
+// values.
+func writeCode(env string, stdinTTY bool) (string, error) {
+	return grantCode(env, stdinTTY, "Write code (the console: the project's page → %s → Write from the command line → Create write code): ")
+}
+
+// grantCode asks for a grant's code with prompt (one %s: the environment).
+func grantCode(env string, stdinTTY bool, prompt string) (string, error) {
+	if c := strings.TrimSpace(os.Getenv("W17_SECRETS_CODE")); c != "" {
+		return c, nil
+	}
+	in := os.Stdin
+	if !stdinTTY {
+		tty, err := os.Open("/dev/tty")
+		if err != nil {
+			return "", fmt.Errorf("no terminal to ask for the code on — set W17_SECRETS_CODE")
+		}
+		defer func() { _ = tty.Close() }()
+		in = tty
+	}
+	fmt.Fprintf(os.Stderr, prompt, env)
+	raw, err := term.ReadPassword(int(in.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", fmt.Errorf("reading the code: %w", err)
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+// sealedWrite trades the code for the write grant's public key, seals every
+// value to it for its own address and sends them in one call, which ends the
+// grant.
+func (f consoleFlags) sealedWrite(project string, values []envValue, stdinTTY bool) (int, error) {
+	code, err := writeCode(f.Env, stdinTTY)
+	if err != nil {
+		return 0, err
+	}
+	sc, err := storageclient.DialStorageFn(f.Console)
+	if err != nil {
+		return 0, err
 	}
 	defer sc.Close()
 	ctx, cancel := core.ClientCtx()
 	defer cancel()
-	if _, err := sc.ES.SetSecret(ctx, &secretspb.SetSecretReq{ProjectId: project, Environment: c.Env, Service: c.Service, Key: c.Key, Value: value}); err != nil {
-		return fmt.Errorf("secrets set: %w", err)
+	return sealAndSend(ctx, sc.ES, project, f.Env, code, values)
+}
+
+// sealAndSend is sealedWrite past the dial: the half a test drives.
+func sealAndSend(ctx context.Context, es consolerpcpb.EnvironmentSecretsClient, project, env, code string, values []envValue) (int, error) {
+	grant, err := es.OpenSecretWriteGrant(ctx, &secretspb.OpenSecretWriteGrantReq{ProjectId: project, Environment: env, Code: code})
+	if err != nil {
+		return 0, err
 	}
-	fmt.Fprintf(core.Stdout, "set %s/%s in %s\n", c.Service, c.Key, c.Env)
-	return nil
+	pub, err := base64.StdEncoding.DecodeString(grant.GetPublicKey())
+	if err != nil {
+		return 0, fmt.Errorf("the console answered an unreadable public key")
+	}
+	req := &secretspb.SetSealedSecretsReq{ProjectId: project, Environment: env, GrantId: grant.GetGrantId(), Code: code}
+	for _, v := range values {
+		sealed, err := secretseal.Seal(pub, grant.GetGrantId(), v.service, v.key, []byte(v.value))
+		if err != nil {
+			return 0, err
+		}
+		req.Values = append(req.Values, &secretspb.SealedSecret{Service: v.service, Key: v.key, Sealed: base64.StdEncoding.EncodeToString(sealed), Plain: v.plain})
+	}
+	out, err := es.SetSealedSecrets(ctx, req)
+	if err != nil {
+		return 0, err
+	}
+	return int(out.GetCount()), nil
 }
 
 // UnsetCmd is `w17ctl secrets unset --env E SERVICE KEY`.
@@ -160,98 +327,7 @@ func (c *ListCmd) Run() error {
 	return nil
 }
 
-// ImportCmd is `w17ctl secrets import --env E`: every value of the
-// environment's sealed deploy/<env>/services/*/.env.enc, written to the
-// console. The files stay: the deploy takes its values from the console once
-// they are gone (`git rm` them in the same commit that switches over).
-type ImportCmd struct {
-	consoleFlags
-	keyFlag
-}
-
-func (c *ImportCmd) Run() error {
-	project, err := c.project()
-	if err != nil {
-		return fmt.Errorf("secrets import: %w", err)
-	}
-	root, err := projectRoot(c.LockPath)
-	if err != nil {
-		return fmt.Errorf("secrets import: %w", err)
-	}
-	if err := c.checkEnvironment(); err != nil {
-		return fmt.Errorf("secrets import: %w", err)
-	}
-	ids, err := requireIdentities("import", c.Key)
-	if err != nil {
-		return err
-	}
-	encs, _ := filepath.Glob(filepath.Join(root, "deploy", c.Env, "services", "*", ".env.enc"))
-	sort.Strings(encs)
-	if len(encs) == 0 {
-		return fmt.Errorf("secrets import: deploy/%s/services holds no .env.enc to import", c.Env)
-	}
-	type value struct{ service, key, value string }
-	var values []value
-	for _, enc := range encs {
-		svc := filepath.Base(filepath.Dir(enc))
-		b, err := os.ReadFile(enc)
-		if err != nil {
-			return err
-		}
-		lines, err := sopsenv.Decrypt(b, ids)
-		if err != nil {
-			return fmt.Errorf("secrets import: deploy/%s/services/%s/.env.enc: %w", c.Env, svc, err)
-		}
-		for _, l := range lines {
-			if !l.Comment {
-				values = append(values, value{svc, l.Key, envUnquote(l.Value)})
-			}
-		}
-	}
-	sc, err := storageclient.DialStorageFn(c.Console)
-	if err != nil {
-		return err
-	}
-	defer sc.Close()
-	for _, v := range values {
-		ctx, cancel := core.ClientCtx()
-		_, err := sc.ES.SetSecret(ctx, &secretspb.SetSecretReq{ProjectId: project, Environment: c.Env, Service: v.service, Key: v.key, Value: v.value})
-		cancel()
-		if err != nil {
-			return fmt.Errorf("secrets import: %s/%s: %w", v.service, v.key, err)
-		}
-	}
-	fmt.Fprintf(core.Stdout, "imported %d value(s) of %d service(s) into %s.\n"+
-		"The deploy takes them from the console once deploy/%s/services/*/.env.enc are gone — `git rm` them when you switch.\n",
-		len(values), len(encs), c.Env, c.Env)
-	return nil
-}
-
-// readSecretValue reads the value from stdin, never an argument: an argument
-// lands in the shell's history and in every process listing. From a terminal
-// it is read without echo. One trailing line break is the pipe's, not the
-// value's; a value over the console's bound is refused, not cut.
-func readSecretValue(in *os.File) (string, error) {
-	var raw []byte
-	var err error
-	if term.IsTerminal(int(in.Fd())) {
-		fmt.Fprint(os.Stderr, "value (not echoed): ")
-		raw, err = term.ReadPassword(int(in.Fd()))
-		fmt.Fprintln(os.Stderr)
-	} else {
-		raw, err = io.ReadAll(io.LimitReader(in, maxSecretValue+3))
-	}
-	if err != nil {
-		return "", fmt.Errorf("reading the value: %w", err)
-	}
-	value := strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
-	if len(value) > maxSecretValue {
-		return "", fmt.Errorf("the value is longer than %d bytes — an env value, not a file", maxSecretValue)
-	}
-	return value, nil
-}
-
-// envUnquote is a sealed .env's value as the server's bash reads it: one pair
+// envUnquote is a dotenv line's value as the server's bash reads it: one pair
 // of surrounding double quotes is syntax, not part of the value (valueProblem
 // allows nothing else).
 func envUnquote(v string) string {

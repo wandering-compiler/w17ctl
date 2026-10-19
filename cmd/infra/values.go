@@ -209,7 +209,7 @@ type WorkloadAddCmd struct {
 	RouteHost    string            `name:"route-host" help:"Publish it on the edge: a label (www → www.<domain>) or a host name."`
 	PathPrefix   string            `name:"path-prefix" help:"Only this path of the route's host."`
 	EnvVar       map[string]string `name:"env-var" mapsep:"none" help:"Environment variables in clear: --env-var LOG_LEVEL=info."`
-	Secret       []string          `name:"secret" sep:"none" help:"Keys its sealed .env.enc must carry (repeatable)."`
+	Secret       []string          `name:"secret" sep:"none" help:"Secret keys it reads, set on the console (repeatable)."`
 	Database     bool              `name:"database" help:"Its own database and role in the environment's Postgres (DATABASE_URL)."`
 	Migrate      []string          `name:"migrate" sep:"none" help:"The command that migrates its database before the switch, one argument per flag (repeatable; --migrate=-c for one starting with a dash)."`
 	Replicas     int               `name:"replicas" help:"How many tasks run."`

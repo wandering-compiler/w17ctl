@@ -2,21 +2,16 @@ package deploy
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"filippo.io/age"
-
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
-	"github.com/wandering-compiler/sdk/go/service/secret/sopsenv"
 )
 
 // deployCloud deploys an aws-ecs / gcp-cloudrun environment the way its
@@ -24,8 +19,8 @@ import (
 // to the environment's own registry, then deploy/<env>/ci/deploy.sh — the
 // same script the workflow runs — in the generated deployer image
 // (Terraform + the cloud's CLI), with the operator's own credentials and the
-// env files unsealed here.
-func (c *Cmd) deployCloud(root, envDir, kind string, env *codegenpb.LockInfraEnvironment, view *codegenpb.LockView, ids []age.Identity, sha string, dirty bool) error {
+// values fetched from the console.
+func (c *Cmd) deployCloud(root, envDir, kind string, env *codegenpb.LockInfraEnvironment, view *codegenpb.LockView, valuesDir string, sha string, dirty bool) error {
 	ciDir := filepath.Join(envDir, "ci")
 	if _, err := os.Stat(filepath.Join(ciDir, "deploy.sh")); err != nil {
 		return fmt.Errorf("deploy: %s/deploy.sh is missing — run `w17ctl codegen`", ciDir)
@@ -118,36 +113,9 @@ func (c *Cmd) deployCloud(root, envDir, kind string, env *codegenpb.LockInfraEnv
 		}
 	}
 
-	step("the env files, unsealed here for deploy.sh")
-	unsealed, err := os.MkdirTemp("", "w17-unsealed-*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(unsealed) }()
-	encs, _ := filepath.Glob(filepath.Join(envDir, "services", "*", ".env.enc"))
-	sort.Strings(encs)
-	for _, enc := range encs {
-		svc := filepath.Base(filepath.Dir(enc))
-		b, err := os.ReadFile(enc) // #nosec G304 -- the project's own sealed file
-		if err != nil {
-			return err
-		}
-		lines, err := sopsenv.Decrypt(b, ids)
-		if err != nil {
-			return fmt.Errorf("deploy: deploy/%s/services/%s/.env.enc: %w", c.Env, svc, err)
-		}
-		js, err := json.Marshal(sopsenv.Values(lines))
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(unsealed, svc+".json"), js, 0o600); err != nil {
-			return err
-		}
-	}
-
 	step("deploy/" + c.Env + "/ci/deploy.sh — " + kind)
-	args := []string{"run", "--rm", "-v", root + ":/work", "-w", "/work", "-v", unsealed + ":/unsealed:ro",
-		"-e", "HOME=/tmp", "-e", "UNSEALED_DIR=/unsealed", "-e", "TAG=" + tag, "-e", "TF_STATE_BUCKET=" + c.StateBucket, "-e", "AWS_REGION=" + region}
+	args := []string{"run", "--rm", "-v", root + ":/work", "-w", "/work", "-v", valuesDir + ":/values:ro",
+		"-e", "HOME=/tmp", "-e", "VALUES_DIR=/values", "-e", "TAG=" + tag, "-e", "TF_STATE_BUCKET=" + c.StateBucket, "-e", "AWS_REGION=" + region}
 	if u := os.Getuid(); u >= 0 {
 		// The .terraform deploy.sh writes into deploy/<env>/terraform stays yours.
 		args = append(args, "-u", fmt.Sprintf("%d:%d", u, os.Getgid()))

@@ -138,9 +138,8 @@ func printNextSteps(in *codegenpb.LockInfra) {
 	if swarm {
 		fmt.Fprintln(core.Stdout, "     w17ctl infra setup --env <env>       — prepares the server named by --ssh, with your SSH key")
 	}
-	fmt.Fprintln(core.Stdout, "  2. fill deploy/<env>/**/.env            — from the .env.example beside each")
-	fmt.Fprintln(core.Stdout, "  3. w17ctl secrets keygen --env <env>    — once per environment; keep the private key")
-	fmt.Fprintln(core.Stdout, "     w17ctl secrets seal                  — writes the .env.enc you commit")
+	fmt.Fprintln(core.Stdout, "  2. w17ctl secrets set --env <env> …     — each service's values, as its .env.example names them (or the project's page)")
+	fmt.Fprintln(core.Stdout, "  3. a machine account with Deploy access — the project's page → Deploy access to <env>; the deploy fetches with its token")
 	fmt.Fprintln(core.Stdout, "  4. w17ctl ci init                       — the build and deploy workflows")
 }
 
@@ -281,6 +280,6 @@ func (c *RemoveCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(core.Stdout, "%s: removed %s — the next `w17ctl codegen` deletes its generated files; your .env / .env.enc stay\n", op, what)
+	fmt.Fprintf(core.Stdout, "%s: removed %s — the next `w17ctl codegen` deletes its generated files; its values on the console stay\n", op, what)
 	return nil
 }

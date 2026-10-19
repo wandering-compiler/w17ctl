@@ -174,7 +174,8 @@ func printSetup(in *codegenpb.LockInfra) {
 		if b := env.GetDeployBranch(); b != "" {
 			fmt.Fprintf(w, "    deployment branches: only %s (Settings → Environments) — the workflow refuses other refs too\n", b)
 		}
-		fmt.Fprintln(w, "    secret    SOPS_AGE_KEY    the environment's age private key (`w17ctl secrets keygen` printed it)")
+		fmt.Fprintln(w, "    secret    W17_FETCH_TOKEN the token of a machine account given Deploy access to "+env.GetName()+" on the")
+		fmt.Fprintln(w, "                              project's page in the console — the deploy fetches the values with it")
 		switch kind(env) {
 		case "swarm":
 			fmt.Fprintln(w, "    secret    STACK_SSH_KEY   a private SSH key root@server accepts (deploy only)")

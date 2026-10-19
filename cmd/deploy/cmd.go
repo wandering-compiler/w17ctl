@@ -24,7 +24,6 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/remote"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
-	"github.com/wandering-compiler/sdk/go/service/secret/sopsenv"
 )
 
 // Cmd is `w17ctl deploy`.
@@ -35,7 +34,6 @@ type Cmd struct {
 	WithTests   bool     `name:"with-tests" help:"Run the e2e suite (w17ctl test) first; a red suite stops the deploy."`
 	AllowDirty  bool     `name:"allow-dirty" help:"Deploy a tree with uncommitted changes (the images are then tagged as dirty)."`
 	BuildFlags  []string `name:"build-flag" placeholder:"FLAG" help:"Passed to every docker build, e.g. --build-flag=--build-arg=X=1. Repeatable."`
-	Key         string   `name:"key" placeholder:"FILE" help:"The environment's age key file. Default: $SOPS_AGE_KEY, then $SOPS_AGE_KEY_FILE."`
 	LockPath    string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
 	Console     string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default."`
 }
@@ -57,6 +55,41 @@ var run = func(stdin io.Reader, stdout io.Writer, dir, name string, args ...stri
 
 // self is the path of this binary, for the steps that are other w17ctl commands.
 var self = os.Executable
+
+// fetchTokenVar names the token the values are fetched with: a machine
+// account's, given Deploy access to the environment on the project's page.
+// Not W17_TOKEN — the rest of a deploy (the lock, the migrations, codegen)
+// runs as you, and the deploy-fetch role may do nothing but fetch.
+const fetchTokenVar = "W17_FETCH_TOKEN" //nolint:gosec // G101: the variable's name, not a credential.
+
+// fetchEnv is the seam the tests replace: the deploy bot's fetch, run as
+// `w17ctl secrets fetch` in a child whose W17_TOKEN is $W17_FETCH_TOKEN (and
+// with no device key: that one belongs to your login). It writes one file per
+// service into dir, checked against the rendered stack — or nothing.
+//
+// The console is resolved here and handed to the child both as --console and
+// as W17_CONSOLE_ADDR: an env token is presented only to the console it is
+// bound to, and a child left to resolve it on its own could bind it to
+// another one and send the stored login instead.
+var fetchEnv = func(root, selfPath, lockPath, console, env, ref, dir string, asJSON bool) error {
+	addr, err := core.ResolveConsoleAddr(console)
+	if err != nil {
+		return err
+	}
+	args := []string{"secrets", "fetch", "--env", env, "--ref", ref, "--out", dir, "--lock", lockPath, "--console", addr}
+	if asJSON {
+		args = append(args, "--json")
+	}
+	cmd := exec.Command(selfPath, args...) // #nosec G204 -- this binary
+	cmd.Dir, cmd.Stdout, cmd.Stderr = root, core.Stdout, os.Stderr
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "W17_TOKEN=") && !strings.HasPrefix(kv, core.EnvDPoPKeyVar+"=") && !strings.HasPrefix(kv, core.EnvConsoleAddrVar+"=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, "W17_TOKEN="+os.Getenv(fetchTokenVar), core.EnvConsoleAddrVar+"="+addr)
+	return cmd.Run()
+}
 
 func (c *Cmd) Run() error {
 	fmt.Fprint(core.Stdout, warning)
@@ -99,21 +132,8 @@ func (c *Cmd) Run() error {
 	default:
 		return fmt.Errorf("deploy: environment %s has no known target kind (%q)", c.Env, kind)
 	}
-	// Where the environment's env values come from, decided once, before
-	// anything is built: its sealed deploy/<env>/services/*/.env.enc when
-	// there are any, else the console (`w17ctl secrets import|set`). Never
-	// both — a file present means sops, whatever the console holds.
-	encs, _ := filepath.Glob(filepath.Join(root, "deploy", c.Env, "services", "*", ".env.enc"))
-	sort.Strings(encs)
-	ids, err := sopsenv.LoadIdentities(os.Getenv, nonEmpty(c.Key)...)
-	if err != nil {
-		return fmt.Errorf("deploy: %w", err)
-	}
-	if len(encs) == 0 && kind != "swarm" {
-		return fmt.Errorf("deploy: deploy/%s/services holds no .env.enc, and values held by the console deploy to a swarm environment only (yet) — seal the env files (`w17ctl secrets seal --env %s`)", c.Env, c.Env)
-	}
-	if len(encs) > 0 && len(ids) == 0 {
-		return fmt.Errorf("deploy: no age key for the env files — set SOPS_AGE_KEY (or SOPS_AGE_KEY_FILE), or pass --key")
+	if os.Getenv(fetchTokenVar) == "" {
+		return fmt.Errorf("deploy: the values come from the console with the environment's deploy bot — set %s to the token of a machine account given Deploy access to %s on the project's page", fetchTokenVar, c.Env)
 	}
 
 	dirty, sha, err := gitState(root)
@@ -165,23 +185,23 @@ func (c *Cmd) Run() error {
 	// must see the services and keys this deploy runs, not the ones an older
 	// render left on disk; and a fetch is a hand-out the console records, so a
 	// deploy that was never going to run should not make one.
-	var fromConsole *consoleEnv
-	if len(encs) == 0 {
-		fmt.Fprintf(core.Stdout, "env values: from the console (deploy/%s/services holds no .env.enc)\n", c.Env)
-		ref := sha
-		if dirty {
-			ref += "-dirty"
-		}
-		if fromConsole, err = fetchConsoleEnv(c.LockPath, c.Console, c.Env, filepath.Join(root, "deploy", c.Env, "services"), ref); err != nil {
-			return fmt.Errorf("deploy: %w", err)
-		}
-	} else {
-		fmt.Fprintf(core.Stdout, "env values: deploy/%s/services/*/.env.enc (sops)\n", c.Env)
+	fmt.Fprintf(core.Stdout, "env values: from the console\n")
+	ref := sha
+	if dirty {
+		ref += "-dirty"
+	}
+	valuesDir, err := os.MkdirTemp("", "w17-values-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(valuesDir) }()
+	if err := fetchEnv(root, selfPath, abs, c.Console, c.Env, ref, valuesDir, kind != "swarm"); err != nil {
+		return fmt.Errorf("deploy: fetching %s's values: %w", c.Env, err)
 	}
 
 	envDir := filepath.Join(root, "deploy", c.Env)
 	if kind != "swarm" {
-		return c.deployCloud(root, envDir, kind, env, view, ids, sha, dirty)
+		return c.deployCloud(root, envDir, kind, env, view, valuesDir, sha, dirty)
 	}
 	if c.Expect != "" {
 		fp, err := target.Fingerprint("/opt/stack/" + c.Env)
@@ -266,31 +286,18 @@ func (c *Cmd) Run() error {
 		return fmt.Errorf("deploy: rsync: %w", err)
 	}
 
-	if fromConsole != nil {
-		step("the env files, from the console into ssh")
-		for _, f := range fromConsole.files {
-			dst := remote.ShellQuote(stack + "/env/" + f.service + ".env")
-			write := fmt.Sprintf("umask 077; mkdir -p %s && cat > %s.new && mv %s.new %s", remote.ShellQuote(stack+"/env"), dst, dst, dst)
-			if err := target.Run(bytes.NewReader(f.body), io.Discard, target.Sudo("sh -c "+remote.ShellQuote(write))); err != nil {
-				return fmt.Errorf("deploy: delivering %s.env: %w", f.service, err)
-			}
-		}
-	} else {
-		step("the env files, decrypted into ssh")
-	}
-	for _, enc := range encs {
-		svc := filepath.Base(filepath.Dir(enc))
-		b, err := os.ReadFile(enc)
+	step("the env files, from the console into ssh")
+	envFiles, _ := filepath.Glob(filepath.Join(valuesDir, "*.env"))
+	sort.Strings(envFiles)
+	for _, p := range envFiles {
+		svc := strings.TrimSuffix(filepath.Base(p), ".env")
+		body, err := os.ReadFile(p) // #nosec G304 -- the fetch's own output
 		if err != nil {
 			return err
 		}
-		lines, err := sopsenv.Decrypt(b, ids)
-		if err != nil {
-			return fmt.Errorf("deploy: deploy/%s/services/%s/.env.enc: %w", c.Env, svc, err)
-		}
-		dst := stack + "/env/" + svc + ".env"
-		write := fmt.Sprintf("umask 077; mkdir -p %s/env && cat > %s.new && [ -s %s.new ] && mv %s.new %s", stack, dst, dst, dst, dst)
-		if err := target.Run(bytes.NewReader(sopsenv.Format(lines)), io.Discard, target.Sudo("sh -c "+remote.ShellQuote(write))); err != nil {
+		dst := remote.ShellQuote(stack + "/env/" + svc + ".env")
+		write := fmt.Sprintf("umask 077; mkdir -p %s && cat > %s.new && mv %s.new %s", remote.ShellQuote(stack+"/env"), dst, dst, dst)
+		if err := target.Run(bytes.NewReader(body), io.Discard, target.Sudo("sh -c "+remote.ShellQuote(write))); err != nil {
 			return fmt.Errorf("deploy: delivering %s.env: %w", svc, err)
 		}
 	}
@@ -353,13 +360,6 @@ func imageName(project string) string {
 }
 
 func step(s string) { fmt.Fprintf(core.Stdout, "\n── %s\n", s) }
-
-func nonEmpty(s string) []string {
-	if s == "" {
-		return nil
-	}
-	return []string{s}
-}
 
 // gitState: whether the tree has uncommitted changes, and HEAD's short sha.
 func gitState(root string) (dirty bool, sha string, err error) {
