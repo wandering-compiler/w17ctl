@@ -215,6 +215,54 @@ func catalogue(_ core.CodegenConsole) ([]*codegenpb.CataloguePlugin, error) {
 	return out, nil
 }
 
+// commitPin returns the plugin's git pin when it names a commit rather than a
+// release, nil otherwise.
+func commitPin(p lockfile.Plugin) *lockfile.GitPin {
+	if p.Git == nil || !pluginfetch.PinnedToCommit(p.Git.Ref) {
+		return nil
+	}
+	return p.Git
+}
+
+// printCommitPinned is the row of a plugin the lock pins to a commit.
+//
+// Its version column used to be the version the tree's plugin.yaml declares,
+// and an unreleased tree declares the version it is HEADING for: a pin taken
+// before `rc.25` was tagged read as `rc.25 outdated`, which says "rc.25, a bump
+// away" while every commit between the pin and the tag — a breaking release
+// included — was missing. A consumer planned an adoption on that line and found
+// out from compile errors. So the row says what the pin is: a commit, and
+// whether a release's tag points at it.
+func printCommitPinned(name, declared, served, source string, pin *lockfile.GitPin) {
+	repo := pin.Repo
+	if repo == "" {
+		repo = pluginsRepo()
+	}
+	release, err := pluginfetch.ReleaseAtCommit(context.Background(), repo, name, pin.Ref)
+	fmt.Fprintf(core.Stdout, "%-20s %-12s %-9s (%s)\n", name, "@"+shortSHA(pin.Ref), "commit", source)
+	switch {
+	case err != nil:
+		fmt.Fprintf(core.Stdout, "  pinned to commit %s; whether it is a release could not be checked (%v)\n",
+			shortSHA(pin.Ref), firstLine(err.Error()))
+	case release != "":
+		fmt.Fprintf(core.Stdout, "  pinned to commit %s, the commit of release %s\n", shortSHA(pin.Ref), release)
+	default:
+		fmt.Fprintf(core.Stdout, "  pinned to commit %s, which is NOT a release: its plugin.yaml says %s, the version\n"+
+			"  that tree was heading for — the release %s may hold changes this commit lacks\n",
+			shortSHA(pin.Ref), declared, declared)
+	}
+	if served != "" && strings.TrimPrefix(release, "v") != served {
+		fmt.Fprintf(core.Stdout, "  newest release %s — `w17ctl plugin update %s --to v%s` (it prints the CHANGELOG's \"read first\" sections on the way)\n",
+			served, name, served)
+	}
+}
+
+// firstLine is the first line of s.
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
+}
+
 // pluginVersionIsBehind reports whether `installed` is strictly older than the
 // version the registry serves. Both are OUR tag format, so the ordering is
 // [pluginfetch.CompareVersions] — which selects prereleases, the only kind of
@@ -317,6 +365,7 @@ func (c *ListCmd) Run() error {
 		source    string
 		desc      string
 		installed bool
+		pin       *lockfile.GitPin // set when the lock pins a commit, not a release
 	}
 	rows := []row{}
 	seen := map[string]bool{}
@@ -326,6 +375,7 @@ func (c *ListCmd) Run() error {
 			r.installed = true
 			r.version = inst.Version
 			r.source = inst.Source
+			r.pin = commitPin(inst)
 		}
 		rows = append(rows, r)
 		seen[p.GetName()] = true
@@ -343,11 +393,19 @@ func (c *ListCmd) Run() error {
 			version:   inst.Version,
 			source:    inst.Source,
 			installed: true,
+			pin:       commitPin(inst),
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
 
 	for _, r := range rows {
+		if r.pin != nil {
+			printCommitPinned(r.name, r.version, r.served, r.source, r.pin)
+			if d := firstSentence(r.desc); d != "" {
+				fmt.Fprintf(core.Stdout, "  %s\n", d)
+			}
+			continue
+		}
 		state := "available"
 		if r.installed {
 			state = "installed"
@@ -851,6 +909,9 @@ func (c *UpdateCmd) Run() error {
 			return fmt.Errorf("plugin update: manifest name %q does not match catalog dir %q", manifest.GetName(), name)
 		}
 		printManifestWarnings("plugin update", manifest)
+		if isGit {
+			printReadFirst(name, existing, manifest.GetVersion(), staging)
+		}
 
 		// Queue the version bump for the batched EditLock.
 		pending = append(pending, updateIntent(name, manifest.GetVersion(), isGit, existing, fetched))

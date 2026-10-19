@@ -170,6 +170,55 @@ func comparePrerelease(a, b string) int {
 	return 0
 }
 
+// ReleaseAtCommit names the release of plugin whose tag points at commit, or ""
+// when no release does — a commit pin taken between two releases.
+//
+// A commit-pinned tree declares the version it was heading for in its
+// plugin.yaml, so that version says nothing about whether the commit IS it: a
+// pin taken weeks before `rc.25` was tagged still says `0.1.0-rc.25`, and read
+// as a release it hides every commit (a breaking change included) between the
+// two. Only the tags can answer. An annotated tag names its tag object; the
+// peeled line (`…^{}`) names the commit, and wins.
+func ReleaseAtCommit(ctx context.Context, repo, plugin, commit string) (string, error) {
+	if repo == "" || plugin == "" || commit == "" {
+		return "", fmt.Errorf("plugin versions: repository, plugin and commit are all required")
+	}
+	out, err := git(ctx, "", "ls-remote", "--tags", repo, "refs/tags/"+plugin+"/*")
+	if err != nil {
+		return "", fmt.Errorf("plugin versions: listing %s releases in %s: %w\n%s", plugin, repo, err, indent(out))
+	}
+	return releaseAtCommit(out, plugin, commit), nil
+}
+
+func releaseAtCommit(lsRemote, plugin, commit string) string {
+	target := map[string]string{} // version → the commit its tag resolves to
+	for _, line := range strings.Split(lsRemote, "\n") {
+		sha, ref, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if !ok {
+			continue
+		}
+		peeled := strings.HasSuffix(ref, "^{}")
+		v := strings.TrimPrefix(strings.TrimSuffix(ref, "^{}"), "refs/tags/"+plugin+"/")
+		if !strings.HasPrefix(v, "v") || strings.Contains(v, "/") {
+			continue
+		}
+		if _, seen := target[v]; !seen || peeled {
+			target[v] = sha
+		}
+	}
+	var found []string
+	for v, sha := range target {
+		if strings.EqualFold(sha, commit) {
+			found = append(found, v)
+		}
+	}
+	if len(found) == 0 {
+		return ""
+	}
+	sort.Slice(found, func(i, j int) bool { return CompareVersions(found[i], found[j]) < 0 })
+	return found[len(found)-1]
+}
+
 // PublishedPlugins names every plugin a registry publishes, read from its tags.
 //
 // A registry's inventory IS its tag namespace: `<plugin>/v<version>`. Nothing
