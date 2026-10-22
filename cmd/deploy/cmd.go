@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/term"
+
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/remote"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
@@ -80,6 +82,22 @@ var fetchEnv = func(root, selfPath, lockPath, console, env, ref, dir string, asJ
 	if asJSON {
 		args = append(args, "--json")
 	}
+	// No deploy bot: the values are read as you, under a read code from the
+	// project's page (secrets fetch --read) — a deploy from your own machine
+	// needs no bot. Your login and key stay; the code is asked on the terminal
+	// unless $W17_SECRETS_CODE carries it.
+	if os.Getenv(fetchTokenVar) == "" {
+		fmt.Fprintf(core.Stdout, "no %s: reading %s's values as you, with a read code\n", fetchTokenVar, env)
+		cmd := exec.Command(selfPath, append(args, "--read")...) // #nosec G204 -- this binary
+		cmd.Dir, cmd.Stdin, cmd.Stdout, cmd.Stderr = root, os.Stdin, core.Stdout, os.Stderr
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, core.EnvConsoleAddrVar+"=") {
+				cmd.Env = append(cmd.Env, kv)
+			}
+		}
+		cmd.Env = append(cmd.Env, core.EnvConsoleAddrVar+"="+addr)
+		return cmd.Run()
+	}
 	cmd := exec.Command(selfPath, args...) // #nosec G204 -- this binary
 	cmd.Dir, cmd.Stdout, cmd.Stderr = root, core.Stdout, os.Stderr
 	for _, kv := range os.Environ() {
@@ -132,8 +150,13 @@ func (c *Cmd) Run() error {
 	default:
 		return fmt.Errorf("deploy: environment %s has no known target kind (%q)", c.Env, kind)
 	}
-	if os.Getenv(fetchTokenVar) == "" {
-		return fmt.Errorf("deploy: the values come from the console with the environment's deploy bot — set %s to the token of a machine account given Deploy access to %s on the project's page", fetchTokenVar, c.Env)
+	// The values come with the deploy bot's token, or — a person deploying
+	// from their own machine — under a read code they type or pass in
+	// $W17_SECRETS_CODE. Checked before anything runs: a run with neither
+	// (CI without its secret) would mint migrations and then stop.
+	if os.Getenv(fetchTokenVar) == "" && os.Getenv("W17_SECRETS_CODE") == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("deploy: the values come from the console — set %s to the token of a machine account given Deploy access to %s on the project's page, "+
+			"or deploy from a terminal (or with W17_SECRETS_CODE) to read them as yourself with a read code from that page", fetchTokenVar, c.Env)
 	}
 
 	dirty, sha, err := gitState(root)

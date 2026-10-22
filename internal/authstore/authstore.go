@@ -47,6 +47,31 @@ type Store struct {
 	// Instances holds one entry per console the user has logged into,
 	// keyed by the instance URL (== Instance.URL).
 	Instances map[string]*Instance `yaml:"instances,omitempty"`
+
+	// OAuthClients holds the client id each OAuth authorization server
+	// registered w17ctl under (the browser login), keyed by issuer. Kept
+	// apart from Instances: a registration belongs to the server, not to a
+	// session — it outlives logout, and a login that never finished has
+	// one and no credential. Not a secret (w17ctl is a public client).
+	OAuthClients map[string]string `yaml:"oauth_clients,omitempty"`
+}
+
+// OAuthClientID returns the client id registered with issuer, "" for none.
+func (s *Store) OAuthClientID(issuer string) string {
+	return s.OAuthClients[issuer]
+}
+
+// SetOAuthClientID records the client id registered with issuer; "" forgets
+// it (the server no longer knows it).
+func (s *Store) SetOAuthClientID(issuer, clientID string) {
+	if clientID == "" {
+		delete(s.OAuthClients, issuer)
+		return
+	}
+	if s.OAuthClients == nil {
+		s.OAuthClients = map[string]string{}
+	}
+	s.OAuthClients[issuer] = clientID
 }
 
 // Instance is one console deployment's credential + cached identity.

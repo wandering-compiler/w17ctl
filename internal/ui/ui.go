@@ -255,6 +255,10 @@ func probeUI(addr string) bool {
 // openBrowserFn is indirected for tests.
 var openBrowserFn = openBrowser
 
+// OpenBrowser opens url in the platform default browser. Best-effort: an
+// error means no opener could be started, never that the page did not load.
+func OpenBrowser(url string) error { return openBrowser(url) }
+
 // openBrowser opens url in the platform default browser. Best-effort.
 func openBrowser(url string) error {
 	var cmd *exec.Cmd

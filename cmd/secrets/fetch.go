@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/term"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -76,13 +77,50 @@ func FetchDeployEnv(lockPath, console, env, servicesDir, ref string) (*DeployEnv
 	defer cancel()
 	resp, err := sc.ES.FetchEnvironmentSecrets(ctx, &secretspb.FetchEnvironmentSecretsReq{ProjectId: lk.ProjectID, Environment: env, DeployRef: ref})
 	if status.Code(err) == codes.PermissionDenied || status.Code(err) == codes.Unauthenticated {
-		return nil, fmt.Errorf("the console hands an environment's values to its deploy bot only — set W17_TOKEN (W17_FETCH_TOKEN "+
-			"under w17ctl deploy) to the token of a machine account given Deploy access to %s on the project's page: %w", env, err)
+		return nil, fmt.Errorf("the console hands an environment's values to its deploy bot — set W17_TOKEN (W17_FETCH_TOKEN "+
+			"under w17ctl deploy) to the token of a machine account given Deploy access to %s on the project's page; "+
+			"or read them as yourself with a read code (secrets fetch --read; w17ctl deploy does that with no W17_FETCH_TOKEN): %w", env, err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("fetching %s's values from the console: %w", env, err)
 	}
 	return buildDeployEnv(env, expected, resp.GetServices())
+}
+
+// ReadDeployEnv is FetchDeployEnv for a person: the values are read under a
+// read code minted on the project's page after the password step-up (one
+// code, every service), each sealed to a key pair made for this one read, and
+// checked against the stack the same way. ref is not recorded: a read is the
+// reader's, not a deploy's.
+func ReadDeployEnv(lockPath, console, env, servicesDir, _ string) (*DeployEnv, error) {
+	lk, err := lockfile.Load(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	if lk.ProjectID == "" {
+		return nil, fmt.Errorf("%s names no project", lockPath)
+	}
+	expected, err := expectedKeys(servicesDir)
+	if err != nil {
+		return nil, err
+	}
+	code, err := grantCode(env, term.IsTerminal(int(os.Stdin.Fd())),
+		"Read code for %s (the console: the project's page → Create read code): ")
+	if err != nil {
+		return nil, err
+	}
+	sc, err := storageclient.DialStorageFn(console)
+	if err != nil {
+		return nil, err
+	}
+	defer sc.Close()
+	ctx, cancel := core.ClientCtx()
+	defer cancel()
+	services, err := readAndOpenServices(ctx, sc.ES, lk.ProjectID, env, "", code)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s's values from the console: %w", env, err)
+	}
+	return buildDeployEnv(env, expected, services)
 }
 
 // expectedKeys reads the keys each service of the stack declares in its
@@ -217,6 +255,7 @@ func (e *DeployEnv) WriteDir(dir string, asJSON bool) (err error) {
 // fetch, for a deploy workflow. Nothing is written unless every value passes.
 type FetchCmd struct {
 	Env      string `name:"env" required:"" help:"Environment (environments.<env> in w17/infra.yaml)."`
+	Read     bool   `name:"read" help:"Read the values as yourself, with a read code (the project's page → Create read code, or $W17_SECRETS_CODE), instead of as a deploy bot — a deploy from your own machine with no bot."`
 	Out      string `name:"out" short:"o" required:"" placeholder:"DIR" help:"Directory to write <service>.env (mode 0600) into."`
 	JSON     bool   `name:"json" help:"Write <service>.json (one flat object of the values) instead — the cloud deploy scripts' form."`
 	Ref      string `name:"ref" env:"GITHUB_SHA" help:"The commit being deployed, recorded with the fetch."`
@@ -230,7 +269,11 @@ func (c *FetchCmd) Run() error {
 		return err
 	}
 	servicesDir := filepath.Join(filepath.Dir(filepath.Dir(abs)), "deploy", c.Env, "services")
-	env, err := FetchDeployEnv(c.LockPath, c.Console, c.Env, servicesDir, c.Ref)
+	fetch := FetchDeployEnv
+	if c.Read {
+		fetch = ReadDeployEnv
+	}
+	env, err := fetch(c.LockPath, c.Console, c.Env, servicesDir, c.Ref)
 	if err != nil {
 		return fmt.Errorf("secrets fetch: %w", err)
 	}

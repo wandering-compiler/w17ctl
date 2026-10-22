@@ -76,13 +76,14 @@ var root struct {
 	Update  updatecmd.Cmd  `cmd:"" help:"Upgrade this binary in place. Invokes the canonical installer rather than resolving the release itself — one place knows which release is newest, and it verifies the download against the release's SHA256SUMS. Prereleases are included while this binary is itself one; --stable opts out, --dry-run only reports. --check reports the project's sdk/go and plugins too; --all updates all of them."`
 
 	// --- Authentication (console identity, machine-local ~/.w17/auth.yaml) ---
-	// ⚠️ This help describes SignIn — email + password over gRPC, no browser.
-	// It used to promise "OAuth (loopback + PKCE), opens a browser", which the
-	// client has never done, next to its own --email/--password flags on the
-	// same screen. An adopter reported it: someone expecting a browser does
-	// not read "Email:" on stdin as normal progress, and someone reading only
-	// --help concludes there is no unattended path when there is one.
-	Login   logincmd.Cmd   `cmd:"" help:"Log in to a console — email + password over gRPC (AuthService.SignIn), no browser. Prompts on stdin; --email + the W17_PASSWORD env var make it unattended for CI. Stores the bearer + org memberships in ~/.w17/auth.yaml; a console that binds devices binds the session to this machine's key for that console, ~/.w17/device-<hash>.key (made on first login). 'login grpcs://api.w17.app:50051' (or an enterprise self-host URL)."`
+	// ⚠️ This help names BOTH ways in, and says which one runs by default.
+	// It once promised "OAuth (loopback + PKCE), opens a browser" while the
+	// client only did email + password — an adopter reported it: someone
+	// expecting a browser does not read "Email:" on stdin as normal progress,
+	// and someone reading only --help concludes there is no unattended path
+	// when there is one. The browser login now exists; the password one stays
+	// beside it, and --email / W17_PASSWORD still select it.
+	Login   logincmd.Cmd   `cmd:"" help:"Log in to a console. Default: in the browser — w17ctl prints and opens the console's sign-in page (OAuth 2.1, loopback redirect + PKCE) and waits up to 5 minutes for you to approve; --issuer / W17_CONSOLE_OAUTH_ISSUER names the console's web API when it is not https://<console host>. A console without the OAuth server yet falls back to that. --no-browser: email + password in the terminal over gRPC (AuthService.SignIn) for a host without a browser; --email, --password or the W17_PASSWORD env var select it, and --email + W17_PASSWORD make it unattended. Stores the bearer + org memberships in ~/.w17/auth.yaml; a console that binds devices binds the session to this machine's key for that console, ~/.w17/device-<hash>.key (made on first login). 'login grpcs://api.w17.app:50051' (or an enterprise self-host URL)."`
 	Logout  logoutcmd.Cmd  `cmd:"" help:"Log out of a console — drop its stored credential from ~/.w17/auth.yaml. Defaults to the active console."`
 	Whoami  whoamicmd.Cmd  `cmd:"" help:"Show the stored identity + organizations for the active console (--all for every logged-in console)."`
 	Org     orgcmd.Cmd     `cmd:"" help:"Organizations on the active console — list the ones you belong to (list) and pick the default (use <slug>). The default org scopes subsequent commands."`

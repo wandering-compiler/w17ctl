@@ -102,6 +102,7 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 		if err != nil {
 			return err
 		}
+		files = lockInputs(files)
 		// Plugin-activated projects need the module path server-side so the
 		// staged ACL/eventbus verification can expand plugin proto
 		// placeholders (mirrors the codegen path).
@@ -413,4 +414,21 @@ func requireVersionOf(body []byte, module string) string {
 		return ""
 	}
 	return string(m[1])
+}
+
+// lockInputs keeps what the ACL and eventbus locks are computed from: the
+// protos and the plugins' manifests. ReadProtoTree also carries a plugin's Go
+// sources, which codegen stages and these checks never read — and a plugin's
+// generated pb alone runs to megabytes: console-app's tree (the auth plugin
+// with its two_factor / step_up_code stubs) crossed gRPC's 4 MiB request cap,
+// and verify failed with ResourceExhausted on a tree that had not drifted.
+func lockInputs(files []*codegenpb.ProtoFile) []*codegenpb.ProtoFile {
+	out := files[:0:0]
+	for _, f := range files {
+		if strings.HasSuffix(f.GetFilename(), ".go") {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }

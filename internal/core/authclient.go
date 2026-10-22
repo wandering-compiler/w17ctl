@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -56,7 +57,25 @@ type SignedIn struct {
 // new one, which the console sees as a new device. A key named by
 // W17_DPOP_KEY is the operator's and is not replaced.
 func SignIn(ctx context.Context, addr, email, password string) (SignedIn, error) {
-	signed, err := signInOnce(ctx, addr, email, password)
+	return SignInWithSecondFactor(ctx, addr, email, password, nil)
+}
+
+// SecondFactor answers a console that asks for the second factor after the
+// password: a code from the person's authenticator app, a recovery code, or
+// the code the console just e-mailed them.
+type SecondFactor func() (string, error)
+
+// ErrSecondFactorRequired — the console asked for a second factor and the
+// caller has no way to give one (SignIn, which takes none).
+var ErrSecondFactorRequired = errors.New("this console asks for a second factor after the password (a code from your authenticator app, or the one it e-mailed you)")
+
+// SignInWithSecondFactor is SignIn for a console whose sign-in may ask for a
+// second factor: a right password answers with a challenge instead of a
+// token, code is asked for it, and VerifyMfa — signed by the same device key
+// as the sign-in, which the console requires — mints the token. code nil
+// refuses a challenge with ErrSecondFactorRequired.
+func SignInWithSecondFactor(ctx context.Context, addr, email, password string, code SecondFactor) (SignedIn, error) {
+	signed, err := signInOnce(ctx, addr, email, password, code)
 	if err == nil {
 		return signed, nil
 	}
@@ -71,10 +90,10 @@ func SignIn(ctx context.Context, addr, email, password string) (SignedIn, error)
 	}
 	// The refusal already discarded the key (consolePerRPC.noteRevoked); a
 	// new one is made on the retry.
-	return signInOnce(ctx, addr, email, password)
+	return signInOnce(ctx, addr, email, password, code)
 }
 
-func signInOnce(ctx context.Context, addr, email, password string) (SignedIn, error) {
+func signInOnce(ctx context.Context, addr, email, password string, code SecondFactor) (SignedIn, error) {
 	key, err := EnsureDeviceKey(addr)
 	if err != nil {
 		return SignedIn{}, err
@@ -89,10 +108,30 @@ func signInOnce(ctx context.Context, addr, email, password string) (SignedIn, er
 	if err != nil {
 		return SignedIn{}, err
 	}
-	if resp.GetToken() == "" {
+	token, userID := resp.GetToken(), resp.GetUserId()
+	if resp.GetMfaRequired() {
+		if code == nil {
+			return SignedIn{}, ErrSecondFactorRequired
+		}
+		answer, err := code()
+		if err != nil {
+			return SignedIn{}, err
+		}
+		answer = strings.TrimSpace(answer)
+		if answer == "" {
+			return SignedIn{}, fmt.Errorf("no second-factor code given")
+		}
+		hdr = metadata.MD{}
+		v, err := cl.VerifyMfa(dpopclient.MintContext(ctx), &authpb.VerifyMfaReq{ChallengeId: resp.GetChallengeId(), Code: answer}, grpc.Header(&hdr))
+		if err != nil {
+			return SignedIn{}, fmt.Errorf("second factor: %w", err)
+		}
+		token, userID = v.GetToken(), v.GetUserId()
+	}
+	if token == "" {
 		return SignedIn{}, fmt.Errorf("invalid email or password")
 	}
-	signed := SignedIn{Token: resp.GetToken(), UserID: resp.GetUserId(), ExpiresAt: signInExpiry(resp)}
+	signed := SignedIn{Token: token, UserID: userID, ExpiresAt: signInExpiry(resp)}
 	if len(hdr.Get(dpop.MetadataNonce)) > 0 {
 		signed.Device = key.Thumbprint()
 	}

@@ -88,6 +88,10 @@ func (c *DevCmd) Run() error {
 	if err != nil {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
+	companions, err := resolveRequired(abs, name, signIn)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
 
 	proj, cleanup, err := devProjectDir(c.Out, c.Keep, name)
 	if err != nil {
@@ -107,7 +111,7 @@ func (c *DevCmd) Run() error {
 	}
 	defer restore()
 
-	if err := devScaffold(abs, name, feats, signIn, c.Console); err != nil {
+	if err := devScaffold(abs, name, feats, companions, c.Console); err != nil {
 		return err
 	}
 
@@ -116,10 +120,10 @@ func (c *DevCmd) Run() error {
 	if err := inst.Run(); err != nil {
 		return fmt.Errorf("plugin dev: install: %w", err)
 	}
-	if signIn != nil {
-		fmt.Fprintf(core.Stdout, "plugin dev: installing %s for admin sign-in ...\n", signIn.name)
-		if err := (&InstallCmd{Source: signIn.dir, Console: c.Console}).Run(); err != nil {
-			return fmt.Errorf("plugin dev: install %s for sign-in: %w", signIn.name, err)
+	for _, p := range companions {
+		fmt.Fprintf(core.Stdout, "plugin dev: installing %s beside it (%s) ...\n", p.name, p.why)
+		if err := (&InstallCmd{Source: p.dir, Console: c.Console}).Run(); err != nil {
+			return fmt.Errorf("plugin dev: install %s (%s): %w", p.name, p.why, err)
 		}
 	}
 
@@ -149,7 +153,7 @@ const devConnection = "app-postgres"
 // plugin with its features, and a REST registry including the plugin's presets
 // so its endpoints exist on a surface. Anything else a project has is not
 // needed to find out whether a plugin generates.
-func devScaffold(dir, name string, feats []string, signIn *signInPlugin, console string) error {
+func devScaffold(dir, name string, feats []string, companions []*signInPlugin, console string) error {
 	initc := &initcmd.Cmd{
 		LockPath: filepath.Join("w17", "lock.yaml"),
 		Name:     "plugindev",
@@ -186,7 +190,7 @@ func devScaffold(dir, name string, feats []string, signIn *signInPlugin, console
 		return fmt.Errorf("plugin dev: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(domain, "w17.proto"),
-		[]byte(domainProto(name, feats, signIn)), 0o644); err != nil {
+		[]byte(domainProto(name, feats, companions)), 0o644); err != nil {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
 	// ⚠️ ONLY IF THE PLUGIN HAS A REST PRESET. Found by the dev lane's first
@@ -210,7 +214,17 @@ func devScaffold(dir, name string, feats []string, signIn *signInPlugin, console
 		fmt.Fprintf(core.Stdout, "  no rest preset — generating without a public surface, "+
 			"so this run exercises the tiers and not the endpoints\n")
 	}
-	return devScaffoldMcpAndAdmin(dir, domain, name, feats, signIn)
+	return devScaffoldMcpAndAdmin(dir, domain, name, feats, signInOf(companions))
+}
+
+// signInOf is the companion activated for admin sign-in, or nil.
+func signInOf(companions []*signInPlugin) *signInPlugin {
+	for _, p := range companions {
+		if p.why == "admin sign-in" {
+			return p
+		}
+	}
+	return nil
 }
 
 // devScaffoldMcpAndAdmin publishes the plugin's MCP and admin presets too,
@@ -290,6 +304,69 @@ func devScaffoldMcpAndAdmin(dir, domain, name string, feats []string, signIn *si
 type signInPlugin struct {
 	dir, name string
 	feats     []string
+	// why it is activated beside the plugin under test, for the run's output.
+	why string
+}
+
+// resolveRequired adds to signIn the plugins the one under test lists in
+// requires_plugins, each from its sibling tree (../<name>, this repository's
+// layout) with its own default features: a plugin that subscribes to
+// another's events (marketing → auth's UserCreated) generates only beside
+// it, and a scaffold that activated it alone refused it. A required plugin
+// with no sibling tree is left out — the generate step then says what is
+// missing. The sign-in plugin, when it is one of them, is activated once.
+func resolveRequired(dir, name string, signIn *signInPlugin) ([]*signInPlugin, error) {
+	var out []*signInPlugin
+	seen := map[string]bool{name: true}
+	if signIn != nil {
+		signIn.why = "admin sign-in"
+		out = append(out, signIn)
+		seen[signIn.name] = true
+	}
+	required, err := manifestRequiredPlugins(dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range required {
+		if seen[r] {
+			continue
+		}
+		sibling := filepath.Join(filepath.Dir(dir), r)
+		if _, statErr := os.Stat(filepath.Join(sibling, "plugin.yaml")); statErr != nil {
+			continue
+		}
+		_, defaults, err := manifestFeatures(sibling)
+		if err != nil {
+			return nil, fmt.Errorf("required plugin %s: %w", r, err)
+		}
+		seen[r] = true
+		out = append(out, &signInPlugin{dir: sibling, name: r, feats: defaults, why: "requires_plugins"})
+	}
+	return out, nil
+}
+
+// manifestRequiredPlugins returns the names in the manifest's
+// requires_plugins.
+func manifestRequiredPlugins(dir string) ([]string, error) {
+	body, err := os.ReadFile(filepath.Join(dir, "plugin.yaml"))
+	if err != nil {
+		return nil, fmt.Errorf("reading the manifest: %w", err)
+	}
+	var m struct {
+		RequiresPlugins []struct {
+			Name string `yaml:"name"`
+		} `yaml:"requires_plugins"`
+	}
+	if err := yaml.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("reading the manifest: %w", err)
+	}
+	var names []string
+	for _, r := range m.RequiresPlugins {
+		if r.Name != "" {
+			names = append(names, r.Name)
+		}
+	}
+	return names, nil
 }
 
 // resolveSignIn decides whether the run needs a sign-in plugin and which.
@@ -501,7 +578,7 @@ func manifestHasPreset(dir, kind string) (bool, error) {
 	return false, nil
 }
 
-func domainProto(name string, feats []string, signIn *signInPlugin) string {
+func domainProto(name string, feats []string, companions []*signInPlugin) string {
 	entry := func(n string, fs []string) string {
 		var quoted []string
 		for _, f := range fs {
@@ -516,8 +593,8 @@ func domainProto(name string, feats []string, signIn *signInPlugin) string {
     }`
 	}
 	entries := entry(name, feats)
-	if signIn != nil {
-		entries += ",\n" + entry(signIn.name, signIn.feats)
+	for _, p := range companions {
+		entries += ",\n" + entry(p.name, p.feats)
 	}
 	return `syntax = "proto3";
 

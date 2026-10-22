@@ -304,13 +304,19 @@ const w17StubsDir = "w17/stubs"
 // retries is how many times a run that lost its connection mid-stream is
 // placed and run again (DefaultRetries; see cluster.go for the whole
 // failure classification).
-func Run(console string, force bool, adoptGitignore bool, gofmt string, retries int) error {
+//
+// sdkVersion, when set, is the sdk/go version the generated modules are
+// written against for this run instead of the lock's (resolveSdkGoPinsAt).
+func Run(console string, force bool, adoptGitignore bool, gofmt string, retries int, sdkVersion string) error {
 	gofmtMode, modeErr := gofmtc.ParseMode(gofmt)
 	if modeErr != nil {
 		return modeErr
 	}
 	if retries < 0 {
 		return fmt.Errorf("codegen: --retries must be 0 or more, got %d", retries)
+	}
+	if sdkVersion != "" && !semver.IsValid(sdkVersion) {
+		return fmt.Errorf("codegen: --sdk-version %q is not a version (a tag like v0.1.0-rc.30, or a pseudo-version)", sdkVersion)
 	}
 
 	root, err := findProjectRoot()
@@ -586,7 +592,7 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	// Pin the placeholder sdk/go require to a resolvable version so the generated
 	// project builds immediately. Non-fatal: on a proxy/network hiccup the files
 	// are already written, so advise the manual fix rather than fail codegen.
-	if err := resolveSdkGoPins(root, servicesDir, w17StubsDir, genDir, priorSdkPins, view.GetSdkFloor(), sdkReqs, core.Stdout); err != nil {
+	if err := resolveSdkGoPinsAt(root, servicesDir, w17StubsDir, genDir, priorSdkPins, view.GetSdkFloor(), sdkReqs, sdkVersion, core.Stdout); err != nil {
 		// Two failures, two answers. A stale pin is a REFUSAL — the generated
 		// code was written against a newer surface and the build cannot work
 		// — so codegen stops and the reader has one thing to do. Everything
@@ -884,12 +890,48 @@ func writeSdkPin(goModPath, sdkMod, ver string) error {
 // co-dev go.mods for no gain (sdkGoNeedsPin also skips any module that replaces
 // sdk/go, as a second guard).
 func resolveSdkGoPins(root, servicesDir, w17Stubs, genDir string, prior map[string]string, consoleFloor string, reqs []*codegenpb.SdkRequirement, stdout io.Writer) error {
+	return resolveSdkGoPinsAt(root, servicesDir, w17Stubs, genDir, prior, consoleFloor, reqs, "", stdout)
+}
+
+// resolveSdkGoPinsAt is resolveSdkGoPins with an explicit version
+// (`codegen --sdk-version`): every generated module that requires sdk/go,
+// and any module still carrying the placeholder, is written at it, and the
+// floor is checked against it — not against the lock's pin, which it does
+// not change. The case is a CI building a project against an SDK under
+// review: a machine account may not re-sign the lock, and a project whose only
+// sdk/go requires are the generated ones (no hand-written module) was refused
+// on the lock's older pin before the SDK under review was ever applied. The
+// hand-written module is left alone: it is the author's, and a workspace
+// build resolves the higher of the two anyway.
+func resolveSdkGoPinsAt(root, servicesDir, w17Stubs, genDir string, prior map[string]string, consoleFloor string, reqs []*codegenpb.SdkRequirement, override string, stdout io.Writer) error {
 	if strings.Trim(os.Getenv("W17_WANDERING_COMPILER_PATH"), "/") != "" {
 		return nil // co-dev: the local replace resolves the placeholder
 	}
 	sdkMod := core.SdkModuleBase + "/sdk/go"
 	dirs := sdkGoModuleDirs(root, servicesDir, w17Stubs, genDir)
 	floor, floorSource := effectiveSdkFloor(consoleFloor, reqs...)
+
+	if override != "" {
+		const how = "--sdk-version"
+		floorErr := checkSdkFloorAgainst(override, how, floor, floorSource)
+		services := filepath.ToSlash(servicesDir) + "/"
+		n := 0
+		for _, d := range dirs {
+			mod := filepath.Join(root, d, "go.mod")
+			generated := (servicesDir != "" && strings.HasPrefix(filepath.ToSlash(d), services)) ||
+				(w17Stubs != "" && filepath.ToSlash(d) == filepath.ToSlash(w17Stubs))
+			placeholder := sdkGoNeedsPin(mod, sdkMod)
+			if sdkGoReplaced(mod, sdkMod) || (!placeholder && !(generated && sdkGoRequiredVersion(mod, sdkMod) != "")) {
+				continue
+			}
+			if err := writeSdkPin(mod, sdkMod, override); err != nil {
+				return fmt.Errorf("pin in %s: %w", d, err)
+			}
+			n++
+		}
+		fmt.Fprintf(stdout, "codegen: pinned %s %s in %d module(s) (from %s; the lock keeps its own)\n", sdkMod, override, n, how)
+		return floorErr
+	}
 
 	// Keep only modules carrying an unresolvable sdk/go placeholder with no local
 	// replace overriding it.

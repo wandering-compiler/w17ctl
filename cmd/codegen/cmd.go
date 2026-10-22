@@ -20,6 +20,7 @@ type Cmd struct {
 	AdoptGitignore bool   `name:"adopt-gitignore" help:"Create w17/.gitignore if this project has none, so the compiler output stops showing up in your diffs. One-time and explicit: codegen never creates it on its own, because a project may be tracking some of the generated tree on purpose."`
 	Retries        int    `name:"retries" default:"1" help:"How many times a run that loses its connection to the codegen worker mid-run is placed and run again. A refusal of the input is never retried, and nothing is retried after the run completes; 0 disables re-runs."`
 	NoUpdateCheck  bool   `name:"no-update-check" help:"Skip the check for a newer w17ctl / sdk/go / plugin that runs first at a terminal. CI never runs it; this is for a terminal session that should not be asked."`
+	SdkVersion     string `name:"sdk-version" placeholder:"VERSION" env:"W17_SDK_VERSION" help:"Write the generated modules against this sdk/go version (a tag or a pseudo-version) for this run, without pinning it: the lock keeps its sdk_version, and the console's SDK floor is checked against this one instead. For a CI that builds a project against an SDK under review, which a machine account may not pin. The hand-written module is not touched."`
 }
 
 // PreGenerate is the update check run before generating — `w17ctl update`'s
@@ -35,5 +36,5 @@ func (c *Cmd) Run() error {
 			}
 		}
 	}
-	return codegenimpl.Run(c.Console, c.Force, c.AdoptGitignore, c.Gofmt, c.Retries)
+	return codegenimpl.Run(c.Console, c.Force, c.AdoptGitignore, c.Gofmt, c.Retries, c.SdkVersion)
 }

@@ -101,32 +101,56 @@ func (c *PullCmd) Run() error {
 // readAndOpen makes the key pair, reads, and opens every value at its own
 // address; the dotenv of the service, keys in order.
 func readAndOpen(ctx context.Context, es consolerpcpb.EnvironmentSecretsClient, project, env, service, code string) ([]byte, int, error) {
-	priv, pub, err := secretseal.NewKeyPair()
-	if err != nil {
-		return nil, 0, err
-	}
-	resp, err := es.ReadSealedSecrets(ctx, &secretspb.ReadSealedSecretsReq{ProjectId: project, Environment: env, Code: code,
-		PublicKey: base64.StdEncoding.EncodeToString(pub), Service: service})
+	services, err := readAndOpenServices(ctx, es, project, env, service, code)
 	if err != nil {
 		return nil, 0, err
 	}
 	var values []*secretspb.SecretValue
+	for _, s := range services {
+		values = append(values, s.GetValues()...)
+	}
+	return EnvFile(values), len(values), nil
+}
+
+// readAndOpenServices reads one service's values ("" = every service's) under
+// a read code and opens them, grouped by service, each service's keys in order.
+func readAndOpenServices(ctx context.Context, es consolerpcpb.EnvironmentSecretsClient, project, env, service, code string) ([]*secretspb.ServiceSecrets, error) {
+	priv, pub, err := secretseal.NewKeyPair()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := es.ReadSealedSecrets(ctx, &secretspb.ReadSealedSecretsReq{ProjectId: project, Environment: env, Code: code,
+		PublicKey: base64.StdEncoding.EncodeToString(pub), Service: service})
+	if err != nil {
+		return nil, err
+	}
+	by := map[string][]*secretspb.SecretValue{}
 	for _, v := range resp.GetValues() {
-		if v.GetService() != service {
-			return nil, 0, fmt.Errorf("the console answered %s/%s for service %s", v.GetService(), v.GetKey(), service)
+		if service != "" && v.GetService() != service {
+			return nil, fmt.Errorf("the console answered %s/%s for service %s", v.GetService(), v.GetKey(), service)
 		}
 		raw, err := base64.StdEncoding.DecodeString(v.GetSealed())
 		if err != nil {
-			return nil, 0, fmt.Errorf("%s: unreadable", v.GetKey())
+			return nil, fmt.Errorf("%s: unreadable", v.GetKey())
 		}
 		plain, err := secretseal.Open(priv, resp.GetGrantId(), v.GetService(), v.GetKey(), raw)
 		if err != nil {
-			return nil, 0, fmt.Errorf("%s: %w", v.GetKey(), err)
+			return nil, fmt.Errorf("%s: %w", v.GetKey(), err)
 		}
-		values = append(values, &secretspb.SecretValue{Key: v.GetKey(), Value: string(plain)})
+		by[v.GetService()] = append(by[v.GetService()], &secretspb.SecretValue{Key: v.GetKey(), Value: string(plain)})
 	}
-	sort.Slice(values, func(i, j int) bool { return values[i].GetKey() < values[j].GetKey() })
-	return EnvFile(values), len(values), nil
+	names := make([]string, 0, len(by))
+	for name := range by {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]*secretspb.ServiceSecrets, 0, len(names))
+	for _, name := range names {
+		values := by[name]
+		sort.Slice(values, func(i, j int) bool { return values[i].GetKey() < values[j].GetKey() })
+		out = append(out, &secretspb.ServiceSecrets{Service: name, Values: values})
+	}
+	return out, nil
 }
 
 // parseRecipients is an age1… recipient, or a file of them (one per line).

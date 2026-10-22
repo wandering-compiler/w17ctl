@@ -1,17 +1,26 @@
-// Package login implements `w17ctl login` — email + password sign-in over the
-// console's gRPC auth gateway (ONE endpoint; the same console address every
-// other w17ctl command dials). The console mints the bearer; the client only
-// stores it in the machine-local credential store (~/.w17/auth.yaml) and caches
-// the caller's org memberships. Missing inputs are prompted interactively
-// (email → password → host).
+// Package login implements `w17ctl login` — sign in to a console and store the
+// session in the machine-local credential store (~/.w17/auth.yaml), with the
+// caller's org memberships cached beside it.
 //
-// The sign-in carries a DPoP proof signed by this machine's key for that console
-// (~/.w17/device-<hash>.key, made on the first login): a console whose auth binds
-// devices binds the token to that key, and the store records which key.
+// Two ways in, one result:
+//
+//   - the browser (default): w17ctl is a public OAuth 2.1 client of the
+//     console's authorization server (core.SignInWithBrowser) — the user signs
+//     in and approves on the console's own pages, and w17ctl never sees the
+//     password;
+//   - --password: email + password over the console's gRPC auth gateway
+//     (core.SignIn), for a host without a browser. --email or W17_PASSWORD
+//     select it too, so every script written before the browser login keeps
+//     working unchanged.
+//
+// Either way the session is bound to this machine's key for that console
+// (~/.w17/device-<hash>.key, made on the first login) when the console binds
+// devices, and the store records which key.
 package login
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -20,25 +29,46 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/authstore"
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/prompter"
+	"github.com/wandering-compiler/w17ctl/internal/ui"
 )
 
-// loginTimeout bounds the whole sign-in round-trip.
+// loginTimeout bounds the password sign-in round-trip, and each console call
+// around the browser login (the user's part has its own bound).
 const loginTimeout = 60 * time.Second
 
 // newPrompter is indirected so tests can pump scripted answers.
 var newPrompter = prompter.NewStdinPrompter
 
+func init() { core.OpenBrowserFn = ui.OpenBrowser }
+
 // Cmd is `w17ctl login [host]`.
 type Cmd struct {
-	Host  string `arg:"" optional:"" help:"Console host to log in to (e.g. grpcs://api.w17.app:50051). Prompted if omitted; defaults to the current console."`
-	Email string `name:"email" help:"Email to sign in with (prompted if omitted)."`
+	Host string `arg:"" optional:"" help:"Console host to log in to (e.g. grpcs://api.w17.app:50051). Prompted if omitted; defaults to the current console."`
+	// NoBrowser selects the email + password sign-in in the terminal (a host
+	// without a browser).
+	NoBrowser bool   `name:"no-browser" help:"Sign in with email + password in the terminal instead of the browser (a host without one). Implied by --email, --password or W17_PASSWORD."`
+	Email     string `name:"email" help:"Email to sign in with; implies --no-browser (prompted if omitted)."`
 	// Password also reads W17_PASSWORD to keep it out of shell history / argv;
-	// when neither is set it is prompted for, hidden (no echo).
-	Password string `name:"password" env:"W17_PASSWORD" help:"Password (prefer the W17_PASSWORD env var over the flag; prompted, hidden, if omitted)."`
+	// when neither is set it is prompted for, hidden (no echo). Either implies
+	// the password sign-in, as before the browser one existed.
+	Password string `name:"password" env:"W17_PASSWORD" help:"Password; implies --no-browser (prefer the W17_PASSWORD env var over the flag; prompted, hidden, if omitted)."`
+	// Code answers the console's second factor for the password sign-in;
+	// prompted when omitted and the console asks for one.
+	Code   string `name:"code" env:"W17_MFA_CODE" help:"Second-factor code for the password sign-in: from your authenticator app, a recovery code, or the one the console e-mails you. Prompted when the console asks and this is unset."`
+	Issuer string `name:"issuer" env:"W17_CONSOLE_OAUTH_ISSUER" help:"The console's OAuth issuer for the browser sign-in. Default: the console host over https without the gRPC port (grpcs://api.w17.app:50051 → https://api.w17.app); set it when the console's web API is elsewhere (a local dev stack)."`
 }
 
 func (c *Cmd) Run() error {
 	p := newPrompter()
+	if !c.passwordSignIn() {
+		err := c.runBrowser(p)
+		if !errors.Is(err, core.ErrOAuthUnavailable) {
+			return err
+		}
+		// A console from before its authorization server (oauth_server)
+		// offers no browser sign-in: the password one is what it has.
+		fmt.Fprintf(core.Stdout, "%s does not offer browser sign-in yet — signing in with email and password\n", c.Host)
+	}
 	host, email, password, err := c.gather(p)
 	if err != nil {
 		return err
@@ -46,18 +76,76 @@ func (c *Cmd) Run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), loginTimeout)
 	defer cancel()
 
-	signed, err := core.SignIn(ctx, host, email, password)
+	signed, err := core.SignInWithSecondFactor(ctx, host, email, password, func() (string, error) {
+		if c.Code != "" {
+			return c.Code, nil
+		}
+		return p.Text("Code from your authenticator app, or the one the console e-mailed you", "")
+	})
 	if err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
+	return finish(ctx, host, signed, email)
+}
 
+// passwordSignIn reports whether this login is the email + password one:
+// asked for, or implied by an email or a password already given — the shape
+// of every unattended login written before the browser one existed.
+func (c *Cmd) passwordSignIn() bool {
+	return c.NoBrowser || c.Email != "" || c.Password != ""
+}
+
+// runBrowser is the default login: the console's OAuth authorization server,
+// in the browser.
+func (c *Cmd) runBrowser(p prompter.Prompter) error {
+	host, err := c.gatherHost(p)
+	if err != nil {
+		return err
+	}
+	c.Host = host // a fallback to the password sign-in does not ask for it again
+	issuer := core.OAuthIssuer(c.Issuer, host)
+	if issuer == "" {
+		return fmt.Errorf("login: cannot derive the console's OAuth issuer from %q — pass --issuer", host)
+	}
+	st, err := authstore.LoadDefault()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(core.Stdout, "Signing in to %s through %s\n", host, issuer)
+	ctx, cancel := context.WithTimeout(context.Background(), core.OAuthCallbackWait+2*loginTimeout)
+	defer cancel()
+	signed, err := core.SignInWithBrowser(ctx, core.OAuthLogin{
+		Addr:         host,
+		Issuer:       issuer,
+		ClientID:     st.OAuthClientID(issuer),
+		SaveClientID: func(id string) error { return saveOAuthClientID(issuer, id) },
+	})
+	if err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+	orgCtx, orgCancel := context.WithTimeout(context.Background(), loginTimeout)
+	defer orgCancel()
+	return finish(orgCtx, host, signed, "")
+}
+
+// saveOAuthClientID keeps the client id the issuer registered w17ctl under.
+func saveOAuthClientID(issuer, clientID string) error {
+	st, err := authstore.LoadDefault()
+	if err != nil {
+		return err
+	}
+	st.SetOAuthClientID(issuer, clientID)
+	return authstore.SaveDefault(st)
+}
+
+// finish is what every sign-in ends with: the org cache, then the store.
+func finish(ctx context.Context, host string, signed core.SignedIn, email string) error {
 	// Orgs — best-effort with the freshly minted bearer (a token already
 	// exists; the cache can refresh later via `w17ctl org list`).
 	orgs, orgErr := core.ListMyOrgsAs(ctx, host, signed.Token, signed.Device)
 	if orgErr != nil {
 		fmt.Fprintf(core.Stdout, "warning: logged in, but couldn't list organizations: %v\n", orgErr)
 	}
-
 	return store(host, signed, email, orgs)
 }
 
@@ -83,16 +171,26 @@ func (c *Cmd) gather(p prompter.Prompter) (host, email, password string, err err
 			return "", "", "", fmt.Errorf("login: password is required")
 		}
 	}
-	host = c.Host
-	if host == "" {
-		if host, err = p.Text("Console host", defaultHost()); err != nil {
-			return "", "", "", err
-		}
-		if host == "" {
-			return "", "", "", fmt.Errorf("login: no console host — pass it as an argument or at the prompt")
-		}
+	if host, err = c.gatherHost(p); err != nil {
+		return "", "", "", err
 	}
 	return host, email, password, nil
+}
+
+// gatherHost is the console to log in to: the argument, else prompted with
+// the current console as the default.
+func (c *Cmd) gatherHost(p prompter.Prompter) (string, error) {
+	if c.Host != "" {
+		return c.Host, nil
+	}
+	host, err := p.Text("Console host", defaultHost())
+	if err != nil {
+		return "", err
+	}
+	if host == "" {
+		return "", fmt.Errorf("login: no console host — pass it as an argument or at the prompt")
+	}
+	return host, nil
 }
 
 // defaultHost is the prompt default: the current console instance, else the
@@ -130,8 +228,12 @@ func store(host string, signed core.SignedIn, email string, orgs []core.AuthOrg)
 		URL:    host,
 		Token:  signed.Token,
 		Device: signed.Device,
-		User:   &authstore.User{ID: signed.UserID, Email: email},
 		Orgs:   toStoreOrgs(orgs),
+	}
+	// The browser login learns no identity (the token response names no
+	// user); an empty one is left out rather than stored as "".
+	if signed.UserID != "" || email != "" {
+		inst.User = &authstore.User{ID: signed.UserID, Email: email}
 	}
 	inst.RecordSessionExpiry(signed.ExpiresAt)
 	// Read BEFORE the pointer moves, and used after the prune below — a login

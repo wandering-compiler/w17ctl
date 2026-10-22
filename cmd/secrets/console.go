@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -66,12 +67,15 @@ func (f consoleFlags) project() (string, error) {
 
 // SetCmd is `w17ctl secrets set --env E SERVICE KEY…`: each value asked for
 // without echo, or dotenv lines from stdin when no KEY is named. With --plain
-// they are environment variables, which may also be given as KEY=value.
+// they are environment variables, which may also be given as KEY=value. With
+// --dir, every <service>.env of a directory goes in one write: a write code
+// is one command, and an environment is several services.
 type SetCmd struct {
 	consoleFlags
 	Plain      bool     `name:"plain" help:"Write environment VARIABLES (shown back in the console: a domain, a port), not secrets. Only these may be given as KEY=value."`
 	AllowEmpty bool     `name:"allow-empty" help:"Accept an empty value (refused otherwise: it is how a mistyped pipe blanks a production value)."`
-	Service    string   `arg:"" help:"The stack service the values are for (its <service>.env on the target)."`
+	Dir        string   `name:"dir" placeholder:"DIR" help:"Write every DIR/<service>.env (dotenv lines) in one write, under one code — what secrets fetch writes, or a whole environment moved from elsewhere. Takes no SERVICE or KEY."`
+	Service    string   `arg:"" optional:"" help:"The stack service the values are for (its <service>.env on the target)."`
 	Keys       []string `arg:"" optional:"" help:"The env var names, each asked for without echo (or KEY=value with --plain). None: dotenv lines KEY=value from stdin."`
 }
 
@@ -87,7 +91,20 @@ func (c *SetCmd) Run() error {
 		return fmt.Errorf("secrets set: %w", err)
 	}
 	stdinTTY := term.IsTerminal(int(os.Stdin.Fd()))
-	values, err := gatherValues(c.Service, c.Keys, c.Plain, c.AllowEmpty, os.Stdin, stdinTTY, promptHidden(os.Stdin))
+	var values []envValue
+	what := c.Service
+	switch {
+	case c.Dir != "" && (c.Service != "" || len(c.Keys) > 0):
+		return fmt.Errorf("secrets set: --dir takes the services from its <service>.env files — name no SERVICE or KEY")
+	case c.Dir != "":
+		var services []string
+		values, services, err = gatherDir(c.Dir, c.Plain, c.AllowEmpty)
+		what = strings.Join(services, ", ")
+	case c.Service == "":
+		return fmt.Errorf("secrets set: name the SERVICE the values are for, or pass --dir")
+	default:
+		values, err = gatherValues(c.Service, c.Keys, c.Plain, c.AllowEmpty, os.Stdin, stdinTTY, promptHidden(os.Stdin))
+	}
 	if err != nil {
 		return fmt.Errorf("secrets set: %w", err)
 	}
@@ -99,8 +116,42 @@ func (c *SetCmd) Run() error {
 	if c.Plain {
 		kind = "variable"
 	}
-	fmt.Fprintf(core.Stdout, "set %d %s(s) of %s in %s\n", n, kind, c.Service, c.Env)
+	fmt.Fprintf(core.Stdout, "set %d %s(s) of %s in %s\n", n, kind, what, c.Env)
 	return nil
+}
+
+// gatherDir reads every <service>.env of dir as dotenv lines, the service
+// named by the file. A name that is no service name is refused, not skipped:
+// a value meant for it would silently stay unset.
+func gatherDir(dir string, plain, allowEmpty bool) ([]envValue, []string, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "*.env"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(files) == 0 {
+		return nil, nil, fmt.Errorf("%s holds no <service>.env", dir)
+	}
+	sort.Strings(files)
+	var out []envValue
+	var services []string
+	for _, f := range files {
+		svc := strings.TrimSuffix(filepath.Base(f), ".env")
+		if !reServiceName.MatchString(svc) {
+			return nil, nil, fmt.Errorf("%s: %q is no service name", f, svc)
+		}
+		in, err := os.Open(f) // #nosec G304 -- the operator's own directory
+		if err != nil {
+			return nil, nil, err
+		}
+		vs, err := gatherValues(svc, nil, plain, allowEmpty, in, false, nil)
+		_ = in.Close()
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", f, err)
+		}
+		out = append(out, vs...)
+		services = append(services, svc)
+	}
+	return out, services, nil
 }
 
 // envValue is one value to write: its address and, with --plain, its kind.

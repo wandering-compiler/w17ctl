@@ -140,6 +140,9 @@ prove the lock pins every migration the proto needs.
 
 A **person** runs `w17ctl login <console>` once; the bearer and the chosen
 organization live in `~/.w17/auth.yaml` and every later command reads them.
+`login` opens the browser and the person signs in and approves on the
+console's own page (w17ctl prints the URL too); on a host without a browser,
+`w17ctl login --no-browser` asks for the email and password in the terminal.
 
 ⚠️ **Two consoles are normal, and `login` makes the one it just authenticated
 against the ACTIVE one.** Publishing a plugin release needs the console holding
@@ -236,6 +239,13 @@ through the command that owns it (`sdk update` + `sdk pin`, `plugin update
 CI is never asked. There, a stale pin is refused exactly as before — with the
 command that fixes it — which is why the update belongs on a developer's machine
 and in a commit, not in the pipeline. `--no-update-check` skips the question.
+
+A CI that tests the project against an sdk/go it has not adopted yet (a pull
+request of the SDK itself) runs `w17ctl codegen --sdk-version <version>`
+(or `W17_SDK_VERSION`): the generated modules are written against that version
+and the floor is checked against it, while the lock keeps its pin. That is the
+one way past a stale pin that is not an update, and it changes nothing a commit
+would keep.
 
 ## What w17ctl is
 
