@@ -23,8 +23,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/wandering-compiler/w17ctl/internal/authstore"
 	"github.com/wandering-compiler/w17ctl/internal/core"
@@ -44,9 +47,12 @@ func init() { core.OpenBrowserFn = ui.OpenBrowser }
 // Cmd is `w17ctl login [host]`.
 type Cmd struct {
 	Host string `arg:"" optional:"" help:"Console host to log in to (e.g. grpcs://api.w17.app:50051). Prompted if omitted; defaults to the current console."`
+	// Method picks the sign-in; empty asks in a terminal and is the browser
+	// on this machine elsewhere (a script), as before the choice existed.
+	Method string `name:"method" help:"How to sign in: browser (a browser on this machine), code (a browser on any device; you paste the code it shows — for w17ctl over ssh or in a remote workspace), password (email + password here). Asked when omitted in a terminal; browser otherwise."`
 	// NoBrowser selects the email + password sign-in in the terminal (a host
 	// without a browser).
-	NoBrowser bool   `name:"no-browser" help:"Sign in with email + password in the terminal instead of the browser (a host without one). Implied by --email, --password or W17_PASSWORD."`
+	NoBrowser bool   `name:"no-browser" help:"Same as --method password. Implied by --email, --password or W17_PASSWORD."`
 	Email     string `name:"email" help:"Email to sign in with; implies --no-browser (prompted if omitted)."`
 	// Password also reads W17_PASSWORD to keep it out of shell history / argv;
 	// when neither is set it is prompted for, hidden (no echo). Either implies
@@ -58,10 +64,59 @@ type Cmd struct {
 	Issuer string `name:"issuer" env:"W17_CONSOLE_OAUTH_ISSUER" help:"The console's OAuth issuer for the browser sign-in. Default: the console host over https without the gRPC port (grpcs://api.w17.app:50051 → https://api.w17.app); set it when the console's web API is elsewhere (a local dev stack)."`
 }
 
+// The sign-in methods, as --method names them and as the menu offers them.
+const (
+	methodBrowser  = "browser"
+	methodCode     = "code"
+	methodPassword = "password"
+)
+
+var methodChoices = []struct{ method, label string }{
+	{methodBrowser, "Browser on this computer"},
+	{methodCode, "Browser on another device — paste the code it shows (w17ctl over ssh, a remote workspace)"},
+	{methodPassword, "Email and password here"},
+}
+
+// stdinIsTerminal is indirected so tests can stand in for a person.
+var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
+// method is the sign-in to run: the flags', else asked in a terminal, else
+// the browser — what a script got before the choice existed.
+func (c *Cmd) method(p prompter.Prompter) (string, error) {
+	switch {
+	case c.passwordSignIn():
+		return methodPassword, nil
+	case c.Method == methodBrowser || c.Method == methodCode:
+		return c.Method, nil
+	case c.Method != "":
+		return "", fmt.Errorf("login: --method %q: want browser, code or password", c.Method)
+	case !stdinIsTerminal():
+		return methodBrowser, nil
+	}
+	labels := make([]string, len(methodChoices))
+	for i, m := range methodChoices {
+		labels[i] = m.label
+	}
+	got, err := p.Select("How do you want to sign in?", labels, labels[0])
+	if err != nil {
+		return "", err
+	}
+	for _, m := range methodChoices {
+		if m.label == got {
+			return m.method, nil
+		}
+	}
+	return "", fmt.Errorf("login: no sign-in method %q", got)
+}
+
 func (c *Cmd) Run() error {
 	p := newPrompter()
-	if !c.passwordSignIn() {
-		err := c.runBrowser(p)
+	method, err := c.method(p)
+	if err != nil {
+		return err
+	}
+	if method != methodPassword {
+		err := c.runBrowser(p, method == methodCode)
 		if !errors.Is(err, core.ErrOAuthUnavailable) {
 			return err
 		}
@@ -92,12 +147,12 @@ func (c *Cmd) Run() error {
 // asked for, or implied by an email or a password already given — the shape
 // of every unattended login written before the browser one existed.
 func (c *Cmd) passwordSignIn() bool {
-	return c.NoBrowser || c.Email != "" || c.Password != ""
+	return c.NoBrowser || c.Method == methodPassword || c.Email != "" || c.Password != ""
 }
 
 // runBrowser is the default login: the console's OAuth authorization server,
 // in the browser.
-func (c *Cmd) runBrowser(p prompter.Prompter) error {
+func (c *Cmd) runBrowser(p prompter.Prompter, withCode bool) error {
 	host, err := c.gatherHost(p)
 	if err != nil {
 		return err
@@ -119,6 +174,7 @@ func (c *Cmd) runBrowser(p prompter.Prompter) error {
 		Issuer:       issuer,
 		ClientID:     st.OAuthClientID(issuer),
 		SaveClientID: func(id string) error { return saveOAuthClientID(issuer, id) },
+		ReadCode:     readCode(p, withCode),
 	})
 	if err != nil {
 		return fmt.Errorf("login: %w", err)
@@ -126,6 +182,15 @@ func (c *Cmd) runBrowser(p prompter.Prompter) error {
 	orgCtx, orgCancel := context.WithTimeout(context.Background(), loginTimeout)
 	defer orgCancel()
 	return finish(orgCtx, host, signed, "")
+}
+
+// readCode asks for the code the console's code page shows, for the sign-in
+// with a code; nil for the browser on this machine.
+func readCode(p prompter.Prompter, withCode bool) func() (string, error) {
+	if !withCode {
+		return nil
+	}
+	return func() (string, error) { return p.Text("Code", "") }
 }
 
 // saveOAuthClientID keeps the client id the issuer registered w17ctl under.

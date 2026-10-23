@@ -163,15 +163,17 @@ client.
 | `update` | Upgrade this binary in place, into the directory it runs from. Invokes `install.sh` rather than resolving the release itself, so the download is verified against `SHA256SUMS` and there is only one implementation of "which release is newest". `--stable` refuses prereleases, `--version <tag>` pins, `--dir` targets elsewhere, `--dry-run` reports without installing. |
 
 ### Auth & organizations
-Talk to a console and pick your org scope. Login signs in through the
-console's own page in the browser by default (OAuth 2.1 with a loopback
-redirect and PKCE — w17ctl never sees the password); `--no-browser` is the
-terminal sign-in, a single gRPC call to the console — email + password in,
-bearer out.
+Talk to a console and pick your org scope. Login offers three sign-ins and
+asks which in a terminal (`--method` picks one): the console's own page in a
+browser on this computer (OAuth 2.1 with a loopback redirect and PKCE —
+w17ctl never sees the password); the same page in a browser on any device,
+which then shows a code to paste into w17ctl (for w17ctl over ssh or in a
+remote workspace); and email + password in the terminal, a single gRPC call
+to the console — email + password in, bearer out.
 
 | Command | What it does · under the hood |
 |---|---|
-| `login [<host>]` | Sign in and store the bearer + org memberships in `~/.w17/auth.yaml`. **Default — the browser:** fetches the console's OAuth metadata (`/.well-known/oauth-authorization-server`), registers w17ctl once per console (the `client_id` is kept under `oauth_clients` in `auth.yaml`), prints and opens the sign-in URL, waits up to 5 minutes for the redirect to `http://127.0.0.1:<random port>/callback`, and exchanges the code with a DPoP proof of this machine's device key. The issuer is `https://<console host>` (the gRPC port dropped: `grpcs://api.w17.app:50051` → `https://api.w17.app`); `--issuer` or `W17_CONSOLE_OAUTH_ISSUER` names another. **`--no-browser` — the terminal:** `AuthService.SignIn` over gRPC, prompting for anything not given (email → password (hidden) → host); `--email`, `--password` or `W17_PASSWORD` select it as well, and `--email` + `W17_PASSWORD` keep it non-interactive. |
+| `login [<host>]` | Sign in and store the bearer + org memberships in `~/.w17/auth.yaml`. In a terminal it asks how; `--method browser\|code\|password` answers, and without a terminal (a script) it is `browser`. **`browser` — a browser on this computer:** fetches the console's OAuth metadata (`/.well-known/oauth-authorization-server`), registers w17ctl once per console (the `client_id` is kept under `oauth_clients` in `auth.yaml`), prints and opens the sign-in URL, waits up to 5 minutes for the redirect to `http://127.0.0.1:<random port>/callback`, and exchanges the code with a DPoP proof of this machine's device key. **`code` — a browser on any device:** the same, except that nothing listens here and nothing is opened: the redirect is the console's code page (`https://<issuer>/oauth/code`), which after the approval shows `code#state` to paste into w17ctl (its state is checked as the redirect's would be; the code lasts 5 minutes). The console offers it when its auth plugin sets `oauth_code_redirect`. The issuer is `https://<console host>` (the gRPC port dropped: `grpcs://api.w17.app:50051` → `https://api.w17.app`); `--issuer` or `W17_CONSOLE_OAUTH_ISSUER` names another. **`password` (or `--no-browser`) — the terminal:** `AuthService.SignIn` over gRPC, prompting for anything not given (email → password (hidden) → host); `--email`, `--password` or `W17_PASSWORD` select it as well, and `--email` + `W17_PASSWORD` keep it non-interactive. |
 | `logout [<url>]` | Drops a console's stored credential from `~/.w17/auth.yaml`. |
 | `key public [<console>]` | Prints a device key's public half as a JWK on stdout (making the key first if there is none): the file `W17_DPOP_KEY` names, else this machine's key for the console (default: the active one). It is what the console needs to issue a machine account's token. Stderr names the file and its thumbprint (the device id the console shows). |
 | `whoami` | Prints the stored identity + orgs for the active console (`--all` = every logged-in console), and the session expiry when one is known (with a warning once it has passed). Pure local read. |

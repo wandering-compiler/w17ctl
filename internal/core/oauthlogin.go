@@ -86,6 +86,13 @@ type OAuthLogin struct {
 	// Wait bounds how long the user has to finish in the browser; 0 =
 	// OAuthCallbackWait.
 	Wait time.Duration
+	// ReadCode, when set, makes this the sign-in with a code, for a w17ctl
+	// on another machine than the browser (an ssh session, a remote
+	// workspace), which a redirect to this machine cannot reach: the browser
+	// ends on the console's code page (oauthas.CodePath) and the person types
+	// the `code#state` it shows; ReadCode asks for it. nil = the browser on
+	// this machine, answering on a loopback redirect.
+	ReadCode func() (string, error)
 }
 
 // OAuthCallbackWait is how long a browser login waits for the user.
@@ -175,12 +182,26 @@ func SignInWithBrowser(ctx context.Context, l OAuthLogin) (SignedIn, error) {
 		return SignedIn{}, err
 	}
 
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return SignedIn{}, fmt.Errorf("browser sign-in: listen on loopback: %w", err)
+	var (
+		redirect string
+		answer   func(callbackCheck, string) (callbackResult, error)
+	)
+	if l.ReadCode != nil {
+		redirect = oauthas.CodeRedirectURI(md.Issuer)
+		answer = func(check callbackCheck, authURL string) (callbackResult, error) {
+			return l.awaitCode(ctx, check, authURL)
+		}
+	} else {
+		lis, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return SignedIn{}, fmt.Errorf("browser sign-in: listen on loopback: %w", err)
+		}
+		defer func() { _ = lis.Close() }()
+		redirect = fmt.Sprintf("http://127.0.0.1:%d/callback", lis.Addr().(*net.TCPAddr).Port)
+		answer = func(check callbackCheck, authURL string) (callbackResult, error) {
+			return l.awaitLoopback(ctx, lis, check, authURL)
+		}
 	}
-	defer func() { _ = lis.Close() }()
-	redirect := fmt.Sprintf("http://127.0.0.1:%d/callback", lis.Addr().(*net.TCPAddr).Port)
 
 	clientID, err := ensureOAuthClient(ctx, hc, md, l, redirect)
 	if err != nil {
@@ -207,31 +228,9 @@ func SignInWithBrowser(ctx context.Context, l OAuthLogin) (SignedIn, error) {
 		return SignedIn{}, err
 	}
 
-	results := make(chan callbackResult, 1)
-	srv := &http.Server{
-		Handler:           callbackHandler(state, md.Issuer, md.IssParameter, results),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	go func() { _ = srv.Serve(lis) }()
-	defer func() { _ = srv.Close() }()
-
-	fmt.Fprintf(l.Out, "Open this URL to sign in:\n\n  %s\n\n", authURL)
-	if err := OpenBrowserFn(authURL); err == nil {
-		fmt.Fprintln(l.Out, "(opened in your browser; waiting for you to approve the sign-in)")
-	} else {
-		fmt.Fprintln(l.Out, "(could not open a browser — open the URL yourself; waiting for you to approve the sign-in)")
-	}
-
-	wait := time.NewTimer(l.Wait)
-	defer wait.Stop()
-	var res callbackResult
-	select {
-	case res = <-results:
-	case <-wait.C:
-		return SignedIn{}, fmt.Errorf("browser sign-in: nothing came back from the browser within %s\n"+
-			"  run `w17ctl login` again, or `w17ctl login --no-browser` on a host without a browser", l.Wait)
-	case <-ctx.Done():
-		return SignedIn{}, ctx.Err()
+	res, err := answer(callbackCheck{state: state, issuer: md.Issuer, requireIss: md.IssParameter}, authURL)
+	if err != nil {
+		return SignedIn{}, err
 	}
 	if res.err != nil {
 		return SignedIn{}, res.err
@@ -350,7 +349,7 @@ func ensureOAuthClient(ctx context.Context, hc *http.Client, md oauthMetadata, l
 			return l.ClientID, nil
 		}
 	}
-	id, err := registerOAuthClient(ctx, hc, md)
+	id, err := registerOAuthClient(ctx, hc, md, redirect)
 	if err != nil {
 		return "", err
 	}
@@ -393,7 +392,15 @@ func oauthClientKnown(ctx context.Context, hc *http.Client, endpoint, clientID, 
 	return strings.HasPrefix(resp.Header.Get("Location"), redirect), nil
 }
 
-func registerOAuthClient(ctx context.Context, hc *http.Client, md oauthMetadata) (string, error) {
+// registerOAuthClient registers w17ctl with the loopback redirect and, for
+// the sign-in with a code, the console's code page too: one client then
+// serves both, and a console without the code page still takes the loopback
+// one alone.
+func registerOAuthClient(ctx context.Context, hc *http.Client, md oauthMetadata, redirect string) (string, error) {
+	redirects := []string{oauthRegisteredRedirect}
+	if redirect == oauthas.CodeRedirectURI(md.Issuer) {
+		redirects = append(redirects, redirect)
+	}
 	if md.RegistrationEndpoint == "" {
 		return "", fmt.Errorf("%w: the authorization server does not let clients register (dynamic registration is off)\n"+
 			"  sign in with a password instead: w17ctl login --no-browser", ErrOAuthUnavailable)
@@ -402,7 +409,7 @@ func registerOAuthClient(ctx context.Context, hc *http.Client, md oauthMetadata)
 		return "", fmt.Errorf("browser sign-in: registration endpoint %q: must be https", md.RegistrationEndpoint)
 	}
 	body, err := json.Marshal(oauthas.ClientMetadata{
-		RedirectURIs:            []string{oauthRegisteredRedirect},
+		RedirectURIs:            redirects,
 		ClientName:              "w17ctl",
 		SoftwareID:              "w17ctl",
 		SoftwareVersion:         Version,
@@ -482,36 +489,127 @@ type callbackResult struct {
 // /callback decides the login, whatever it carries: a wrong state is refused
 // rather than waited past, because nothing but the browser this login opened
 // should know the port, and a request that does is worth stopping for.
-func callbackHandler(state, issuer string, requireIss bool, results chan<- callbackResult) http.Handler {
+// awaitLoopback opens authURL in this machine's browser and waits for the
+// answer on the loopback redirect.
+func (l OAuthLogin) awaitLoopback(ctx context.Context, lis net.Listener, check callbackCheck, authURL string) (callbackResult, error) {
+	results := make(chan callbackResult, 1)
+	srv := &http.Server{
+		Handler:           callbackHandler(check, callbackSink(results)),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() { _ = srv.Serve(lis) }()
+	defer func() { _ = srv.Close() }()
+
+	fmt.Fprintf(l.Out, "Open this URL to sign in:\n\n  %s\n\n", authURL)
+	if err := OpenBrowserFn(authURL); err == nil {
+		fmt.Fprintln(l.Out, "(opened in your browser; waiting for you to approve the sign-in)")
+	} else {
+		fmt.Fprintln(l.Out, "(could not open a browser — open the URL yourself; waiting for you to approve the sign-in)")
+	}
+
+	wait := time.NewTimer(l.Wait)
+	defer wait.Stop()
+	select {
+	case res := <-results:
+		return res, nil
+	case <-wait.C:
+		return callbackResult{}, fmt.Errorf("browser sign-in: nothing came back from the browser within %s\n"+
+			"  run `w17ctl login` again; if w17ctl runs on another machine than your browser, choose the sign-in with a code (`w17ctl login --method code`)", l.Wait)
+	case <-ctx.Done():
+		return callbackResult{}, ctx.Err()
+	}
+}
+
+// awaitCode shows authURL to open in any browser and reads the code the
+// console's code page shows after the approval: `code#state`, whose state is
+// checked as a redirect's would be. The page has already checked the issuer.
+func (l OAuthLogin) awaitCode(ctx context.Context, check callbackCheck, authURL string) (callbackResult, error) {
+	fmt.Fprintf(l.Out, "Open this URL in a browser on any device, sign in and approve:\n\n  %s\n\n"+
+		"The console then shows a code. Paste it here.\n", authURL)
+	check.requireIss = false
+	type read struct {
+		res callbackResult
+		err error
+	}
+	got := make(chan read, 1)
+	go func() {
+		for range 3 {
+			raw, err := l.ReadCode()
+			if err != nil {
+				got <- read{err: err}
+				return
+			}
+			code, state, ok := strings.Cut(strings.TrimSpace(raw), "#")
+			if !ok || code == "" || state == "" {
+				fmt.Fprintln(l.Out, "That is not the code the console shows — copy the whole line, with the # in it.")
+				continue
+			}
+			got <- read{res: check.result(url.Values{"code": {code}, "state": {state}})}
+			return
+		}
+		got <- read{err: errors.New("browser sign-in: no code was entered — run `w17ctl login` again")}
+	}()
+
+	wait := time.NewTimer(l.Wait)
+	defer wait.Stop()
+	select {
+	case r := <-got:
+		return r.res, r.err
+	case <-wait.C:
+		return callbackResult{}, fmt.Errorf("browser sign-in: no code within %s — run `w17ctl login` again", l.Wait)
+	case <-ctx.Done():
+		return callbackResult{}, ctx.Err()
+	}
+}
+
+// callbackCheck is what an authorization response must carry to be this
+// login's: the state it sent and, when the server announces it, its issuer.
+type callbackCheck struct {
+	state, issuer string
+	requireIss    bool
+}
+
+// result reads an authorization response's query, from the loopback or
+// pasted, into the code or the refusal.
+func (c callbackCheck) result(q url.Values) callbackResult {
+	var res callbackResult
+	switch {
+	case subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(c.state)) != 1:
+		res.err = errors.New("browser sign-in: the browser came back with a state this login did not send — refused (start again with `w17ctl login`)")
+	case c.requireIss && q.Get("iss") == "":
+		res.err = errors.New("browser sign-in: the answer carries no `iss`, which this server sends with every one (RFC 9207) — refused")
+	case q.Get("iss") != "" && q.Get("iss") != c.issuer:
+		// RFC 9207: the answer names the server that issued it.
+		res.err = fmt.Errorf("browser sign-in: the answer came from issuer %q, not %q — refused", q.Get("iss"), c.issuer)
+	case q.Get("error") == "access_denied":
+		res.err = fmt.Errorf("%w (start again with `w17ctl login` to retry)", ErrOAuthDenied)
+	case q.Get("error") != "":
+		res.err = fmt.Errorf("browser sign-in: the console refused the sign-in: %s", oauthErrorBody{Code: q.Get("error"), Description: q.Get("error_description")})
+	case q.Get("code") == "":
+		res.err = errors.New("browser sign-in: the browser came back without a code")
+	default:
+		res.code = q.Get("code")
+	}
+	return res
+}
+
+// callbackSink delivers the first answer, from whichever way it came (the
+// loopback or a paste); it reports whether this one was that first.
+func callbackSink(results chan<- callbackResult) func(callbackResult) bool {
 	var once sync.Once
-	finish := func(r callbackResult) (first bool) {
+	return func(r callbackResult) (first bool) {
 		once.Do(func() {
 			results <- r
 			first = true
 		})
 		return first
 	}
+}
+
+func callbackHandler(check callbackCheck, finish func(callbackResult) bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		var res callbackResult
-		switch {
-		case subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1:
-			res.err = errors.New("browser sign-in: the browser came back with a state this login did not send — refused (start again with `w17ctl login`)")
-		case requireIss && q.Get("iss") == "":
-			res.err = errors.New("browser sign-in: the answer carries no `iss`, which this server sends with every one (RFC 9207) — refused")
-		case q.Get("iss") != "" && q.Get("iss") != issuer:
-			// RFC 9207: the answer names the server that issued it.
-			res.err = fmt.Errorf("browser sign-in: the answer came from issuer %q, not %q — refused", q.Get("iss"), issuer)
-		case q.Get("error") == "access_denied":
-			res.err = fmt.Errorf("%w (start again with `w17ctl login` to retry)", ErrOAuthDenied)
-		case q.Get("error") != "":
-			res.err = fmt.Errorf("browser sign-in: the console refused the sign-in: %s", oauthErrorBody{Code: q.Get("error"), Description: q.Get("error_description")})
-		case q.Get("code") == "":
-			res.err = errors.New("browser sign-in: the browser came back without a code")
-		default:
-			res.code = q.Get("code")
-		}
+		res := check.result(r.URL.Query())
 		if !finish(res) {
 			http.Error(w, "this sign-in is already finished", http.StatusGone)
 			return

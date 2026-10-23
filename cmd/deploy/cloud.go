@@ -125,7 +125,7 @@ func (c *Cmd) deployCloud(root, envDir, kind string, env *codegenpb.LockInfraEnv
 	if err := run(nil, core.Stdout, root, "docker", args...); err != nil {
 		return fmt.Errorf("deploy: deploy.sh: %w", err)
 	}
-	fmt.Fprintf(core.Stdout, "\ndeployed %s (%s) to %s — commit the lock: migrate generate pinned new migrations in it.\n", tag, c.Env, kind)
+	fmt.Fprint(core.Stdout, c.deployed(tag, kind))
 	fmt.Fprint(core.Stdout, warning)
 	return nil
 }

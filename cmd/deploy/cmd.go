@@ -38,6 +38,9 @@ type Cmd struct {
 	BuildFlags  []string `name:"build-flag" placeholder:"FLAG" help:"Passed to every docker build, e.g. --build-flag=--build-arg=X=1. Repeatable."`
 	LockPath    string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
 	Console     string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default."`
+
+	// lockPinned: migrate generate changed the lock, which then wants a commit.
+	lockPinned bool
 }
 
 const warning = `
@@ -193,9 +196,16 @@ func (c *Cmd) Run() error {
 		}
 	}
 	step("mint and pin the migrations")
+	// migrate generate and codegen both run in root with their default lock,
+	// w17/lock.yaml: that is the file generate pins and the images are built
+	// for, so it is the one compared around the pin.
+	pinned := filepath.Join(root, "w17", "lock.yaml")
+	lockBefore, _ := os.ReadFile(pinned) // #nosec G304 -- the project's own lock
 	if err := w17("migrate", "generate"); err != nil {
 		return fmt.Errorf("deploy: migrate generate: %w", err)
 	}
+	lockAfter, _ := os.ReadFile(pinned) // #nosec G304 -- the project's own lock
+	c.lockPinned = !bytes.Equal(lockBefore, lockAfter)
 	step("render the code and deploy/" + c.Env + " for the pinned lock")
 	// --force as the workflows run it: the images are built from what the console
 	// generates for this lock, whatever an older run left on disk.
@@ -332,7 +342,7 @@ func (c *Cmd) Run() error {
 		target.Sudo("bash -c "+remote.ShellQuote("set -a; . /dev/stdin; set +a; exec "+stack+"/install/deploy-server.sh"))); err != nil {
 		return fmt.Errorf("deploy: deploy-server.sh: %w", err)
 	}
-	fmt.Fprintf(core.Stdout, "\ndeployed %s (%s) to %s — commit the lock: migrate generate pinned new migrations in it.\n", tag, c.Env, ssh)
+	fmt.Fprint(core.Stdout, c.deployed(tag, ssh))
 	fmt.Fprint(core.Stdout, warning)
 	return nil
 }
@@ -506,4 +516,13 @@ func dirHash(dir string) (string, error) {
 		fmt.Fprintf(h, "%x  ./%s\n", sha256.Sum256(b), filepath.ToSlash(rel))
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))[:12], nil
+}
+
+// deployed is the closing line: where the tag went, and — only when this
+// run's migrate generate changed the lock — that the lock wants a commit.
+func (c *Cmd) deployed(tag, where string) string {
+	if c.lockPinned {
+		return fmt.Sprintf("\ndeployed %s (%s) to %s — commit the lock: migrate generate pinned new migrations in it.\n", tag, c.Env, where)
+	}
+	return fmt.Sprintf("\ndeployed %s (%s) to %s.\n", tag, c.Env, where)
 }

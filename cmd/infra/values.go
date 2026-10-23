@@ -189,7 +189,7 @@ func (c *TargetRemoveCmd) Run() error {
 
 // WorkloadCmd is `w17ctl infra workload`.
 type WorkloadCmd struct {
-	Add    WorkloadAddCmd    `cmd:"" help:"Add (or replace) a workload. An external one needs --image or --build-context: w17ctl infra workload add web --build-context frontend --port 3000 --route-host www --health-http /healthz. A generated bundle's name with only --replicas / --cpus / --memory tunes it."`
+	Add    WorkloadAddCmd    `cmd:"" help:"Add (or replace) a workload. An external one needs --image or --build-context: w17ctl infra workload add web --build-context frontend --port 3000 --route-host www --health-http /healthz. A generated bundle's name with only --replicas / --cpus / --memory / --secret tunes it (--secret: keys its hand-written code reads)."`
 	Remove WorkloadRemoveCmd `cmd:"" help:"Remove a workload (with --env: only that environment's settings for it)."`
 }
 
@@ -209,7 +209,7 @@ type WorkloadAddCmd struct {
 	RouteHost    string            `name:"route-host" help:"Publish it on the edge: a label (www → www.<domain>) or a host name."`
 	PathPrefix   string            `name:"path-prefix" help:"Only this path of the route's host."`
 	EnvVar       map[string]string `name:"env-var" mapsep:"none" help:"Environment variables in clear: --env-var LOG_LEVEL=info."`
-	Secret       []string          `name:"secret" sep:"none" help:"Secret keys it reads, set on the console (repeatable)."`
+	Secret       []string          `name:"secret" sep:"none" help:"Secret keys it reads, set on the console (repeatable). On a generated bundle: the keys its hand-written code reads, which codegen cannot see."`
 	Database     bool              `name:"database" help:"Its own database and role in the environment's Postgres (DATABASE_URL)."`
 	Migrate      []string          `name:"migrate" sep:"none" help:"The command that migrates its database before the switch, one argument per flag (repeatable; --migrate=-c for one starting with a dash)."`
 	Replicas     int               `name:"replicas" help:"How many tasks run."`
