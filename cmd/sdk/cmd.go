@@ -6,9 +6,6 @@ package sdk
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/sdkupdate"
@@ -52,33 +49,19 @@ type UpdateCmd struct {
 // Run delegates to the implementation, rendering progress to the shared
 // output writer.
 func (c *UpdateCmd) Run() error {
-	// Whether anything MOVED decides whether the advice below is worth
-	// printing. Read BEFORE the update rewrites it, and only for a version
-	// the caller named — without one, "already up to date" means whatever
-	// the proxy's @latest turns out to be, which is known only after the run.
-	settled := c.Version != "" && sdkupdate.AlreadyAt(c.ProjectRoot, sdkupdate.SdkModule, c.Version)
 	resolved, err := sdkupdate.RunOpts(core.Stdout, c.ProjectRoot, c.Version, sdkupdate.Options{Tidy: !c.NoTidy})
 	if err != nil {
 		return err
 	}
-	// The bare form — the one a consumer actually types. It resolves @latest
-	// itself, so the question "did anything move" can only be asked once that
-	// is known: every module already required the version this run settled on.
-	//
-	// The first version of this suppression asked it of `c.Version` alone, so
-	// it worked for `sdk update --version X` and never for `sdk update`. We
-	// told a consumer it was fixed; they measured it again on a tree where
-	// lock and go.mod agreed and the command changed not one byte, and the
-	// advice was still there. Their word for why it matters is the right one:
-	// it is advice people learn to skip, and they will skip it on the day it
-	// is true.
-	if !settled && resolved != "" {
-		settled = sdkupdate.AlreadyAt(c.ProjectRoot, sdkupdate.SdkModule, resolved) &&
-			lockAlreadyRecords(c.ProjectRoot, resolved)
-	}
-	if settled {
-		// Nothing moved and the lock says the same thing, so there is
-		// nothing to make stick.
+	// The advice below is about a DISAGREEMENT between the modules and the
+	// lock codegen re-emits them from, so the lock is what decides it. Two
+	// earlier forms asked whether anything MOVED instead, and printed it
+	// where nothing disagreed: on an already-consistent tree run bare (a
+	// consumer pinned, re-ran, read the same advice again), and on a project
+	// with no module requiring the SDK at all, where the update did nothing
+	// and the advice named `<version>`. Advice printed where it does not
+	// apply is advice people learn to skip, on the day it is true as well.
+	if resolved == "" || lockAlreadyRecords(c.ProjectRoot, resolved) {
 		return nil
 	}
 	// The files are moved; the LOCK is not, and this command cannot move it
@@ -155,28 +138,8 @@ func (c *UnpinCmd) Run() error {
 }
 
 // lockAlreadyRecords reports whether the project's lock already names this SDK
-// version — the second half of "nothing to make stick".
-//
-// The advice below is about a DISAGREEMENT between the modules on disk and the
-// lock codegen re-emits them from. Modules being up to date is not enough on
-// its own: a tree can have both at the new version (nothing to say) or the
-// modules moved with the lock left behind (the whole point of the advice).
-//
-// Read with a regexp rather than the lock decoder on purpose: this command
-// talks to nothing but the module proxy — no console — and the lock is signed,
-// so the one field it reads here is read, never written. A lock it cannot find
-// or parse answers false, which keeps the advice.
+// version — "nothing to make stick". A lock it cannot find or parse answers
+// false, which keeps the advice.
 func lockAlreadyRecords(root, version string) bool {
-	b, err := os.ReadFile(filepath.Join(root, "w17", "lock.yaml"))
-	if err != nil {
-		return false
-	}
-	m := sdkVersionInLock.FindSubmatch(b)
-	if m == nil {
-		return false
-	}
-	return string(m[1]) == version
+	return sdkupdate.LockedVersion(root) == version
 }
-
-// sdkVersionInLock reads the one lock field this command needs.
-var sdkVersionInLock = regexp.MustCompile(`(?m)^sdk_version:\s*"?([^"\s]+)"?\s*$`)

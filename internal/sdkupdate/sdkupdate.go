@@ -38,6 +38,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -100,6 +101,14 @@ func RunOpts(stdout io.Writer, root, version string, opts Options) (string, erro
 	if version == "" {
 		if version, err = latestVersion(ctx, SdkModule); err != nil {
 			return "", fmt.Errorf("sdk update: %w", err)
+		}
+		// The proxy caches @latest, so for a while after a release it still
+		// answers the one before. A bare update then moved a project that had
+		// just pinned the new release BACK onto the old one. "The newest" is
+		// never older than what the project already records.
+		if have := highestRecorded(root, mods); semver.Compare(have, version) > 0 {
+			fmt.Fprintf(stdout, "sdk update: the proxy's @latest is %s, older than the %s this project already records — staying on %s (pass --version to choose another)\n", version, have, have)
+			version = have
 		}
 	}
 
@@ -212,34 +221,42 @@ func raisesFor(dir string, sdkReqs map[string]string) ([]bump, error) {
 	return out, nil
 }
 
-// applyToModule rewrites one module's go.mod require + go.sum entries.
-// AlreadyAt reports whether every module that requires `mod` already requires
-// exactly `ver` — i.e. an update would move nothing.
-//
-// It exists so the caller can stop advising a follow-up step that has nothing
-// to follow: a consumer ran `sdk update` on an already-consistent tree, was
-// told to pin, pinned nothing, and read the same advice again. Advice printed
-// unconditionally is advice people learn to skip, and the next time it matters
-// they will skip it then too.
-// It skips vendored plugin trees for the same reason the update does, and the
-// consequence here is quieter: a plugin's SDK pin is its own and routinely
-// differs from the project's, so counting it would make "already at this
-// version" permanently false and print the follow-up advice on every run —
-// which is the complaint this function was written to answer, arriving a second
-// time through a different door.
-func AlreadyAt(root, mod, ver string) bool {
-	mods, err := projectModules(io.Discard, root, mod)
-	if err != nil || len(mods) == 0 {
-		return false
+// highestRecorded is the newest SDK version the project already names: the
+// lock's sdk_version, or a module's requirement. Empty when it names none.
+func highestRecorded(root string, mods []string) string {
+	best := LockedVersion(root)
+	if !semver.IsValid(best) {
+		best = ""
 	}
 	for _, d := range mods {
-		have, err := requiredVersion(filepath.Join(root, d), mod)
-		if err != nil || have != ver {
-			return false
+		have, err := requiredVersion(filepath.Join(root, d), SdkModule)
+		if err == nil && semver.IsValid(have) && (best == "" || semver.Compare(have, best) > 0) {
+			best = have
 		}
 	}
-	return true
+	return best
 }
+
+// LockedVersion is the sdk_version the project's lock records, or "" when it
+// records none or there is no lock to read.
+//
+// Read with a regexp rather than the lock decoder on purpose: `sdk update`
+// talks to nothing but the module proxy — no console — and the lock is signed,
+// so the one field it needs is read, never written.
+func LockedVersion(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil {
+		return ""
+	}
+	m := sdkVersionInLock.FindSubmatch(b)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
+}
+
+// sdkVersionInLock reads the one lock field this package needs.
+var sdkVersionInLock = regexp.MustCompile(`(?m)^sdk_version:\s*"?([^"\s]+)"?\s*$`)
 
 // requiredVersion reads one module's recorded requirement for `mod`.
 func requiredVersion(dir, mod string) (string, error) {
@@ -259,6 +276,7 @@ func requiredVersion(dir, mod string) (string, error) {
 	return "", nil
 }
 
+// applyToModule rewrites one module's go.mod require + go.sum entries.
 func applyToModule(dir string, bumps []bump) error {
 	goModPath := filepath.Join(dir, "go.mod")
 	data, err := os.ReadFile(goModPath)
@@ -376,7 +394,7 @@ func goSumKey(line string) (mod, ver, suffix string) {
 // composed with the skip.
 //
 // Composed in one place because the skip was a call-site argument first, and a
-// call-site argument is something a call site can get wrong — `AlreadyAt` did,
+// call-site argument is something a call site can get wrong — the old “already at this version” check did,
 // and so did the test meant to prove the skip worked, which passed the set in
 // itself and therefore stayed green when the real callers stopped passing it.
 func projectModules(stdout io.Writer, root, mod string) ([]string, error) {
