@@ -20,9 +20,31 @@ import (
 // EditLock (which parses + validates the env specs, rejects a duplicate
 // domain, and re-signs); list reads through DescribeLock.
 type BusinessCmd struct {
-	Add  BusinessAddCmd  `cmd:"" help:"Append a business_bundles[] entry so codegen emits the domain's <domain>-business bundle (the facade tier the project's RegisterBusiness plugs into). Re-signs on save."`
-	Set  BusinessSetCmd  `cmd:"" help:"Rewrite an existing business_bundles[] entry — the way back from a register path typed wrong (add refuses a second entry for the domain)."`
-	List BusinessListCmd `cmd:"" help:"List the business_bundles[] entries declared in the lock."`
+	Add    BusinessAddCmd    `cmd:"" help:"Append a business_bundles[] entry so codegen emits the domain's <domain>-business bundle (the facade tier the project's RegisterBusiness plugs into). Re-signs on save."`
+	Set    BusinessSetCmd    `cmd:"" help:"Rewrite an existing business_bundles[] entry — the way back from a register path typed wrong (add refuses a second entry for the domain)."`
+	List   BusinessListCmd   `cmd:"" help:"List the business_bundles[] entries declared in the lock."`
+	Remove BusinessRemoveCmd `cmd:"" help:"Drop a domain's business_bundles[] entry. The generated bundle and your RegisterBusiness package stay on disk. Re-signs on save."`
+}
+
+// BusinessRemoveCmd implements `w17ctl target business remove --domain D`.
+type BusinessRemoveCmd struct {
+	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the bindings the project was initialised against."`
+
+	Domain string `name:"domain" required:"" help:"Domain whose business_bundles[] entry to drop, as 'target business list' prints it."`
+}
+
+func (c *BusinessRemoveCmd) Run() error {
+	if err := core.EditLockOnDisk("business remove", c.Console, c.LockPath, &codegenpb.LockEditIntent{
+		Intent: &codegenpb.LockEditIntent_RemoveBusinessBundle{
+			RemoveBusinessBundle: &codegenpb.RemoveBusinessBundleIntent{Domain: c.Domain},
+		},
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintf(core.Stdout, "business remove: %s no longer gets a business bundle (%s) — the generated bundle and your RegisterBusiness package stay on disk, yours to delete\n",
+		c.Domain, c.LockPath)
+	return nil
 }
 
 // BusinessAddCmd implements `w17ctl target business add`. Domain + register are

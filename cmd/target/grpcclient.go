@@ -12,17 +12,44 @@ import (
 )
 
 // GrpcClientCmd is the parent of `w17ctl target grpc-client <leaf>` —
-// add / list. Manages the `generated_code.grpc_clients[]` declarations
+// add / list / remove. Manages the `generated_code.grpc_clients[]` declarations
 // codegen reads to render the project's Go gRPC `clients` package (the
 // dependency-inversion seam a hand-written business binary builds its
 // downstream clients from — see srcgo/gen/clients/<domain>/<tier>).
 //
-// The console owns the lock. The add goes through the
+// The console owns the lock. add / remove go through the
 // console's EditLock (which re-signs); the list + the wizard's
 // duplicate-output_root check read through DescribeLock.
 type GrpcClientCmd struct {
-	Add  GrpcClientAddCmd  `cmd:"" help:"Append a grpc_clients[] entry to the project's lock so codegen renders the Go gRPC clients package. Re-signs on save."`
-	List GrpcClientListCmd `cmd:"" help:"List the grpc_clients[] entries declared in the lock."`
+	Add    GrpcClientAddCmd    `cmd:"" help:"Append a grpc_clients[] entry to the project's lock so codegen renders the Go gRPC clients package. Re-signs on save."`
+	List   GrpcClientListCmd   `cmd:"" help:"List the grpc_clients[] entries declared in the lock."`
+	Remove GrpcClientRemoveCmd `cmd:"" help:"Drop a grpc_clients[] entry. The package already on disk is yours to delete. Re-signs on save."`
+}
+
+// GrpcClientRemoveCmd implements `w17ctl target grpc-client remove [output-root]`.
+// No output root names the entry added without one, whose root derives from
+// the lock's stubs.
+type GrpcClientRemoveCmd struct {
+	OutputRoot string `arg:"" optional:"" name:"output-root" help:"The entry's output root, as 'target grpc-client list' prints it. Omit it for the entry added without one (the root derived from the stubs)."`
+	LockPath   string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
+	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+}
+
+func (c *GrpcClientRemoveCmd) Run() error {
+	if err := core.EditLockOnDisk("grpc-client remove", c.Console, c.LockPath, &codegenpb.LockEditIntent{
+		Intent: &codegenpb.LockEditIntent_RemoveGrpcClient{
+			RemoveGrpcClient: &codegenpb.RemoveGrpcClientIntent{OutputRoot: c.OutputRoot},
+		},
+	}); err != nil {
+		return err
+	}
+	where := c.OutputRoot
+	if where == "" {
+		where = "the stubs-derived clients package"
+	}
+	fmt.Fprintf(core.Stdout, "grpc-client remove: %s is no longer generated (%s) — the package already on disk is yours to delete\n",
+		where, c.LockPath)
+	return nil
 }
 
 // grpcClientLanguages drives the wizard's language selection.
