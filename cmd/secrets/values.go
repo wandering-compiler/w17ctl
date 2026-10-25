@@ -9,6 +9,7 @@ package secrets
 import (
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -20,7 +21,66 @@ import (
 var (
 	placeholders = []string{"CHANGE_ME", "REPLACE_ME", "s3://BUCKET/"}
 	pgDSN        = regexp.MustCompile(`postgres(?:ql)?://([^:/@"\s]+):([^@"\s]*)@([^:/"\s]+)`)
+	// The user part may hold a `user:password` pair, which the token check
+	// names rather than reading `user` as the host.
+	natsDSN = regexp.MustCompile(`nats://(?:([^/@"\s]*)@)?([^:/@,"\s]+)`)
+	// urlSecret: a secret that travels inside a URL (a token as a DSN's user
+	// part, a password after it): at least 32 characters, and only those a URL
+	// carries unescaped (RFC 3986 unreserved), so the DSN and the server hold
+	// the same string with nothing to percent-encode.
+	urlSecret = regexp.MustCompile(`^[A-Za-z0-9._~-]{32,}$`)
 )
+
+// natsTokenVar is the stack's nats token (services/nats/.env.example), the
+// user part of every nats:// DSN that connects to it.
+const natsTokenVar = "NATS_TOKEN"
+
+// natsTokenProblem: a token nats would take but a DSN could not carry, or one
+// too short to be a secret.
+func natsTokenProblem(v string) string {
+	if strings.Contains(v, "CHANGE_ME") || urlSecret.MatchString(v) {
+		return ""
+	}
+	return "is not at least 32 letters, digits or -._~ — it travels as a URL's user part (`openssl rand -hex 32`)"
+}
+
+// nonceKeyProblem: a DPoP nonce key the binary refuses at boot — which a
+// blue/green deploy finds only after the images moved.
+func nonceKeyProblem(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || strings.Contains(v, "CHANGE_ME") {
+		return ""
+	}
+	// The encodings the binary takes (gateway dpopedge dpopNonceKey):
+	// standard or URL base64, padded or not.
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if b, err := enc.DecodeString(v); err == nil {
+			if len(b) < dpop.MinNonceKeyBytes {
+				break
+			}
+			return ""
+		}
+	}
+	return fmt.Sprintf("is not base64 of at least %d random bytes (`openssl rand -base64 32`)", dpop.MinNonceKeyBytes)
+}
+
+// redisDSNProblem: a redis:// DSN whose password is not a urlSecret — one
+// with a character the URL would have to escape (the redis client decodes
+// it, the server's own setting holds it raw, and the two then differ), or
+// one too short to be a secret.
+func redisDSNProblem(v string) string {
+	if strings.Contains(v, "CHANGE_ME") || !strings.HasPrefix(v, "redis://") {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil {
+		return "is not a redis:// URL"
+	}
+	if pw, ok := u.User.Password(); ok && !urlSecret.MatchString(pw) {
+		return "carries a password that is not at least 32 letters, digits or -._~ — it travels inside the URL (`openssl rand -hex 32`)"
+	}
+	return ""
+}
 
 // fieldKeysProblem: a keyring the service would refuse at boot — or boot
 // with the public development key.
@@ -108,7 +168,8 @@ func valueProblem(v string) string {
 }
 
 // crossFileProblems: each Postgres role's password in postgres/.env must be
-// the one inside the DSN of every binary connecting as that role.
+// the one inside the DSN of every binary connecting as that role, and the
+// stack's nats token the user part of every nats:// DSN naming it.
 func crossFileProblems(values map[string]map[string]string) []string {
 	var problems []string
 	services := make([]string, 0, len(values))
@@ -139,6 +200,21 @@ func crossFileProblems(values map[string]map[string]string) []string {
 				}
 				if pw != want {
 					problems = append(problems, fmt.Sprintf("%s: %s connects as %s with a password that is not %s's %s", svc, k, role, host, pwKey))
+				}
+			}
+			for _, m := range natsDSN.FindAllStringSubmatch(values[svc][k], -1) {
+				token, host := m[1], m[2]
+				want, ok := values[host][natsTokenVar]
+				if !ok {
+					continue
+				}
+				switch {
+				case strings.Contains(token, ":"):
+					problems = append(problems, fmt.Sprintf("%s: %s connects to %s with a user and password — %s takes its %s as the URL's user part alone (nats://<token>@%s:4222)", svc, k, host, host, natsTokenVar, host))
+				case token == "":
+					problems = append(problems, fmt.Sprintf("%s: %s connects to %s without a token — %s's %s is its user part (nats://<token>@%s:4222)", svc, k, host, host, natsTokenVar, host))
+				case token != want:
+					problems = append(problems, fmt.Sprintf("%s: %s connects to %s with a token that is not %s's %s", svc, k, host, host, natsTokenVar))
 				}
 			}
 		}
@@ -172,6 +248,14 @@ func valuesProblems(values map[string]map[string]string) []string {
 				p = envProblem(v)
 			case deviceKeyVar:
 				p = deviceKeyProblem(v)
+			case natsTokenVar:
+				p = natsTokenProblem(v)
+			}
+			if p == "" && strings.HasSuffix(k, "_DPOP_NONCE_KEY") {
+				p = nonceKeyProblem(v)
+			}
+			if p == "" {
+				p = redisDSNProblem(v)
 			}
 			if p == "" {
 				p = rawValueProblem(v)

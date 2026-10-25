@@ -383,24 +383,26 @@ func (c *Config) discoverAdmin(files []string, project, root, gatewaySvc string)
 // scenarios is the worst outcome available here: it reads as "the admin
 // suite passes" when the admin was never contacted.
 //
-// Only an EXPLICIT --transport is guarded. A full run over a project with
-// no MCP or no admin surface is the normal case, and those scenarios
-// skipping is exactly right.
+// Only an EXPLICIT --transport is guarded — each transport it lists. A full
+// run over a project with no MCP or no admin surface is the normal case, and
+// those scenarios skipping is exactly right.
 func (c *Config) requireRequestedTransport(mcp, admin string) error {
-	switch c.Transport {
-	case "mcp":
-		if mcp == "" {
-			return fmt.Errorf("--transport=mcp: no MCP endpoint — the gateway service publishes no :%d, "+
-				"so every MCP scenario would skip and the run would pass without testing anything; "+
-				"pass --mcp http://localhost:<port> (or drop --transport to run what the stack does serve)", mcpContainerPort)
-		}
-	case "admin":
-		if admin == "" {
-			return fmt.Errorf("--transport=admin: no admin endpoint — found neither a `-admin` compose service on :%d "+
-				"(split topology) nor an absorbed admin on the gateway service's :%d (composed binary), "+
-				"so every admin scenario would skip and the run would pass without testing anything; "+
-				"pass --admin http://localhost:<port> (or drop --transport to run what the stack does serve)",
-				adminContainerPort, composedAdminContainerPort)
+	for _, t := range strings.Split(c.Transport, ",") {
+		switch strings.TrimSpace(t) {
+		case "mcp":
+			if mcp == "" {
+				return fmt.Errorf("--transport=%s: no MCP endpoint — the gateway service publishes no :%d, "+
+					"so every MCP scenario would skip and the run would pass without testing them; "+
+					"pass --mcp http://localhost:<port> (or leave mcp out of --transport)", c.Transport, mcpContainerPort)
+			}
+		case "admin":
+			if admin == "" {
+				return fmt.Errorf("--transport=%s: no admin endpoint — found neither a `-admin` compose service on :%d "+
+					"(split topology) nor an absorbed admin on the gateway service's :%d (composed binary), "+
+					"so every admin scenario would skip and the run would pass without testing them; "+
+					"pass --admin http://localhost:<port> (or leave admin out of --transport)",
+					c.Transport, adminContainerPort, composedAdminContainerPort)
+			}
 		}
 	}
 	return nil
