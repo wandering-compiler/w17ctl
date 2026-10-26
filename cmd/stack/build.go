@@ -51,7 +51,7 @@ type BuildCmd struct {
 	CompilerVersion string   `name:"compiler-version" placeholder:"VER" default:"dev" help:"Compiler version pinned into the advanced checkpoint."`
 	By              string   `name:"by" placeholder:"ACTOR" help:"Actor stamp (checkpoint user_id). Empty = local OS user."`
 	Console         string   `name:"console" placeholder:"HOST:PORT" env:"CONSOLE_STORAGE_ADDR" help:"Console storage endpoint (holds the checkpoints). Defaults to the logged-in console (w17ctl login), else the compiled-in default."`
-	Reconcile       bool     `name:"reconcile" help:"Force the branch-switch reconcile even when the project's autosync mode is off. (When on — the default — reconcile already runs on an initiative change.)"`
+	Reconcile       bool     `name:"reconcile" help:"Force the branch-switch reconcile even when the project's autosync mode is off, or with --target. (When on — the default — reconcile already runs on an initiative change with no --target.)"`
 	NoCodegen       bool     `name:"no-codegen" help:"Skip the codegen step (assume the generated code is already current). By default 'stack build' runs codegen first so the images compile against fresh generated code."`
 	Lossy           string   `name:"lossy" default:"refuse" help:"What to do when the sync would DESTROY data (drop a table or column, retype one): refuse | apply | snapshot. snapshot takes one of the affected stores first."`
 	NoSnapshot      bool     `name:"no-snapshot" help:"On a branch switch, do NOT snapshot the outgoing branch. ⛔ DESTRUCTIVE: with no snapshot to restore, the stores are WIPED and rebuilt from empty, so what is in them RIGHT NOW is lost too — not just the outgoing branch's history. Use it when the stores are empty or you do not want their contents."`
@@ -522,6 +522,37 @@ func redactDSN(dsn string) string {
 	return u.Scheme + "://" + u.Host + u.Path
 }
 
+// reconcileHere decides whether this build runs the branch-switch reconcile:
+// when the mode resolved a branch source or --reconcile forces it — and not
+// on stores the reconcile has no business in, each said in a line:
+//
+//   - stores a caller created and will throw away (ephemeralStores, SyncStores);
+//   - stores named with --target. The reconcile stops every service of the
+//     project's stack, snapshots, and on an initiative with no snapshot wipes
+//     and rebuilds; a build that names its stores asked for those stores to be
+//     synced, not for the stack to be reconciled — and its own checkout's
+//     record of the last branch built says nothing about what they hold.
+//     A checkout other than the one the registry holds the project's stores
+//     for (another worktree) reaches them ONLY this way: without --target,
+//     ResolveTargets refuses it before any store is touched. --target was how
+//     a second worktree's stale record of the last branch built read as a
+//     switch and wiped the registered checkout's databases.
+//
+// --reconcile still forces it with --target.
+func (c *BuildCmd) reconcileHere(branchFn func() string) bool {
+	if (branchFn == nil && !c.Reconcile) || c.ephemeralStores {
+		return false
+	}
+	if c.Reconcile {
+		return true
+	}
+	if len(c.Targets) > 0 {
+		fmt.Fprintln(core.Stdout, "stack build: --target names the stores, so the branch-switch reconcile does not run (--reconcile runs it)")
+		return false
+	}
+	return true
+}
+
 // devDiffApply runs the checkpoint→current dev diff against the local
 // stores and advances the checkpoint.
 func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos, imports []string) error {
@@ -556,7 +587,7 @@ func (c *BuildCmd) devDiffApply(root string, specs []factory.TargetSpec, protos,
 	// current proto. Runs when the mode resolved a branch source
 	// (branch-driven, or explicit --initiative) or --reconcile forces it.
 	// A no-op when the initiative is unchanged since the last build.
-	if (branchFn != nil || c.Reconcile) && !c.ephemeralStores {
+	if c.reconcileHere(branchFn) {
 		bf := branchFn
 		if bf == nil {
 			bf = storageclient.GitCurrentBranchFn // --reconcile forced in manual no-flag mode

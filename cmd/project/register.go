@@ -164,18 +164,42 @@ func (c *RegisterCmd) Run() error {
 	return nil
 }
 
-// aclLockGlob finds every domain's permission lock under the project root.
-const aclLockGlob = "proto/domains/*/w17.lock.acl.proto"
+// aclLockGlob finds every domain's permission lock under the project's proto
+// directory (the lock's generated_code.proto_dir, `proto` when it names none).
+const aclLockGlob = "domains/*/w17.lock.acl.proto"
 
 // resignACLLocks has the console sign every domain's ACL lock again, with the
 // allocation unchanged, and writes each back. The project root is the
-// directory above the lock's `w17/`. It returns the paths it rewrote.
+// directory above the lock's `w17/`; the locks sit under the proto directory
+// the lock names, as codegen reads them. It returns the paths it rewrote.
 //
 // All locks are signed before any is written, so a refusal leaves every file
 // as it was.
 func resignACLLocks(addr, lockPath string) ([]string, error) {
 	root := filepath.Dir(filepath.Dir(lockPath))
-	paths, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(aclLockGlob)))
+	lockBytes, err := os.ReadFile(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("read lock %s: %w", lockPath, err)
+	}
+	cl, conn, err := core.DialCodegen(addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	// Where the locks are is the lock's to say. Guessing `proto` re-signed
+	// nothing in a project whose protos live elsewhere, and said nothing
+	// either — the next codegen then refused the lock as tampered.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	view, err := cl.DescribeLock(ctx, &codegenpb.DescribeLockRequest{Lock: lockBytes})
+	cancel()
+	if err != nil {
+		return nil, fmt.Errorf("the console did not read the lock, so where the permission locks are is unknown: %w", err)
+	}
+	protoDir := view.GetProtoDir()
+	if protoDir == "" {
+		protoDir = "proto"
+	}
+	paths, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(protoDir), filepath.FromSlash(aclLockGlob)))
 	if err != nil {
 		return nil, err
 	}
@@ -183,15 +207,6 @@ func resignACLLocks(addr, lockPath string) ([]string, error) {
 		return nil, nil
 	}
 	sort.Strings(paths)
-	lockBytes, err := os.ReadFile(lockPath)
-	if err != nil {
-		return nil, fmt.Errorf("read lock %s: %w", lockPath, err)
-	}
-	_, conn, err := core.DialCodegen(addr)
-	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", addr, err)
-	}
-	defer func() { _ = conn.Close() }()
 	placer := core.PlacerFn(conn)
 
 	signed := make([][]byte, len(paths))
