@@ -212,6 +212,30 @@ func (c *Cmd) Run() error {
 	if err := w17("codegen", "--force"); err != nil {
 		return fmt.Errorf("deploy: codegen: %w", err)
 	}
+	envDir := filepath.Join(root, "deploy", c.Env)
+	// The other machines plugin activations run on: asked for their machine
+	// type before the values are fetched, because the images are built once,
+	// for this environment's server.
+	var machines []remote.Machine
+	if kind == "swarm" {
+		if machines, err = remote.ReadMachines(envDir); err != nil {
+			return fmt.Errorf("deploy: %w", err)
+		}
+		for _, m := range machines {
+			for _, name := range m.Images {
+				if !imageRef.MatchString(name) {
+					return fmt.Errorf("deploy: %s/machine.txt: %q is not an image name", m.Dir, name)
+				}
+			}
+			p, err := serverPlatform(m.Target)
+			if err != nil {
+				return fmt.Errorf("deploy: %w", err)
+			}
+			if p != platform {
+				return fmt.Errorf("deploy: target %s (%s) is %s and %s is %s — the images are built once, so every machine of an environment must be the same kind", m.Name, m.SSH, p, ssh, platform)
+			}
+		}
+	}
 
 	// The values are fetched once the tree is known to be deployable and is
 	// rendered for this lock: the check against each service's .env.example
@@ -232,7 +256,6 @@ func (c *Cmd) Run() error {
 		return fmt.Errorf("deploy: fetching %s's values: %w", c.Env, err)
 	}
 
-	envDir := filepath.Join(root, "deploy", c.Env)
 	if kind != "swarm" {
 		return c.deployCloud(root, envDir, kind, env, view, valuesDir, sha, dirty)
 	}
@@ -244,6 +267,10 @@ func (c *Cmd) Run() error {
 		if fp != c.Expect {
 			return fmt.Errorf("deploy: the server holds %s, not the %s the plan was made against — someone deployed in between; run `w17ctl infra plan --env %s` again", fp, c.Expect, c.Env)
 		}
+	}
+	if c.Expect != "" && len(machines) > 0 {
+		// infra plan fingerprints the environment's server only.
+		fmt.Fprintf(core.Stdout, "--expect checked %s only, not the plugin target(s) it deploys to as well\n", ssh)
 	}
 	images, err := readImages(filepath.Join(envDir, "install", "images.txt"))
 	if err != nil {
@@ -290,17 +317,13 @@ func (c *Cmd) Run() error {
 	}
 
 	step("ship the images to " + ssh + " (no registry: docker save | docker load)")
-	pr, pw := io.Pipe()
-	go func() {
-		pw.CloseWithError(run(nil, pw, root, "docker", append([]string{"save"}, refs...)...))
-	}()
-	if err := target.Run(pr, io.Discard, target.Sudo("docker load -q")); err != nil {
+	if err := shipImages(target, root, refs); err != nil {
 		return fmt.Errorf("deploy: loading the images on %s: %w", ssh, err)
 	}
 
 	stack := "/opt/stack/" + c.Env
 	step("the stack's files")
-	rsync := append([]string{"-az", "--delete-after", "--chown=root:root", "--chmod=go-w"}, target.RsyncArgs()...)
+	rsync := append(append([]string(nil), rsyncFlags...), target.RsyncArgs()...)
 	srcs := append([]string(nil), remote.StackFiles...)
 	if st, err := os.Stat(filepath.Join(envDir, "hooks")); err == nil && st.IsDir() {
 		srcs = append(srcs, "hooks")
@@ -335,16 +358,119 @@ func (c *Cmd) Run() error {
 		}
 	}
 
-	step("deploy-server.sh — blue/green on " + ssh)
 	exports := fmt.Sprintf("export DEPLOY_TAG=%s PG_TAG=%s IMAGE_PREFIX=%s CUSTOM_IMAGES=%s REGISTRY=\n",
 		remote.ShellQuote(tag), remote.ShellQuote(pgTag), remote.ShellQuote(prefix), remote.ShellQuote(strings.Join(custom, " ")))
-	if err := target.Run(strings.NewReader(exports), core.Stdout,
-		target.Sudo("bash -c "+remote.ShellQuote("set -a; . /dev/stdin; set +a; exec "+stack+"/install/deploy-server.sh"))); err != nil {
+	where := ssh
+	if len(machines) > 0 {
+		// Fingerprints cross the machines both ways (decision
+		// a-plugins-services-run-on-another-machine): this server's
+		// identities first, then each machine, then this server in full.
+		step("deploy-server.sh --mint-only — this server's identities, on " + ssh)
+		var minted bytes.Buffer
+		if err := deployServer(target, stack, exports, "--mint-only", io.MultiWriter(core.Stdout, &minted)); err != nil {
+			return fmt.Errorf("deploy: deploy-server.sh --mint-only: %w", err)
+		}
+		mainFP := fingerprints(minted.String())
+		var machineFP []string
+		for _, m := range machines {
+			fp, err := c.deployMachine(m, prefix, tag, refs, mainFP)
+			if err != nil {
+				return err
+			}
+			machineFP = append(machineFP, fp...)
+			where += ", " + m.SSH
+		}
+		if len(machineFP) > 0 {
+			exports += "export " + strings.Join(machineFP, " ") + "\n"
+		}
+	}
+	step("deploy-server.sh — blue/green on " + ssh)
+	if err := deployServer(target, stack, exports, "", core.Stdout); err != nil {
 		return fmt.Errorf("deploy: deploy-server.sh: %w", err)
 	}
-	fmt.Fprint(core.Stdout, c.deployed(tag, ssh))
+	fmt.Fprint(core.Stdout, c.deployed(tag, where))
 	fmt.Fprint(core.Stdout, warning)
 	return nil
+}
+
+// rsyncFlags copy a stack's files to a server as root's, read-only to others.
+var rsyncFlags = []string{"-az", "--delete-after", "--chown=root:root", "--chmod=go-w"}
+
+// fingerprintLine is how a deploy-server.sh hands a fingerprint to the
+// deploy, for the other machine.
+var fingerprintLine = regexp.MustCompile(`(?m)^fingerprint (W17_FP_[A-Z0-9_]+)=([A-Za-z0-9:+/=_.-]+)\r?$`)
+
+// fingerprints are the `fingerprint VAR=value` lines of a deploy-server.sh's
+// output, as shell assignments.
+func fingerprints(out string) []string {
+	var fps []string
+	for _, m := range fingerprintLine.FindAllStringSubmatch(out, -1) {
+		fps = append(fps, m[1]+"="+remote.ShellQuote(m[2]))
+	}
+	return fps
+}
+
+// deployMachine deploys one plugin target: its images, its files, and its
+// deploy-server.sh with this server's fingerprints. It returns the
+// fingerprints minted there that this server reads.
+func (c *Cmd) deployMachine(m remote.Machine, prefix, tag string, refs, mainFP []string) ([]string, error) {
+	stack := "/opt/stack/" + c.Env
+	var ship []string
+	for _, name := range m.Images {
+		ref := prefix + "/" + name + ":" + tag
+		if !slices.Contains(refs, ref) {
+			return nil, fmt.Errorf("deploy: target %s runs image %s, which this deploy did not build (install/images.txt, deploy/images.custom.txt) — run `w17ctl codegen`", m.Name, name)
+		}
+		ship = append(ship, ref)
+	}
+	step(fmt.Sprintf("ship %d images to %s (target %s)", len(ship), m.SSH, m.Name))
+	if err := shipImages(m.Target, m.Dir, ship); err != nil {
+		return nil, fmt.Errorf("deploy: loading the images on %s: %w", m.SSH, err)
+	}
+	step("target " + m.Name + "'s files")
+	args := append(append([]string(nil), rsyncFlags...), m.Target.RsyncArgs()...)
+	srcs := []string{"services", "install"}
+	if st, err := os.Stat(filepath.Join(m.Dir, "hooks")); err == nil && st.IsDir() {
+		srcs = append(srcs, "hooks")
+	} else if err := m.Target.Run(nil, io.Discard, m.Target.Sudo("rm -rf "+stack+"/hooks")); err != nil {
+		return nil, fmt.Errorf("deploy: removing %s/hooks on %s: %w", stack, m.SSH, err)
+	}
+	if err := run(nil, core.Stdout, m.Dir, "rsync", append(append(args, "--exclude", ".env*"), append(srcs, m.Target.Dest()+":"+stack+"/")...)...); err != nil {
+		return nil, fmt.Errorf("deploy: rsync to %s: %w", m.SSH, err)
+	}
+	step("deploy-server.sh — target " + m.Name + " on " + m.SSH)
+	exports := fmt.Sprintf("export DEPLOY_TAG=%s IMAGE_PREFIX=%s\n", remote.ShellQuote(tag), remote.ShellQuote(prefix))
+	if len(mainFP) > 0 {
+		exports += "export " + strings.Join(mainFP, " ") + "\n"
+	}
+	var out bytes.Buffer
+	if err := deployServer(m.Target, stack, exports, "", io.MultiWriter(core.Stdout, &out)); err != nil {
+		return nil, fmt.Errorf("deploy: deploy-server.sh on target %s: %w — the environment's own server got its files and minted its identities, and runs as before", m.Name, err)
+	}
+	return fingerprints(out.String()), nil
+}
+
+// deployServer runs stack's install/deploy-server.sh (with arg, when one is
+// given) on t as root, the exports read from stdin, never on a command line.
+func deployServer(t remote.Target, stack, exports, arg string, out io.Writer) error {
+	script := "set -a; . /dev/stdin; set +a; exec " + stack + "/install/deploy-server.sh"
+	if arg != "" {
+		script += " " + arg
+	}
+	return t.Run(strings.NewReader(exports), out, t.Sudo("bash -c "+remote.ShellQuote(script)))
+}
+
+// shipImages streams `docker save` of refs (run in dir) into the server's
+// `docker load`: no registry.
+func shipImages(t remote.Target, dir string, refs []string) error {
+	pr, pw := io.Pipe()
+	go func() {
+		pw.CloseWithError(run(nil, pw, dir, "docker", append([]string{"save"}, refs...)...))
+	}()
+	err := t.Run(pr, io.Discard, t.Sudo("docker load -q"))
+	// A load that stopped reading must not leave the save blocked on the pipe.
+	_ = pr.CloseWithError(io.ErrClosedPipe)
+	return err
 }
 
 // serverPlatform is the docker platform of the server's machine: the images

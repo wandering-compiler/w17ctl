@@ -42,12 +42,6 @@ func (c *SetupCmd) Run() error {
 	if target == "" {
 		return fmt.Errorf("infra setup: environment %q names no server — `w17ctl infra set targets.%s.ssh=root@<server>`", c.Env, env.GetTarget())
 	}
-	tg, err := remote.Parse(target)
-	if err != nil {
-		return fmt.Errorf("infra setup: %w", err)
-	}
-	dest, port := tg.Dest(), tg.Port
-
 	lockAbs, err := filepath.Abs(c.LockPath)
 	if err != nil {
 		return err
@@ -56,9 +50,40 @@ func (c *SetupCmd) Run() error {
 	if _, err := os.Stat(filepath.Join(envDir, "install", "setup.sh")); err != nil {
 		return fmt.Errorf("infra setup: %s/install/setup.sh is missing — run `w17ctl codegen` first", envDir)
 	}
+	// The other machines plugin activations run on (deploy/<env>/machines/*,
+	// decision a-plugins-services-run-on-another-machine), each set up after
+	// this server, from its own install/ — read first, so a broken
+	// machine.txt stops before anything ran.
+	machines, err := remote.ReadMachines(envDir)
+	if err != nil {
+		return fmt.Errorf("infra setup: %w", err)
+	}
+	if err := setupServer(target, envDir, "deploy/"+c.Env, c.Args); err != nil {
+		return err
+	}
+	fmt.Fprintf(core.Stdout, "server %s is ready for environment %s\n", target, c.Env)
+	for _, m := range machines {
+		// setup.sh's arguments are this server's (a backup device): the
+		// other machine backs nothing up.
+		if err := setupServer(m.SSH, m.Dir, "deploy/"+c.Env+"/machines/"+m.Name, nil); err != nil {
+			return err
+		}
+		fmt.Fprintf(core.Stdout, "server %s (target %s) is ready for environment %s\n", m.SSH, m.Name, c.Env)
+	}
+	return nil
+}
+
+// setupServer copies dir's install/ (and hooks/) to target and runs its
+// setup.sh there as root, with the operator's own SSH key.
+func setupServer(target, dir, label string, setupArgs []string) error {
+	tg, err := remote.Parse(target)
+	if err != nil {
+		return fmt.Errorf("infra setup: %w", err)
+	}
+	dest, port := tg.Dest(), tg.Port
 	// install/ and, when the project has one, its own hooks/ (setup.sh runs
 	// hooks/setup.sh) — laid out as on the server.
-	archive, err := tarDirs(envDir, "install", "hooks")
+	archive, err := tarDirs(dir, "install", "hooks")
 	if err != nil {
 		return fmt.Errorf("infra setup: %w", err)
 	}
@@ -68,7 +93,7 @@ func (c *SetupCmd) Run() error {
 	// user's sudo may ask for a password, which needs the tty the upload's
 	// stdin (the archive) cannot be.
 	var remoteDir bytes.Buffer
-	fmt.Fprintf(core.Stdout, "copying deploy/%s/install to %s …\n", c.Env, target)
+	fmt.Fprintf(core.Stdout, "copying %s/install to %s …\n", label, target)
 	if err := remote.SSH(bytes.NewReader(archive), &remoteDir, append(base,
 		`d=$(mktemp -d /tmp/w17-setup.XXXXXX) && tar -C "$d" -xf - && echo "$d"`)...); err != nil {
 		return fmt.Errorf("infra setup: copying to %s: %w", target, err)
@@ -78,7 +103,7 @@ func (c *SetupCmd) Run() error {
 		return fmt.Errorf("infra setup: the server answered %q instead of the directory it unpacked into", d)
 	}
 	run := "bash " + d + "/install/setup.sh"
-	for _, a := range c.Args {
+	for _, a := range setupArgs {
 		run += " " + remote.ShellQuote(a)
 	}
 	if user, _, _ := strings.Cut(dest, "@"); user != "root" {
@@ -88,7 +113,6 @@ func (c *SetupCmd) Run() error {
 	if err := remote.SSH(os.Stdin, core.Stdout, append([]string{"-t", "-p", port, "--", dest}, remoteCmd)...); err != nil {
 		return fmt.Errorf("infra setup: setup.sh on %s failed: %w", target, err)
 	}
-	fmt.Fprintf(core.Stdout, "server %s is ready for environment %s\n", target, c.Env)
 	return nil
 }
 
