@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"golang.org/x/mod/semver"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -53,15 +56,93 @@ func ExplainAuthFailure(addr string, err error) error {
 		if line := explainExpiredSession(addr, st); line != "" {
 			return fmt.Errorf("%w\n%s", err, line)
 		}
-		return fmt.Errorf("%w\n%s", err, explainUnauthenticated(addr))
+		return fmt.Errorf("%w\n%s", err, outdatedFirst(addr, explainUnauthenticated(addr)))
 	case codes.PermissionDenied:
-		hint := explainPermissionDenied(addr)
+		hint := outdatedFirst(addr, explainPermissionDenied(addr))
 		if hint == "" {
 			return err
 		}
 		return fmt.Errorf("%w\n%s", err, hint)
 	}
 	return err
+}
+
+// outdatedFirst puts an outdated client in front of the other explanations of
+// a refusal the console did not name precisely. It is asked FIRST, and named as
+// THE cause when it is one: a console moves its auth ahead of old clients (a
+// client that does not sign a device proof is refused before its password is
+// read), every other explanation assumes a client speaking the console's
+// current protocol, and logging in again does nothing for an old binary. The
+// refusals the console names itself — an expired session, a revoked device, a
+// proof for another origin — are answered as they are, before this.
+func outdatedFirst(addr, rest string) string {
+	line := explainOutdatedClient(addr)
+	if line == "" {
+		return rest
+	}
+	if rest == "" {
+		return line
+	}
+	return line + "  if this w17ctl is current after all:\n" + rest
+}
+
+// InstallerURL is the canonical installer (cmd/update runs it).
+const InstallerURL = "https://get.w17.dev/install.sh"
+
+// ClientLatestFn resolves the newest w17ctl release on the track `w17ctl
+// update` installs from; cmd/update sets it (it owns the installer, the one
+// resolver of "newest"). nil — a test, a build without that command — skips
+// the check.
+var ClientLatestFn func() (string, error)
+
+// clientLatestTimeout bounds the release lookup: it runs only on a refusal,
+// and an unreachable GitHub must not hold the error behind it.
+var clientLatestTimeout = 10 * time.Second
+
+// explainOutdatedClient names an outdated w17ctl as the cause of an auth
+// refusal, or returns "" when this one is current (or that cannot be told).
+//
+// A local build has no version to compare. Against a console on this machine
+// that is the developer's own pairing, and says nothing; against any other it
+// is the likeliest cause, because a hosted console runs released auth and a
+// local build is whatever tree it was built from.
+func explainOutdatedClient(addr string) string {
+	if Version == "" {
+		if isLoopback(addr) {
+			return ""
+		}
+		return "  most likely cause: this w17ctl is a LOCAL BUILD (" + VersionString() + "), not a release, and the\n" +
+			"  console runs the released protocol — a build older than it is refused like this however\n" +
+			"  right the password is, and logging in again does not help.\n" +
+			"  fix first: remove the local build and install the release (curl -fsSL " + InstallerURL + " | sh),\n" +
+			"  check `which -a w17ctl` shows no other copy earlier on PATH, then w17ctl login " + displayAddr(addr) + "\n"
+	}
+	if ClientLatestFn == nil || !semver.IsValid(Version) {
+		return ""
+	}
+	type answer struct {
+		v   string
+		err error
+	}
+	ch := make(chan answer, 1)
+	go func() { v, err := ClientLatestFn(); ch <- answer{strings.TrimSpace(v), err} }()
+	var latest string
+	select {
+	case a := <-ch:
+		if a.err != nil {
+			return ""
+		}
+		latest = a.v
+	case <-time.After(clientLatestTimeout):
+		return ""
+	}
+	if !semver.IsValid(latest) || semver.Compare(latest, Version) <= 0 {
+		return ""
+	}
+	return "  most likely cause: this w17ctl is " + Version + " and " + latest + " is released — an outdated\n" +
+		"  client is refused like this when the console's auth has moved on, and logging in again\n" +
+		"  does not help.\n" +
+		"  fix first: w17ctl update, then retry (and w17ctl login " + displayAddr(addr) + " if it still refuses)\n"
 }
 
 // explainRevokedDevice answers DEVICE_REVOKED: the console revoked this

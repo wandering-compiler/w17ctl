@@ -13,8 +13,12 @@ import (
 
 // InstallerURL is the canonical installer. It is the ONE place that knows how
 // to resolve "which release is newest", and this command does not learn a
-// second way — see [Cmd].
-const InstallerURL = "https://get.w17.dev/install.sh"
+// second way — see [Cmd]. Declared in core, whose auth diagnostics name it.
+const InstallerURL = core.InstallerURL
+
+// The auth diagnostics ask the installer which release is newest, on the
+// track this command installs from, when a refusal may be an outdated client.
+func init() { core.ClientLatestFn = clientLatest }
 
 // RunInstallerFn shells out to the installer. Indirected so tests can drive
 // the command without a network or a write to a real bin directory.

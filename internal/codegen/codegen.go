@@ -29,6 +29,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/guidestamp"
 	"github.com/wandering-compiler/w17ctl/internal/scaffold"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
+	"github.com/wandering-compiler/sdk/go/tooling/certgen"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate"
 	"github.com/wandering-compiler/sdk/go/tooling/pathguard"
 )
@@ -531,6 +532,13 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	// `.env` stale — the operator would silently run on old values. Surface the
 	// divergence as a warning (the client owns the disk-diff the server can't).
 	warnings = append(warnings, envDriftWarnings(root, writes)...)
+	// The private PKI's dev leaves: one per identity the private proxy lists
+	// (local dev-machine crypto, like `init`'s mesh leaves — never shipped).
+	if minted, err := ensurePrivatePKI(root, servicesDir); err != nil {
+		return err
+	} else if minted > 0 {
+		fmt.Fprintf(core.Stdout, "private PKI: minted %d dev identit%s in %s (gitignored)\n", minted, map[bool]string{true: "y", false: "ies"}[minted == 1], privateCertsRel(servicesDir))
+	}
 	if len(res.writes) == 0 {
 		fmt.Fprintln(core.Stdout, "no files generated")
 	}
@@ -2164,4 +2172,49 @@ func noticeStaleGuide(root string) {
 	if msg := guidestamp.StaleNotice(body); msg != "" {
 		fmt.Fprintln(core.Stdout, msg)
 	}
+}
+
+// privateCertsRel is where the private PKI's dev material lives: beside the
+// lock, w17/certs/private (the bundles mount it as ../../certs/private).
+func privateCertsRel(servicesDir string) string {
+	return filepath.Join(filepath.Dir(filepath.Clean(servicesDir)), "certs", "private")
+}
+
+// ensurePrivatePKI mints a dev leaf for each identity the private proxy's
+// identities.txt lists (`<file name> <URI SAN> [<DNS SAN>…]`), signed by one
+// dev CA, into w17/certs/private. Kept when still valid; a project without a
+// private surface has no list and nothing happens. Returns the leaves written.
+func ensurePrivatePKI(root, servicesDir string) (int, error) {
+	if servicesDir == "" {
+		return 0, nil
+	}
+	list, err := os.ReadFile(filepath.Join(root, servicesDir, "private-proxy", "identities.txt"))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	dir := filepath.Join(root, privateCertsRel(servicesDir))
+	minted := 0
+	for _, ln := range strings.Split(string(list), "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		f := strings.Fields(ln)
+		if len(f) < 2 {
+			return minted, fmt.Errorf("private PKI: identities.txt line %q is not <name> <uri> [<dns>…]", ln)
+		}
+		written, err := certgen.EnsureIdentity(dir, f[0], f[1], f[2:])
+		if err != nil {
+			return minted, fmt.Errorf("private PKI: %w", err)
+		}
+		for _, w := range written {
+			if strings.HasSuffix(w, ".crt") && filepath.Base(w) != "ca.crt" {
+				minted++
+			}
+		}
+	}
+	return minted, nil
 }
