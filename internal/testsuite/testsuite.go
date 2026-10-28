@@ -237,7 +237,7 @@ func (c *Config) Run() (err error) {
 	if err = c.compose(files, project, root, upArgs...); err != nil {
 		// No explicit teardown: the defer above already covers this
 		// return, and a half-up stack is exactly what it exists for.
-		return fmt.Errorf("docker compose up: %w (the stack did not become healthy — check the service logs)", err)
+		return fmt.Errorf("docker compose up: %w (the stack did not become healthy)%s", err, c.notReadyLogs(files, project, root))
 	}
 	if c.Keep {
 		defer c.status("keep", fmt.Sprintf("stack left running as project %q (tear down: docker compose -p %s down -v)", project, project), map[string]any{"project": project})
@@ -890,6 +890,89 @@ func (c *Config) compose(files []string, project, root string, args ...string) e
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return runCmd(cmd)
+}
+
+// notReadyLogTail is how many log lines of each service that did not come
+// up the failure carries.
+const notReadyLogTail = 20
+
+// notReadyLogs is the tail of the log of each service of a stack that did
+// not come up, for the error that says so. The cause is usually one line
+// there — a required setting the test stack does not load, a bundle whose
+// table does not exist — and "check the service logs" sent the reader to
+// find which service, then to read its log, for that line. Best effort: a
+// failing `ps` or `logs` leaves the hint it replaced.
+func (c *Config) notReadyLogs(files []string, project, root string) string {
+	base := []string{"compose"}
+	for _, f := range files {
+		base = append(base, "-f", f)
+	}
+	base = append(base, "-p", project, "--project-directory", root)
+	ps, err := outputCmd(exec.Command("docker", append(append([]string{}, base...), "ps", "-a", "--format", "json")...))
+	if err != nil {
+		return " — check the service logs"
+	}
+	svcs := notReadyServices(ps)
+	if len(svcs) == 0 {
+		return " — check the service logs"
+	}
+	var b strings.Builder
+	for _, svc := range svcs {
+		logs, err := outputCmd(exec.Command("docker", append(append([]string{}, base...), "logs", "--no-color", "--no-log-prefix", "--tail", fmt.Sprint(notReadyLogTail), svc.name)...))
+		fmt.Fprintf(&b, "\n\n%s is %s; the last %d lines of its log:\n", svc.name, svc.state, notReadyLogTail)
+		if err != nil {
+			fmt.Fprintf(&b, "  (docker compose logs %s: %v)", svc.name, err)
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimRight(string(logs), "\n"), "\n") {
+			b.WriteString("  " + line + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+type notReadyService struct{ name, state string }
+
+// notReadyServices reads `docker compose ps --format json` — one JSON object
+// per line, or one array on older Compose — for the services that are not
+// up: neither running (and healthy, when they have a healthcheck) nor a
+// one-shot that exited 0.
+func notReadyServices(ps []byte) []notReadyService {
+	type row struct {
+		Service  string
+		State    string
+		Health   string
+		ExitCode int
+	}
+	var rows []row
+	if trimmed := bytes.TrimSpace(ps); bytes.HasPrefix(trimmed, []byte("[")) {
+		_ = json.Unmarshal(trimmed, &rows)
+	} else {
+		for _, line := range bytes.Split(trimmed, []byte("\n")) {
+			var r row
+			if json.Unmarshal(line, &r) == nil {
+				rows = append(rows, r)
+			}
+		}
+	}
+	var out []notReadyService
+	for _, r := range rows {
+		switch {
+		case r.State == "running" && (r.Health == "" || r.Health == "healthy"):
+		case r.State == "exited" && r.ExitCode == 0:
+		default:
+			state := r.State
+			if r.Health != "" {
+				state += " (" + r.Health + ")"
+			}
+			if r.State == "exited" {
+				state += fmt.Sprintf(" with code %d", r.ExitCode)
+			}
+			out = append(out, notReadyService{name: r.Service, state: state})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
 }
 
 // teardown brings the stack down + removes its volumes AND the images
