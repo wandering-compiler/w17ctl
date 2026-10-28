@@ -33,6 +33,10 @@ type w17IgnoreEntry struct {
 var w17IgnoreEntries = []w17IgnoreEntry{
 	{"Dev DB snapshots — disposable branch-scoped scratch (dev DB lifecycle).", "tmp/"},
 	{"Local dev PKI (self-signed CA + server leaf) — machine-local TLS material.", "certs/dev.local/"},
+	// Codegen mints these for a project with a private surface — a dev CA
+	// and a leaf per caller, private keys included. Unlisted, they sat
+	// untracked in every such project, one `git add -A` from a commit.
+	{"Private-surface dev PKI (CA + a leaf per caller) — machine-local key material.", "certs/private/"},
 	{"age secret keys — private key material, mounted at deploy, never committed.", "keys/"},
 	{"Local env + secrets. The committed *.defaults / *.example templates are the\n# tracked source; the filled-in local copies below stay out of git.", ".env"},
 	{"", ".env.local"},
