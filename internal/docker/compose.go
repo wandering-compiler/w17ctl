@@ -53,6 +53,23 @@ func realCaptureCompose(dir string, args ...string) ([]byte, error) {
 	return buf.Bytes(), err
 }
 
+// CaptureComposeEnvFn is CaptureComposeFn with env added to the process
+// environment, as RunComposeEnvFn is for a streamed command — so a compose
+// file that interpolates it (profiles, image names) resolves as the run
+// would. Tests stub it.
+var CaptureComposeEnvFn = realCaptureComposeEnv
+
+func realCaptureComposeEnv(dir string, env []string, args ...string) ([]byte, error) {
+	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = io.Discard
+	err := cmd.Run()
+	return buf.Bytes(), err
+}
+
 // ComposeFile is the tool-owned compose file. The sibling `compose.yaml` is
 // the developer's extension point and `include:`s this one.
 const ComposeFile = "compose.w17.yaml"

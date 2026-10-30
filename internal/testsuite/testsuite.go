@@ -606,7 +606,9 @@ func storePort(image string) int {
 	image = strings.ToLower(image)
 	var dialect string
 	switch {
-	case strings.Contains(image, "postgres"), strings.Contains(image, "postgis"):
+	// postgis covers imresamu/postgis and the built w17-postgis-pgvector;
+	// pgvector/pgvector names neither of the first two and is Postgres too.
+	case strings.Contains(image, "postgres"), strings.Contains(image, "postgis"), strings.Contains(image, "pgvector"):
 		dialect = "postgres"
 	case strings.Contains(image, "mysql"), strings.Contains(image, "mariadb"):
 		dialect = "mysql"

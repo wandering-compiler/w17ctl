@@ -119,6 +119,11 @@ func (c *UpCmd) Run() error {
 	if mode == devconfig.ModeRemote {
 		return c.runRemote(cfg, root, name, p, env, services)
 	}
+	// Local only: the images are looked up on THIS machine's daemon, and a
+	// remote stack's live on the remote host.
+	if len(services) == 0 && !c.Build {
+		services = withoutUnbuiltSandboxes(root, env)
+	}
 
 	// Preflight: catch a foreign process holding one of the host ports we
 	// are about to publish, and fail with a readable error before docker

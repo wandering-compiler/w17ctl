@@ -472,6 +472,8 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 					// SET NULL (col) and a bare SET NULL report one rule;
 					// the list tells them apart (PostgreSQL 15+).
 					DeleteSetColumns: fk.DeleteSetColumns, DeleteSetColumnsRead: fk.DeleteSetColumnsRead,
+					// When the key is checked: at each statement or at COMMIT.
+					Deferred: fk.Deferred, DeferredRead: fk.DeferredRead,
 				})
 			}
 			store.Tables = append(store.Tables, ot)
