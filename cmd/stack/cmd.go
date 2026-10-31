@@ -121,8 +121,12 @@ func (c *UpCmd) Run() error {
 	}
 	// Local only: the images are looked up on THIS machine's daemon, and a
 	// remote stack's live on the remote host.
-	if len(services) == 0 && !c.Build {
-		services = withoutUnbuiltSandboxes(root, env)
+	if len(services) == 0 {
+		mode := skipForUp
+		if c.Build {
+			mode = skipForUpBuild
+		}
+		services = skipSandboxes(root, env, mode)
 	}
 
 	// Preflight: catch a foreign process holding one of the host ports we

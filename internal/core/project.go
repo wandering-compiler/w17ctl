@@ -88,8 +88,9 @@ func ReadProtoTree(root, protoDir string) ([]*codegenpb.ProtoFile, error) {
 //
 // Under `<protoDir>/plugins/<name>/` the file types the console daemon's
 // plugin staging consumes (proto, .go, plugin.yaml, go.mod, go.sum) are
-// carried verbatim so the daemon finds the full tree it needs; outside
-// the plugins/ subtree only `.proto` files are included.
+// carried verbatim so the daemon finds the full tree it needs — except the
+// plugin's `sandboxes/`, which only docker builds; outside the plugins/
+// subtree only `.proto` files are included.
 func realReadProtoTree(root, protoDir string) ([]*codegenpb.ProtoFile, error) {
 	protoRoot := filepath.Join(root, protoDir)
 	info, err := os.Stat(protoRoot)
@@ -125,6 +126,13 @@ func realReadProtoTree(root, protoDir string) ([]*codegenpb.ProtoFile, error) {
 			return nil
 		}
 		if isPlugin {
+			// A plugin's sandboxes/ is a docker build context for a dev-only
+			// image (compose.w17.yaml builds it), never staged or compiled by
+			// the console — and its Go is a module of its own, which staging
+			// must not mistake for the plugin's.
+			if parts := strings.Split(filepath.ToSlash(rel), "/"); len(parts) > 3 && parts[2] == "sandboxes" {
+				return nil
+			}
 			base := filepath.Base(path)
 			keep := strings.HasSuffix(path, ".proto") ||
 				strings.HasSuffix(path, ".go") ||

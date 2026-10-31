@@ -45,9 +45,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // SrcSuffix marks a Go file carried as data rather than as code.
@@ -132,8 +135,122 @@ func Plugin(src, dest string) (Stats, error) {
 			return st, err
 		}
 	}
+
+	// sandboxes/ ships too: it is the source a project builds a plugin's
+	// local-build sandbox image from (`sandboxes[].build` in the manifest), and
+	// that image is published by no registry — without the source a consumer
+	// can only try to pull it, and the pull is refused.
+	sandboxDir := filepath.Join(src, "sandboxes")
+	if fi, err := os.Stat(sandboxDir); err == nil && fi.IsDir() {
+		if err := renderSandboxes(sandboxDir, filepath.Join(dest, "sandboxes"), &st); err != nil {
+			return st, err
+		}
+	}
+	if err := checkSandboxBuilds(dest); err != nil {
+		return st, err
+	}
 	st.Plugins = 1
 	return st, nil
+}
+
+// renderSandboxes copies a plugin's sandbox source into the published form.
+//
+// Unlike src/, EVERYTHING ships — a Dockerfile, a config file, a fixture the
+// image bakes in are all build input, and a build is the only thing this tree
+// is for. The Go goes inert all the same (`.src`, tests carried), by the rule
+// every published Go file follows: a sandbox's `go.mod` live in a consumer's
+// proto dir before the unpack strips the suffix is the module-inside-their-
+// build the suffix exists to prevent. Nothing compiles it in place there
+// either: it is a docker build context, and its own go.mod keeps it a module of
+// its own once unpacked.
+func renderSandboxes(srcDir, destDir string, st *Stats) error {
+	return filepath.WalkDir(srcDir, func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(srcDir, p)
+		if rerr != nil {
+			return rerr
+		}
+		base := filepath.Base(p)
+		if strings.HasSuffix(base, SrcSuffix) {
+			return fmt.Errorf("plugin render: sandboxes/%s is already in the published form — render takes an "+
+				"author tree; a published tree is installed as it is", filepath.ToSlash(rel))
+		}
+		out := filepath.Join(destDir, rel)
+		switch {
+		case strings.HasSuffix(base, ".go"):
+			out += SrcSuffix
+			st.GoFiles++
+			if strings.HasSuffix(base, "_test.go") {
+				st.Tests++
+			}
+		case suffixedUnderSrc[base]:
+			out += SrcSuffix
+		}
+		if err := copyFile(p, out); err != nil {
+			return err
+		}
+		st.Files++
+		return nil
+	})
+}
+
+// sandboxBuildManifest is the part of plugin.yaml checkSandboxBuilds reads.
+// The console owns the manifest's schema and validates it strictly; this
+// reads only the build paths, tolerantly, so a field it does not know is the
+// console's to judge rather than a render failure here.
+type sandboxBuildManifest struct {
+	Sandboxes []struct {
+		Name  string `yaml:"name"`
+		Build *struct {
+			Context    string `yaml:"context"`
+			Dockerfile string `yaml:"dockerfile"`
+		} `yaml:"build"`
+	} `yaml:"sandboxes"`
+}
+
+// checkSandboxBuilds refuses a published form that declares a sandbox build
+// whose Dockerfile it does not carry.
+//
+// Only sandboxes/ and src/ reach the published form, so a build context
+// anywhere else renders to nothing — and the failure would otherwise surface
+// as a `docker compose build` error in somebody else's project, against a
+// release that can no longer be changed.
+func checkSandboxBuilds(dest string) error {
+	body, err := os.ReadFile(filepath.Join(dest, "plugin.yaml"))
+	if err != nil {
+		return fmt.Errorf("plugin render: %w", err)
+	}
+	var m sandboxBuildManifest
+	if yaml.Unmarshal(body, &m) != nil {
+		// Not this check's finding: the console parses the manifest and says
+		// what is wrong with it.
+		return nil
+	}
+	for _, sb := range m.Sandboxes {
+		if sb.Build == nil {
+			continue
+		}
+		file := sb.Build.Dockerfile
+		if file == "" {
+			file = "Dockerfile"
+		}
+		rel := path.Join(sb.Build.Context, file)
+		if !filepath.IsLocal(filepath.FromSlash(rel)) {
+			// A path that leaves the plugin is the console's refusal to make.
+			continue
+		}
+		if fi, serr := os.Stat(filepath.Join(dest, filepath.FromSlash(rel))); serr != nil || fi.IsDir() {
+			return fmt.Errorf("plugin render: sandbox %s builds from %s, which the published form does not carry — "+
+				"a sandbox's build source lives under sandboxes/ (or the plugin's src/), the only places a release ships",
+				sb.Name, rel)
+		}
+	}
+	return nil
 }
 
 // privateDocRef matches a path into the platform's private docs. The

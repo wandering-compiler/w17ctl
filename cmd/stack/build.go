@@ -166,8 +166,14 @@ func (c *BuildCmd) Run() error {
 		if !c.NoReclaim {
 			builder = docker.EnsureBuilder(root, projectForBuilder(root), c.cacheCap())
 		}
+		// A sandbox whose build context the project lacks is left out with a
+		// named reason rather than failing every other service's build.
+		services := c.Services
+		if len(services) == 0 {
+			services = skipSandboxes(root, nil, skipForBuild)
+		}
 		if err := docker.RunComposeEnvFn(root, docker.BuilderEnv(builder),
-			append(append(docker.FileArgs(root), "build"), c.Services...)...); err != nil {
+			append(append(docker.FileArgs(root), "build"), services...)...); err != nil {
 			return fmt.Errorf("stack build: compose build: %w", err)
 		}
 		// Reclaim what this build just orphaned.
