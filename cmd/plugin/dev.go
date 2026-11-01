@@ -189,8 +189,15 @@ func devScaffold(dir, name string, feats []string, companions []*signInPlugin, c
 	if err := os.MkdirAll(domain, 0o755); err != nil {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
+	hooks, err := devRequiredHooks(dir, name, feats, companions)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
+	if err := writeHookModule(domain, hooks); err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
 	if err := os.WriteFile(filepath.Join(domain, "w17.proto"),
-		[]byte(domainProto(name, feats, companions)), 0o644); err != nil {
+		[]byte(domainProto(name, feats, companions, hooks)), 0o644); err != nil {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
 	// ⚠️ ONLY IF THE PLUGIN HAS A REST PRESET. Found by the dev lane's first
@@ -578,18 +585,28 @@ func manifestHasPreset(dir, kind string) (bool, error) {
 	return false, nil
 }
 
-func domainProto(name string, feats []string, companions []*signInPlugin) string {
+func domainProto(name string, feats []string, companions []*signInPlugin, hooks []devHook) string {
 	entry := func(n string, fs []string) string {
 		var quoted []string
 		for _, f := range fs {
 			quoted = append(quoted, "\""+f+"\"")
+		}
+		var bound []string
+		for _, h := range hooks {
+			if h.plugin == n {
+				bound = append(bound, `{ slot: "`+h.slot+`", methods: [ "`+h.methodRef()+`" ] }`)
+			}
+		}
+		hookLine := ""
+		if len(bound) > 0 {
+			hookLine = "\n      hooks:      [ " + strings.Join(bound, ", ") + " ]"
 		}
 		return `    {
       source_name:   "` + n + `"
       registered_as: "` + n + `"
       channels:   [ { key: "events", value: "app" } ]
       auth_input: { header_name: "Authorization", scheme: "Bearer" }
-      features:   { names: [ ` + strings.Join(quoted, ", ") + ` ] }
+      features:   { names: [ ` + strings.Join(quoted, ", ") + ` ] }` + hookLine + `
     }`
 	}
 	entries := entry(name, feats)
