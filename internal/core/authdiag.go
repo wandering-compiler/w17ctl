@@ -57,7 +57,10 @@ func ExplainAuthFailure(addr string, err error) error {
 			return fmt.Errorf("%w\n%s", err, line)
 		}
 		return fmt.Errorf("%w\n%s", err, outdatedFirst(addr, explainUnauthenticated(addr)))
-	case codes.PermissionDenied:
+	case codes.PermissionDenied, codes.FailedPrecondition:
+		if st.Code() == codes.FailedPrecondition && !hasErrorDetailCode(st, codeOrganizationRequired) {
+			return err
+		}
 		hint := outdatedFirst(addr, explainPermissionDenied(addr))
 		if hint == "" {
 			return err
@@ -182,6 +185,29 @@ func htuMismatchHint(addr string, err error) string {
 		"       " + EnvDPoPOriginVar + " to that origin (e.g. https://localhost:13444).\n"
 }
 
+// codeOrganizationRequired is the console's answer to a request that names no
+// organization from a caller who holds the permission inside one: FAILED_-
+// PRECONDITION with this detail code (consoles from before it answered
+// PERMISSION_DENIED / MISSING_PERMISSION).
+const codeOrganizationRequired = "ORGANIZATION_REQUIRED"
+
+// needsOrganization reports a refusal that naming an organization may cure:
+// ORGANIZATION_REQUIRED, or the PERMISSION_DENIED an older console answers
+// for the same request.
+func needsOrganization(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	switch st.Code() {
+	case codes.PermissionDenied:
+		return true
+	case codes.FailedPrecondition:
+		return hasErrorDetailCode(st, codeOrganizationRequired)
+	}
+	return false
+}
+
 func hasErrorDetailCode(st *status.Status, code string) bool {
 	for _, d := range st.Details() {
 		if ed, ok := d.(*w17pb.ErrorDetail); ok && ed.GetCode() == code {
@@ -284,7 +310,7 @@ func explainPermissionDenied(addr string) string {
 		switch {
 		case l.err == nil:
 			slugs = orgSlugs(l.orgs)
-		case status.Code(l.err) == codes.PermissionDenied:
+		case needsOrganization(l.err):
 			return "  no organization was sent with this request, and the console would not even list\n" +
 				"  " + accountFor(addr) + "'s organizations without one: its grants are all scoped\n" +
 				"  to an organization, so a request that names none narrows them to nothing.\n" +

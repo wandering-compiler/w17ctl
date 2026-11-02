@@ -11,6 +11,7 @@
 package verify
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -26,10 +27,15 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/egress"
+	"github.com/wandering-compiler/w17ctl/internal/fixtureschema"
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate"
 )
+
+// currentSchemaFn computes what each rendered seed would be rendered against
+// now. A package var so tests run without a console.
+var currentSchemaFn = fixtureschema.Current
 
 // Run recomputes the committed ACL + eventbus locks server-side and
 // reports drift. `console` is the resolved --console flag value (empty
@@ -262,13 +268,41 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 	// Its own refusal with its own fix, NOT one more line in the drift list
 	// above: that list's headline says "re-run codegen", which is the one
 	// thing that does not repair a render.
-	stale, err := migrate.StaleRenders(filepath.Join(root, "w17", "fixtures"))
+	//
+	// And against the schema: a seed's fixture can be unchanged while the
+	// tables it writes gained the foreign key that decides its load order.
+	// Compared with what the console says about the CURRENT proto, not with
+	// the committed .current-schema.json alone — that file is codegen's
+	// output and can itself be behind the proto, and then it is the thing
+	// to report.
+	rendered := filepath.Join(root, "w17", "fixtures")
+	live, err := currentSchemaFn(context.Background(), rendered, root, protoDir, console)
+	if err != nil {
+		return fmt.Errorf("verify: rendered fixtures: compute the schema they would be rendered against now: %w", err)
+	}
+	var stale []migrate.StaleRender
+	if live != nil {
+		stale, err = migrate.StaleRendersAgainst(rendered, live)
+	} else {
+		stale, err = migrate.StaleRenders(rendered)
+	}
 	if err != nil {
 		return fmt.Errorf("verify: rendered fixtures: %w", err)
 	}
 	if len(stale) > 0 {
-		return fmt.Errorf("verify: the rendered fixture seeds under w17/fixtures are older than the fixtures they came from:\n%s",
+		return fmt.Errorf("verify: the rendered fixture seeds under w17/fixtures no longer match the fixtures or the schema they were rendered from:\n%s",
 			migrate.FormatStaleRenders(stale))
+	}
+	if live != nil {
+		committed, ok, err := migrate.ReadCurrentSchema(rendered)
+		if err != nil {
+			return fmt.Errorf("verify: rendered fixtures: %w", err)
+		}
+		if !ok || !migrate.SameCurrentSchema(committed, live) {
+			return fmt.Errorf("verify: drift detected — w17/fixtures/%s is not what codegen writes for this proto; "+
+				"re-run `w17ctl codegen` and commit it (the binary's `fixtures apply` compares the seeds against it, and has no console to ask)",
+				migrate.CurrentSchemaName)
+		}
 	}
 	fmt.Fprintf(out, "verify: ok (%d lock(s) in sync with proto)\n", checked)
 	return nil

@@ -18,6 +18,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/remotecompose"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/wandering-compiler/w17ctl/internal/reconcile"
 	"github.com/wandering-compiler/w17ctl/internal/snapstore"
@@ -313,7 +314,7 @@ func buildReconcileDeps(root string, cc composeCtl, currentBranch func() string,
 		// which `Has` — it stats the DIRECTORY — reports as a snapshot. The
 		// switch proceeds, the uncovered store is overwritten with nothing
 		// standing behind it, and coming back to that branch fails at restore
-		// with `open …/authplatform-postgres.sql: no such file or directory`.
+		// with `open …/accounts-postgres.sql: no such file or directory`.
 		// One project was found with six of those directories.
 		//
 		// Refused HERE rather than inside snapstore because this is the only
@@ -473,7 +474,7 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 	// misconfigured), then the console renderer. The others are opened on
 	// demand below — a project whose second store is only used by a domain
 	// with no fixtures should not need it reachable.
-	conn, err := pgx.Connect(ctx, pgDSN)
+	conn, err := connectPrintingWarnings(ctx, pgDSN)
 	if err != nil {
 		return fmt.Errorf("seed fixtures: dial postgres: %w", err)
 	}
@@ -568,7 +569,7 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 		}
 		c, ok := open[dsn]
 		if !ok {
-			c, err = pgx.Connect(ctx, dsn)
+			c, err = connectPrintingWarnings(ctx, dsn)
 			if err != nil {
 				return fmt.Errorf("seed fixtures %s/%s: dial %s: %w", s.domain, disp, target, err)
 			}
@@ -717,4 +718,21 @@ func seedTargetDSN(target string, dsnByConn map[string]string) (string, error) {
 	return "", fmt.Errorf("the schema puts this domain on connection %q, and no postgres target names it (targets: %s) — "+
 		"pass it with `--target %s=<dsn>`, or the rows would go to a store that is not this domain's",
 		target, strings.Join(sortedKeys(dsnByConn), ", "), target)
+}
+
+// connectPrintingWarnings is pgx.Connect with the server's WARNINGs printed to
+// stderr. pgx drops notices unless asked, and a seed says things at apply time
+// that must not vanish — the role seed warns, for one, when it withdraws a
+// preset that accounts still hold (most often a renamed key).
+func connectPrintingWarnings(ctx context.Context, dsn string) (*pgx.Conn, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	cfg.OnNotice = func(_ *pgconn.PgConn, n *pgconn.Notice) {
+		if n.Severity == "WARNING" {
+			fmt.Fprintf(os.Stderr, "⚠️  WARNING: %s\n", n.Message)
+		}
+	}
+	return pgx.ConnectConfig(ctx, cfg)
 }

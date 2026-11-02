@@ -26,7 +26,7 @@ type Cmd struct {
 // when the domain directory is missing (steers to
 // `w17ctl domain add`).
 type AddCmd struct {
-	Ident       string `arg:"" name:"ident" help:"Module identifier in <domain>/[<groups>/]<module> shape (e.g. users/billing, finplatform/engine/ledger). Group directories are organisational only — the module name stays the identity. Every segment lowercase letters / digits / underscores."`
+	Ident       string `arg:"" name:"ident" help:"Module identifier in <domain>/[<groups>/]<module> shape (e.g. users/billing, storefront/engine/ledger). Group directories are organisational only — the module name stays the identity. Every segment lowercase letters / digits / underscores."`
 	WithExample bool   `name:"with-example" help:"Also lay down the four-layer (queries/mutations/business/types) example payload alongside the module sentinel."`
 	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
 }
@@ -131,7 +131,7 @@ func parseModuleIdent(ident string) (domain, groups, module string, err error) {
 		}
 	}
 	if len(parts) < 2 {
-		return "", "", "", fmt.Errorf("identifier %q must be in <domain>/[<groups>/]<module> shape (e.g. users/billing, finplatform/engine/ledger)", ident)
+		return "", "", "", fmt.Errorf("identifier %q must be in <domain>/[<groups>/]<module> shape (e.g. users/billing, storefront/engine/ledger)", ident)
 	}
 	domain, module = parts[0], parts[len(parts)-1]
 	if err := scaffold.ValidateIdent("domain", domain); err != nil {

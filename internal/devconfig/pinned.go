@@ -17,7 +17,7 @@ import (
 // where it wins over `.env`, because a variable in the environment outranks
 // the file. A developer who wrote
 //
-//	FINPLATFORM_GATEWAY_HOST_PORT=16720
+//	STOREFRONT_GATEWAY_HOST_PORT=16720
 //
 // got 14003 and no explanation. On a host where each workspace has its own
 // tunnelled block of ports, a number outside the block is not merely

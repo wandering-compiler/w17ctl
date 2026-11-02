@@ -25,6 +25,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/adminruntime"
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/egress"
+	"github.com/wandering-compiler/w17ctl/internal/fixtureschema"
 	"github.com/wandering-compiler/w17ctl/internal/gofmtc"
 	"github.com/wandering-compiler/w17ctl/internal/guidestamp"
 	"github.com/wandering-compiler/w17ctl/internal/scaffold"
@@ -661,6 +662,18 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	// the binary applies does not follow it on its own. Said here, the moment
 	// it becomes true, rather than when an endpoint answers PERMISSION_DENIED
 	// in a stack seeded from yesterday's render.
+	//
+	// And this run may have changed the SCHEMA a seed was rendered against —
+	// a plugin release adding the foreign key that decides its load order —
+	// with no fixture changing at all. So first write down what each seed
+	// would be rendered against now (w17/fixtures/.current-schema.json, where
+	// verify and the binary's `fixtures apply` compare against it), then say
+	// which seeds no longer match.
+	// A failure here FAILS the codegen — after the steps below, which must
+	// still run on code that is already on disk. Left behind, the file is a
+	// check that compares the seeds against an older schema; written from a
+	// console fault, it is advice about a fixture that is not true.
+	schemaErr := refreshCurrentSchema(root, protoDir, console)
 	noticeStaleRenders(root)
 	// Keep `w17/.gitignore` current. This runs from CODEGEN, not just `init`,
 	// because the patterns track the compiler: a project initialised before a
@@ -696,7 +709,7 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	// Non-fatal advisories last — generation already succeeded.
 	warnings = append(warnings, orphanedDBInitWarnings(root)...)
 	printCodegenWarnings(core.Stdout, warnings)
-	return nil
+	return schemaErr
 }
 
 // sdkGoModuleDirs lists the project-root-relative module dirs that can carry an
@@ -2145,16 +2158,51 @@ func ReadDepVersions(root, genDir string) (*codegenpb.DepVersions, error) {
 }
 
 // noticeStaleRenders prints the rendered fixture seeds that no longer match
-// their fixtures, with the command that fixes it. Non-fatal — codegen did its
-// job; `verify` is where this fails a build. Silent when there is nothing to
-// compare (no render manifest yet) or nothing stale.
+// their fixtures or the schema they were rendered against, with the command
+// that fixes it. Non-fatal — codegen did its job; `verify` is where this fails
+// a build. Silent when there is nothing to compare (no render manifest yet) or
+// nothing stale.
 func noticeStaleRenders(root string) {
 	stale, err := migrate.StaleRenders(filepath.Join(root, "w17", "fixtures"))
 	if err != nil || len(stale) == 0 {
 		return
 	}
-	fmt.Fprintf(core.Stdout, "codegen: %d rendered fixture seed(s) no longer match their fixtures:\n%s\n",
+	fmt.Fprintf(core.Stdout, "codegen: %d rendered fixture seed(s) no longer match their fixtures or schema:\n%s\n",
 		len(stale), migrate.FormatStaleRenders(stale))
+}
+
+// currentSchemaFn computes what each rendered seed would be rendered against
+// now. A package var so tests run without a console.
+var currentSchemaFn = fixtureschema.Current
+
+// refreshCurrentSchema writes w17/fixtures/.current-schema.json: per rendered
+// seed, the schema provenance a render of its fixture would record against the
+// schema this codegen generated. The binary built from this codegen applies
+// its seeds to exactly that schema, and has no console to ask, so this file is
+// how its `fixtures apply` tells a seed rendered against another one.
+//
+// Silent when there is no render manifest, and when the console sends no
+// schema provenance (older consoles). An error — the console failing to
+// answer, or answering with a fault rather than a verdict on the fixture —
+// writes nothing and is returned: codegen fails on it (the generated code is
+// on disk by then).
+func refreshCurrentSchema(root, protoDir, console string) error {
+	rendered := filepath.Join(root, "w17", "fixtures")
+	name := filepath.Join("w17", "fixtures", migrate.CurrentSchemaName)
+	cur, err := currentSchemaFn(context.Background(), rendered, root, protoDir, console)
+	if err != nil {
+		return fmt.Errorf("codegen: the code is generated, but the rendered fixture seeds could not be checked against the schema, so %s was not refreshed: %w", name, err)
+	}
+	if cur == nil {
+		return nil
+	}
+	if prev, ok, rerr := migrate.ReadCurrentSchema(rendered); rerr == nil && ok && migrate.SameCurrentSchema(prev, cur) {
+		return nil // byte-stable: an unchanged schema rewrites nothing
+	}
+	if err := migrate.WriteCurrentSchema(rendered, cur); err != nil {
+		return fmt.Errorf("codegen: write %s: %w", name, err)
+	}
+	return nil
 }
 
 // noticeStaleGuide prints one line when the project's root AGENTS.md was

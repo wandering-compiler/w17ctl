@@ -210,9 +210,18 @@ func devScaffold(dir, name string, feats []string, companions []*signInPlugin, c
 	if err != nil {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
+	// Whether anything activated here authenticates the gateway: only a
+	// plugin whose REST preset carries auth_methods does (the auth plugin),
+	// and its posture is injected whether or not a surface includes it.
+	// Without one the surfaces must say they are public — codegen refuses a
+	// gateway with no auth method that does not.
+	public, err := devGatewayIsPublic(dir, companions)
+	if err != nil {
+		return fmt.Errorf("plugin dev: %w", err)
+	}
 	if hasREST {
 		if err := os.WriteFile(filepath.Join(domain, "rest.proto"),
-			[]byte(restProto(name)), 0o644); err != nil {
+			[]byte(restProto(name, public)), 0o644); err != nil {
 			return fmt.Errorf("plugin dev: %w", err)
 		}
 	} else {
@@ -221,7 +230,64 @@ func devScaffold(dir, name string, feats []string, companions []*signInPlugin, c
 		fmt.Fprintf(core.Stdout, "  no rest preset — generating without a public surface, "+
 			"so this run exercises the tiers and not the endpoints\n")
 	}
-	return devScaffoldMcpAndAdmin(dir, domain, name, feats, signInOf(companions))
+	return devScaffoldMcpAndAdmin(dir, domain, name, feats, signInOf(companions), public)
+}
+
+// devGatewayIsPublic reports whether neither the plugin under test nor a
+// companion activated beside it brings an auth method.
+func devGatewayIsPublic(dir string, companions []*signInPlugin) (bool, error) {
+	dirs := []string{dir}
+	for _, p := range companions {
+		dirs = append(dirs, p.dir)
+	}
+	for _, d := range dirs {
+		has, err := manifestHasRestAuth(d)
+		if err != nil {
+			return false, err
+		}
+		if has {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// manifestHasRestAuth reports whether the manifest's `presets.rest` declares
+// auth_methods — the same small scanner as manifestHasPreset.
+func manifestHasRestAuth(dir string) (bool, error) {
+	body, err := os.ReadFile(filepath.Join(dir, "plugin.yaml"))
+	if err != nil {
+		return false, fmt.Errorf("reading the manifest: %w", err)
+	}
+	inPresets, inRest := false, false
+	restIndent := 0
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimRight(raw, " \t")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if indent == 0 {
+			inPresets = trimmed == "presets:"
+			inRest = false
+			continue
+		}
+		if !inPresets {
+			continue
+		}
+		if trimmed == "rest:" {
+			inRest, restIndent = true, indent
+			continue
+		}
+		if inRest && indent <= restIndent {
+			inRest = false
+		}
+		if inRest && trimmed == "auth_methods:" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // signInOf is the companion activated for admin sign-in, or nil.
@@ -249,14 +315,14 @@ func signInOf(companions []*signInPlugin) *signInPlugin {
 // supplies it and the surface is complete; one that ships pages but no auth
 // (it expects another plugin to sign people in) cannot be published on its
 // own, and the run says what that leaves unchecked.
-func devScaffoldMcpAndAdmin(dir, domain, name string, feats []string, signIn *signInPlugin) error {
+func devScaffoldMcpAndAdmin(dir, domain, name string, feats []string, signIn *signInPlugin, public bool) error {
 	hasMCP, err := manifestHasPreset(dir, "mcp")
 	if err != nil {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
 	if hasMCP {
 		if err := os.WriteFile(filepath.Join(domain, "mcp.proto"),
-			[]byte(mcpProto(name)), 0o644); err != nil {
+			[]byte(mcpProto(name, public)), 0o644); err != nil {
 			return fmt.Errorf("plugin dev: %w", err)
 		}
 	}
@@ -640,7 +706,19 @@ option (w17.module) = {
 `
 }
 
-func restProto(name string) string {
+// publicLine is the opt-out a scaffolded surface carries when nothing
+// activated in the dev project authenticates it.
+func publicLine(public bool) string {
+	if !public {
+		return ""
+	}
+	return `
+  // Nothing activated here brings an auth method, so the surface says it
+  // is public — codegen refuses one that does not.
+  unauthenticated: true,`
+}
+
+func restProto(name string, public bool) string {
 	return `syntax = "proto3";
 
 package plugindev.app;
@@ -654,13 +732,13 @@ option (w17.rest_api) = {
   name:        "public",
   version:     "v1",
   prefix:      "/api/v1",
-  description: "plugin dev — one plugin, generated as itself.",
+  description: "plugin dev — one plugin, generated as itself.",` + publicLine(public) + `
   include: [ { plugin: "` + name + `" } ]
 };
 `
 }
 
-func mcpProto(name string) string {
+func mcpProto(name string, public bool) string {
 	return `syntax = "proto3";
 
 package plugindev.app;
@@ -671,7 +749,7 @@ import "w17/mcp.proto";
 option (w17.mcp_api) = {
   name:        "default",
   version:     "v1",
-  description: "plugin dev — the plugin's MCP tools.",
+  description: "plugin dev — the plugin's MCP tools.",` + publicLine(public) + `
   include:     [ "` + name + `" ]
 };
 `

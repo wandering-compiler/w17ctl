@@ -104,7 +104,7 @@ func ForReason(ctx context.Context, dsn string) (*Snapshotter, string) {
 	// This route matches a container by the PORT the caller is dialling, on the
 	// premise that the port is one the host publishes. The host half of the DSN
 	// was never consulted — so a DSN naming a docker-network service
-	// (`finplatform-postgres:5432`) or any other address matched whatever
+	// (`storefront-postgres:5432`) or any other address matched whatever
 	// happened to publish those digits locally, and the dump then ran inside
 	// THAT container against ITS OWN server (the DSN's host is rewritten to
 	// 127.0.0.1 below). When both servers hold a database of the same name,

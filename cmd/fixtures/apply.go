@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
@@ -379,7 +380,7 @@ func (c *ApplyCmd) resolveTargetDSN() (string, error) {
 // realConnectFixtureStore opens a pgx connection to the Postgres target
 // and wraps it in the fixtureExecer interface.
 func realConnectFixtureStore(ctx context.Context, dsn string) (fixtureExecer, error) {
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, err := connectPrintingWarnings(ctx, dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -534,4 +535,21 @@ func lockProjectName(root string) string {
 		return ""
 	}
 	return lk.Project
+}
+
+// connectPrintingWarnings is pgx.Connect with the server's WARNINGs printed to
+// stderr. pgx drops notices unless asked, and a seed says things at apply time
+// that must not vanish — the role seed warns, for one, when it withdraws a
+// preset that accounts still hold (most often a renamed key).
+func connectPrintingWarnings(ctx context.Context, dsn string) (*pgx.Conn, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	cfg.OnNotice = func(_ *pgconn.PgConn, n *pgconn.Notice) {
+		if n.Severity == "WARNING" {
+			fmt.Fprintf(os.Stderr, "⚠️  WARNING: %s\n", n.Message)
+		}
+	}
+	return pgx.ConnectConfig(ctx, cfg)
 }

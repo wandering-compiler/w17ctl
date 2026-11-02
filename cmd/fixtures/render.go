@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
-	"github.com/wandering-compiler/w17ctl/internal/protoscan"
+	"github.com/wandering-compiler/w17ctl/internal/fixtureschema"
 	"github.com/wandering-compiler/w17ctl/internal/schema"
 	applyfetchpb "github.com/wandering-compiler/sdk/go/pb/applyfetch"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate"
@@ -29,8 +29,9 @@ import (
 //
 // So this writes the console's answer down, exactly as `migrate fetch` writes
 // migration artefacts down, and the same directory is what the binary reads.
-// Run it whenever a fixture changes; the output is generated and belongs in
-// the diff, where a stale render shows up as one.
+// Run it whenever a fixture changes, and whenever the schema of the tables it
+// writes does (codegen names the seeds that need it); the output is generated
+// and belongs in the diff, where a stale render shows up as one.
 //
 // It renders the fixtures IN THE WORKING TREE rather than the ones stored in
 // the registry, and that is deliberate: a rendered artefact is read by a human
@@ -108,6 +109,11 @@ func (c *RenderCmd) Run() error {
 	}
 
 	written := map[string]bool{}
+	// What each seed was rendered against, as the console says — the schema
+	// half of its provenance. Recorded in the manifest (what it WAS rendered
+	// against) and in the current-schema file (what it would be rendered
+	// against now — the same thing, at this moment).
+	renderedSchemas := map[string]*migrate.RenderedSchema{}
 	for _, s := range seeds {
 		body, rerr := os.ReadFile(s.path)
 		if rerr != nil {
@@ -121,7 +127,7 @@ func (c *RenderCmd) Run() error {
 		if rerr != nil {
 			return fmt.Errorf("fixtures render: %s/%s: %w", s.domain, s.name(), rerr)
 		}
-		out := migrate.FixtureSeed{Domain: s.domain, Name: s.name(), Statements: resp.GetStatements()}
+		out := migrate.FixtureSeed{Domain: s.domain, Name: s.name(), Statements: resp.GetStatements(), Connection: resp.GetConnection()}
 		if err := migrate.WriteFixtureSeed(c.Out, out); err != nil {
 			return fmt.Errorf("fixtures render: write %s/%s: %w", s.domain, s.name(), err)
 		}
@@ -130,9 +136,12 @@ func (c *RenderCmd) Run() error {
 		if rerr != nil {
 			return fmt.Errorf("fixtures render: %w", rerr)
 		}
+		rs := migrate.RenderedSchemaOf(resp.GetSchema())
+		renderedSchemas[s.domain+"/"+s.name()] = rs
 		manifest.Seeds[s.domain+"/"+s.name()] = migrate.RenderedSource{
 			Source: filepath.ToSlash(srcRel),
 			SHA256: migrate.FixtureDigest(body),
+			Schema: rs,
 		}
 		// A fixture that HAS rows and renders NOTHING is a failure, not a
 		// result. It means every model in it resolved to nothing under this
@@ -182,6 +191,9 @@ func (c *RenderCmd) Run() error {
 	if err := migrate.WriteRenderManifest(c.Out, manifest); err != nil {
 		return fmt.Errorf("fixtures render: write %s: %w", migrate.RenderManifestName, err)
 	}
+	if err := syncCurrentSchema(c.Out, manifest, renderedSchemas); err != nil {
+		return err
+	}
 	fmt.Fprintf(core.Stdout, "fixtures render: %d fixture(s) → %s\n", len(seeds), c.Out)
 	return nil
 }
@@ -215,6 +227,38 @@ func (c *RenderCmd) pruneEmptyScope() error {
 	}
 	if err := migrate.WriteRenderManifest(c.Out, manifest); err != nil {
 		return fmt.Errorf("fixtures render: write %s: %w", migrate.RenderManifestName, err)
+	}
+	return syncCurrentSchema(c.Out, manifest, nil)
+}
+
+// syncCurrentSchema brings the current-schema file beside the manifest in line
+// with a render: each seed just rendered is current against the schema it was
+// rendered against, and a seed no longer in the manifest has no entry. Written
+// only when there is something to say — an existing file, or a console that
+// sent schema provenance; a render against an older console adds no file.
+func syncCurrentSchema(out string, manifest *migrate.RenderManifest, rendered map[string]*migrate.RenderedSchema) error {
+	cur, ok, err := migrate.ReadCurrentSchema(out)
+	if err != nil {
+		return fmt.Errorf("fixtures render: %w", err)
+	}
+	if !ok {
+		cur = &migrate.CurrentSchema{Seeds: map[string]migrate.CurrentSeedSchema{}}
+	}
+	say := ok
+	for key, s := range rendered {
+		cur.Seeds[key] = migrate.CurrentSeedSchema{Schema: s}
+		say = say || s != nil
+	}
+	for key := range cur.Seeds {
+		if _, live := manifest.Seeds[key]; !live {
+			delete(cur.Seeds, key)
+		}
+	}
+	if !say {
+		return nil
+	}
+	if err := migrate.WriteCurrentSchema(out, cur); err != nil {
+		return fmt.Errorf("fixtures render: write %s: %w", migrate.CurrentSchemaName, err)
 	}
 	return nil
 }
@@ -259,19 +303,16 @@ func (c *RenderCmd) resolveProtos() (protos, imports []string, cleanup func(), e
 	if err != nil {
 		return nil, nil, cleanup, fmt.Errorf("fixtures render: %w", err)
 	}
-	base := filepath.Join(root, c.protoDir())
-	models, modules, err := protoscan.DiscoverModelProtos(base)
+	// The same discovery codegen and verify use to compute the schema a seed
+	// would be rendered against now (fixtureschema), so the two cannot come
+	// to disagree about what a render reads.
+	models, err := fixtureschema.ModelProtos(root, c.protoDir())
 	if err != nil {
-		return nil, nil, cleanup, fmt.Errorf("fixtures render: discover model protos: %w", err)
+		return nil, nil, cleanup, fmt.Errorf("fixtures render: %w", err)
 	}
 	if len(models) == 0 {
 		return nil, nil, cleanup, nil
 	}
-	// Connection-declaring modules ride along: a KV or LOCAL_FS module
-	// declares no table, so the model walk alone leaves its connection
-	// looking undeclared to the IR build. Appended AFTER the emptiness check
-	// so they can never make a table-less project look non-empty.
-	models = append(models, modules...)
 	// No vocabulary staging, no import roots — the console resolves both. See
 	// the twin in `stack build` for what this used to do and why it stopped
 	// meaning anything.

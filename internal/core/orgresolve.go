@@ -214,9 +214,9 @@ func listOrgsOnce(addr, token, keySlug string) orgListing {
 	b := bindingFor(addr, token)
 	var l orgListing
 	l.orgs, l.err = listMyOrgsIn(ctx, addr, token, b, "")
-	if status.Code(l.err) == codes.PermissionDenied && keySlug != "" {
+	if needsOrganization(l.err) && keySlug != "" {
 		l.orgs, l.err = listMyOrgsIn(ctx, addr, token, b, keySlug)
-		if c := status.Code(l.err); c == codes.PermissionDenied || c == codes.Unauthenticated {
+		if needsOrganization(l.err) || status.Code(l.err) == codes.Unauthenticated {
 			l.keyRefused = true
 		}
 	}
@@ -302,14 +302,14 @@ func (lo lockOrg) listingFailed(addr string, err error) error {
 	}
 	p := st.Proto()
 	p.Message = fmt.Sprintf("%s names organization %s; asking %s which organizations %s belongs to, to send it, failed: %s%s",
-		lo.Path, lo.describe(), displayAddr(addr), accountFor(addr), p.GetMessage(), lo.noSlugHint(st.Code()))
+		lo.Path, lo.describe(), displayAddr(addr), accountFor(addr), p.GetMessage(), lo.noSlugHint(err))
 	return status.ErrorProto(p)
 }
 
 // noSlugHint answers the one listing refusal a lock can fix: grants that are
 // all org-scoped, and a lock with no org_slug to name the organization by.
-func (lo lockOrg) noSlugHint(code codes.Code) string {
-	if code != codes.PermissionDenied || lo.Slug != "" {
+func (lo lockOrg) noSlugHint(err error) string {
+	if !needsOrganization(err) || lo.Slug != "" {
 		return ""
 	}
 	return "\n  the credential's grants are scoped to organizations, so the console lists them only for a request\n" +
