@@ -1,13 +1,17 @@
-// refPicker — a form field that picks a row of another admin page
-// (`AdminFieldRef`, spec `detail.field_refs` / `actions[name].field_refs`).
+// refPicker — a form field or a list filter that picks a row of another
+// admin page (`AdminFieldRef`, spec `detail.field_refs`,
+// `actions[name].field_refs`, `inlines[i].field_refs` and
+// `list.field_refs`). Every input the admin renders for a request field
+// goes through here when the spec names a ref for it — refpicker.sites.test
+// holds that.
 //
 // The operator chooses a row by its TEXT and the field gets the row's VALUE:
 // an organization by its name instead of its uuid, a product role by
-// "scout · Geo reader" instead of `geo_reader` typed from memory. The options
+// "maps · Geo reader" instead of `geo_reader` typed from memory. The options
 // are the target page's own list — its endpoint, its search, its paging — so
 // a row the operator may not read is not offered either.
 
-import { Select } from "@mantine/core";
+import { Select, TextInput } from "@mantine/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { type Control, useController, useWatch } from "react-hook-form";
 
@@ -40,6 +44,12 @@ function token(v: unknown): string | null {
   if (typeof v === "string") return v === "" ? null : v;
   if (typeof v === "number" || typeof v === "bigint" || typeof v === "boolean") return String(v);
   return null;
+}
+
+// refValueText is a picked value as the text a filter or a string-valued
+// form holds: "" for nothing (no filter, an empty field).
+export function refValueText(v: unknown): string {
+  return token(v) ?? "";
 }
 
 export interface RefOption {
@@ -257,4 +267,31 @@ export function RefField({
       t={t}
     />
   );
+}
+
+// RefText is the display-only half: a ref field the form will not submit (a
+// readonly field, or a detail with no update) shows the picked row's text,
+// as the picker would, instead of its id. Until the rows are in, or when the
+// value is not among them (another page of a long list, a row the operator
+// may not read, a list that failed), it shows the value itself.
+export function RefText({
+  field,
+  fieldRef,
+  spec,
+  value,
+}: {
+  field: string;
+  fieldRef: AdminFieldRefSpec;
+  spec: AdminSpec;
+  value: unknown;
+}) {
+  const held = token(value);
+  const target = held == null ? undefined : spec.pages?.[fieldRef.page];
+  const { rows } = useRefRows(target, "");
+  const label = useMemo(() => {
+    if (held == null) return "";
+    const hit = refOptions(rows, fieldRef, spec).find((o) => o.value === held);
+    return hit ? hit.label : held;
+  }, [rows, fieldRef, spec, held]);
+  return <TextInput label={humanizeLabel(field)} disabled value={label} readOnly />;
 }

@@ -358,6 +358,10 @@ whose absence you want refused by name.
   generated — don't touch it; `EDIT-HERE=none` is plugin-owned — change behaviour
   via the proto `plugins.features`, not code).
 - **Never** edit generated bundles, pb stubs, clients, or migration SQL by hand.
+- **`w17/admin-runtime/`** (a project with an admin) is the runtime THIS w17ctl
+  ships, vendored with a stamp (`.w17-vendor.json`: version + digest). Every
+  `w17ctl codegen` re-vendors a stale or edited copy and says so; `w17ctl
+  verify` refuses one. After `w17ctl update`, the next codegen refreshes it.
 
 ---
 <!-- Written by `w17ctl guide`. Safe to re-run (`--force` to refresh). This file

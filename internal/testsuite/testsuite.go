@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -70,6 +71,10 @@ type Config struct {
 	// public origins device proofs name (dpop.go), when the stack declares
 	// them.
 	suiteEnv []string
+
+	// probe re-asks the running stack where a discovered endpoint is now
+	// (restart.go). Nil when there is no stack to ask.
+	probe endpointProbe
 }
 
 // Seams over the exec primitives so every docker-driving helper (and the
@@ -160,12 +165,21 @@ func (c *Config) Run() (err error) {
 	// origins, not the ports this run published (dpop.go). Resolved before
 	// anything is built or started, so an origin the suite cannot sign for
 	// costs no build and no boot.
-	rest, adminO, err := c.deviceOrigins(files, root, runnerDir, gatewaySvc, resolveAdminService(files, project, root))
+	adminSvc := resolveAdminService(files, project, root)
+	rest, adminO, err := c.deviceOrigins(files, root, runnerDir, gatewaySvc, adminSvc)
 	if err != nil {
 		return err
 	}
 	restOrigin, adminOrigin := rest.value, adminO.value
 	c.suiteEnv = dpopEnv(restOrigin, adminOrigin)
+
+	// The other domains' surfaces, served by binaries other than the
+	// gateway and admin above (endpoints.go) — their origins checked here
+	// for the same reason.
+	surfaces := stackSurfaces(files, root, gatewaySvc, adminSvc, c.GatewayPort)
+	if err = checkSurfaceOrigins(surfaces, runnerSurfaces(runnerDir)); err != nil {
+		return err
+	}
 
 	_ = runCmd(exec.Command("docker", "volume", "create", c.GomodVolume))
 
@@ -248,6 +262,7 @@ func (c *Config) Run() (err error) {
 		return err
 	}
 	target := fmt.Sprintf("http://localhost:%d", port)
+	discovered := map[string]discoveredEndpoint{"gateway": {svc: gatewaySvc, containerPort: c.GatewayPort}}
 
 	// Auto-discover the gateway's MCP listener (same service, its own
 	// published container port) so MCP scenarios run without a manual
@@ -259,6 +274,7 @@ func (c *Config) Run() (err error) {
 	if mcp == "" {
 		if mp, perr := c.servicePort(files, project, root, gatewaySvc, mcpContainerPort); perr == nil {
 			mcp = fmt.Sprintf("http://localhost:%d%s", mp, mcpEndpointPath)
+			discovered["mcp"] = discoveredEndpoint{svc: gatewaySvc, containerPort: mcpContainerPort, path: mcpEndpointPath}
 		}
 	}
 
@@ -268,8 +284,23 @@ func (c *Config) Run() (err error) {
 	// --admin always wins.
 	admin := c.Admin
 	if admin == "" {
-		admin = c.discoverAdmin(files, project, root, gatewaySvc)
+		var adminAt discoveredEndpoint
+		admin, adminAt = c.discoverAdmin(files, project, root, gatewaySvc)
+		if admin != "" {
+			discovered["admin"] = adminAt
+		}
 	}
+	// The other domains' surfaces (endpoints.go), discovered like the
+	// gateway's so a restarted container is followed to its new port too.
+	domains := c.resolveEndpoints(files, project, root, surfaces)
+	for _, d := range domains {
+		path := ""
+		if d.surface == "mcp" {
+			path = mcpEndpointPath
+		}
+		discovered[d.name] = discoveredEndpoint{svc: d.svc, containerPort: d.port, path: path}
+	}
+	c.probe = &composeProbe{c: c, files: files, project: project, root: root, endpoints: discovered}
 
 	// A transport the caller ASKED for and that has no endpoint would run
 	// zero scenarios — the suite itself now fails on that rather than
@@ -295,8 +326,20 @@ func (c *Config) Run() (err error) {
 	// says the stack is the problem. Same slot and same reasoning as
 	// requireRequestedTransport above — before the suite is driven, and
 	// naming what the suite itself cannot see.
-	if err = c.awaitReachable(map[string]string{"gateway": target, "mcp": mcp, "admin": admin}); err != nil {
+	endpoints := map[string]string{"gateway": target, "mcp": mcp, "admin": admin}
+	for _, d := range domains {
+		endpoints[d.name] = d.url
+	}
+	if err = c.awaitReachable(endpoints); err != nil {
 		return err
+	}
+	// awaitReachable follows an endpoint whose container restarted to its new
+	// port, so the suite is driven at where the stack IS, not where it was.
+	target, mcp, admin = endpoints["gateway"], endpoints["mcp"], endpoints["admin"]
+	// The other domains' surfaces, at where they are now, for the runner.
+	entries, domainURLs := endpointEntries(domains, endpoints)
+	if v := endpointsEnvVar(entries); v != "" {
+		c.suiteEnv = append(c.suiteEnv, v)
 	}
 
 	// --- running: drive the suite as an external client over the port -----
@@ -307,8 +350,22 @@ func (c *Config) Run() (err error) {
 	if adminOrigin != "" {
 		running["admin_dpop_origin"] = adminOrigin
 	}
-	c.status("running", fmt.Sprintf("gateway %s → %s — running the suite", gatewaySvc, target), running)
+	if len(entries) > 0 {
+		running["endpoints"] = entries
+	}
+	msg := fmt.Sprintf("gateway %s → %s", gatewaySvc, target)
+	for _, name := range slices.Sorted(maps.Keys(domainURLs)) {
+		msg += fmt.Sprintf(", %s → %s", name, domainURLs[name])
+	}
+	c.status("running", msg+" — running the suite", running)
 	err = c.runSuite(bin, target, mcp, admin)
+	if err != nil {
+		// A suite that failed because the stack moved under it must say so:
+		// a list of ✗ alone reads as broken tests.
+		if note := stackChangedDuringRun(c.probe, endpoints); note != "" {
+			err = fmt.Errorf("%w\n\n%s", err, note)
+		}
+	}
 	return err
 }
 
@@ -362,20 +419,20 @@ func (c *Config) resolveComposeFile(root string) (string, error) {
 // admin scenario skipped and the run still reported PASS. Returns "" when
 // neither resolves — a project with no admin surface, which is most of
 // them.
-func (c *Config) discoverAdmin(files []string, project, root, gatewaySvc string) string {
+func (c *Config) discoverAdmin(files []string, project, root, gatewaySvc string) (string, discoveredEndpoint) {
 	if svc := resolveAdminService(files, project, root); svc != "" {
 		if ap, err := c.servicePort(files, project, root, svc, adminContainerPort); err == nil {
-			return fmt.Sprintf("http://localhost:%d", ap)
+			return fmt.Sprintf("http://localhost:%d", ap), discoveredEndpoint{svc: svc, containerPort: adminContainerPort}
 		}
-		return ""
+		return "", discoveredEndpoint{}
 	}
 	if gatewaySvc == "" {
-		return ""
+		return "", discoveredEndpoint{}
 	}
 	if ap, err := c.servicePort(files, project, root, gatewaySvc, composedAdminContainerPort); err == nil {
-		return fmt.Sprintf("http://localhost:%d", ap)
+		return fmt.Sprintf("http://localhost:%d", ap), discoveredEndpoint{svc: gatewaySvc, containerPort: composedAdminContainerPort}
 	}
-	return ""
+	return "", discoveredEndpoint{}
 }
 
 // requireRequestedTransport refuses a --transport whose endpoint is not
@@ -633,6 +690,10 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 				Protocol string `json:"protocol"`
 			} `json:"ports"`
 		} `json:"services"`
+		Networks map[string]struct {
+			Name     string `json:"name"`
+			External any    `json:"external"`
+		} `json:"networks"`
 	}
 	if err := json.Unmarshal(out, &cfg); err != nil {
 		return "", false, fmt.Errorf("parse compose config: %w", err)
@@ -698,6 +759,35 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 				proto = "/" + p.Protocol
 			}
 			fmt.Fprintf(&b, "      - \"%d%s\"\n", p.Target, proto)
+		}
+	}
+	// The reclaim label on the stack's own NETWORKS too. A signalled run
+	// leaves its `<project>_default` bridge behind with its containers, and
+	// once `make docker-sweep` has removed those containers nothing ties the
+	// network to the run any more — the sweep removed 35 runs' containers on
+	// the shared host and left all 35 bridges, each holding a /24 of the
+	// daemon's address pool. Labelled, a sweep can still find an EMPTY one.
+	//
+	// Only networks this project OWNS: an external network belongs to
+	// someone else, and one whose name is not `<project>_<key>` was named
+	// explicitly — possibly to be shared — so it is not this run's to mark.
+	if len(names) > 0 {
+		nets := make([]string, 0, len(cfg.Networks))
+		for k, n := range cfg.Networks {
+			if ext, _ := n.External.(bool); ext {
+				continue
+			}
+			if !strings.HasSuffix(n.Name, "_"+k) {
+				continue
+			}
+			nets = append(nets, k)
+		}
+		sort.Strings(nets)
+		if len(nets) > 0 {
+			b.WriteString("networks:\n")
+			for _, k := range nets {
+				fmt.Fprintf(&b, "  %s:\n    labels:\n      %s: %q\n", k, reclaimLabelKey, workspace())
+			}
 		}
 	}
 	if len(names) == 0 {
@@ -940,36 +1030,9 @@ type notReadyService struct{ name, state string }
 // up: neither running (and healthy, when they have a healthcheck) nor a
 // one-shot that exited 0.
 func notReadyServices(ps []byte) []notReadyService {
-	type row struct {
-		Service  string
-		State    string
-		Health   string
-		ExitCode int
-	}
-	var rows []row
-	if trimmed := bytes.TrimSpace(ps); bytes.HasPrefix(trimmed, []byte("[")) {
-		_ = json.Unmarshal(trimmed, &rows)
-	} else {
-		for _, line := range bytes.Split(trimmed, []byte("\n")) {
-			var r row
-			if json.Unmarshal(line, &r) == nil {
-				rows = append(rows, r)
-			}
-		}
-	}
 	var out []notReadyService
-	for _, r := range rows {
-		switch {
-		case r.State == "running" && (r.Health == "" || r.Health == "healthy"):
-		case r.State == "exited" && r.ExitCode == 0:
-		default:
-			state := r.State
-			if r.Health != "" {
-				state += " (" + r.Health + ")"
-			}
-			if r.State == "exited" {
-				state += fmt.Sprintf(" with code %d", r.ExitCode)
-			}
+	for _, r := range parsePsRows(ps) {
+		if state := notUpState(r); state != "" {
 			out = append(out, notReadyService{name: r.Service, state: state})
 		}
 	}
@@ -1168,27 +1231,33 @@ func (c *Config) awaitReachable(endpoints map[string]string) error {
 	}
 	sort.Strings(names) // deterministic order, so the failure names the same endpoint every run
 	for _, name := range names {
-		if err := c.awaitOne(name, endpoints[name]); err != nil {
+		now, err := c.awaitOne(name, endpoints[name])
+		if err != nil {
 			return err
 		}
+		endpoints[name] = now
 	}
 	return nil
 }
 
-func (c *Config) awaitOne(name, raw string) error {
+// awaitOne waits for one endpoint and answers the URL it answered on — the
+// one it was given, or the one its restarted container moved to (restart.go).
+func (c *Config) awaitOne(name, raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		// Not a URL we can dial — leave it to the suite rather than
 		// inventing a stack failure out of a parse error.
-		return nil //nolint:nilerr // see comment
+		return raw, nil //nolint:nilerr // see comment
 	}
 	host := u.Host
 	if host == "" {
-		return nil
+		return raw, nil
 	}
 	deadline := time.Now().Add(endpointReachWait)
 	announced := false
 	var last error
+	moves := 0
+	nextResolve := time.Now().Add(endpointResolveEvery)
 	// One transport per endpoint, keep-alives OFF: a reset arriving during
 	// the window would otherwise poison a pooled connection and make the
 	// NEXT attempt fail for a reason that has nothing to do with the
@@ -1204,11 +1273,44 @@ func (c *Config) awaitOne(name, raw string) error {
 		resp, rerr := client.Get(raw)
 		if rerr == nil {
 			_ = resp.Body.Close()
-			return nil // ANY status: something is serving this port
+			return raw, nil // ANY status: something is serving this port
 		}
 		last = rerr
+		// The port is the one discovery saw; a container that restarted
+		// since holds another. Ask again — spaced, because each ask is a
+		// docker round trip, and bounded in MOVES, because a port that keeps
+		// moving is a restart loop the diagnosis below has to name.
+		//
+		// Only a MOVE spends the bound (endpointMoveMax): the same port, or
+		// no answer yet, is a restart still in progress, and the asks go on
+		// for the whole window.
+		if c.probe != nil && moves < endpointMoveMax && !time.Now().Before(nextResolve) {
+			nextResolve = time.Now().Add(endpointResolveEvery)
+			if fresh, perr := c.probe.resolve(name); perr == nil && fresh != "" && fresh != raw {
+				moves++
+				c.status("waiting", fmt.Sprintf("%s moved from %s to %s (its container restarted) — following it", name, raw, fresh),
+					map[string]any{"endpoint": name, "from": raw, "target": fresh})
+				raw = fresh
+				// A restarted container gets the whole window again: it is
+				// starting from zero, and the bound above caps how often.
+				deadline = time.Now().Add(endpointReachWait)
+				continue
+			}
+		}
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf(
+			if c.probe != nil {
+				if d := c.probe.diagnose(name); d != "" {
+					// The stack DID come up — `up --wait` said so — and then
+					// went away. Saying it "did not come up" sends the reader
+					// to the wrong place; saying which service, and in what
+					// state, sends them to the right one.
+					return raw, fmt.Errorf(
+						"the %s endpoint at %s stopped answering after the stack came up: %s — "+
+							"the stack went away under the run (a crash, a kill or a restart loop), so the suite was not driven: %w",
+						name, raw, d, last)
+				}
+			}
+			return raw, fmt.Errorf(
 				"the %s endpoint at %s never answered within %s — the stack did not come up, so NO test ran: %w",
 				name, raw, endpointReachWait, last)
 		}

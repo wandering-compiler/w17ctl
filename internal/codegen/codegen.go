@@ -506,26 +506,27 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 		sdkGoModuleDirs(root, servicesDir, w17StubsDir, genDir),
 		core.SdkModuleBase+"/sdk/go")
 
-	if err := applyWriteOps(root, languagesDir, writes, force, unchanged); err != nil {
+	// Whether a record of an EARLIER run exists, asked before the writes
+	// lay this run's down: the orphan prune below acts only on a previous
+	// run's record (pruneStale).
+	hadRecord := writtenManifestExists(root)
+	if err := applyWriteOps(root, languagesDir, servicesDir, writes, force, unchanged); err != nil {
 		return err
 	}
+	// Recorded once more on the way out, whatever the outcome: a later step
+	// may rewrite an output it owns, and the record must hold what codegen
+	// LEFT, or the next run refuses codegen's own file.
+	defer recordWrittenManifest(root, writes)
 
 	// Vendor the admin SPA runtime (public @w17/admin-runtime, embedded in
-	// this client) into <w17>/admin-runtime/ when this run emitted an admin
-	// bundle — the generated spa/package.json + Dockerfile reference it there
-	// via a local file: path. Delivered by the PUBLIC client, offline: no npm,
-	// no private srcgo, no console round-trip. Not marker-bearing, so the
-	// orphan prune below leaves it alone.
-	if adminBundleEmitted(writes) {
-		w17Root := "w17"
-		if s := filepath.ToSlash(servicesDir); s != "" {
-			w17Root = strings.SplitN(s, "/", 2)[0]
-		}
-		vendorRel := path.Join(w17Root, "admin-runtime")
-		if err := adminruntime.WriteTo(filepath.Join(root, filepath.FromSlash(vendorRel))); err != nil {
-			return fmt.Errorf("vendor admin runtime: %w", err)
-		}
-		fmt.Fprintf(core.Stdout, "vendored admin runtime → %s\n", vendorRel)
+	// this client) into <w17>/admin-runtime/ whenever the project HAS an
+	// admin bundle — the generated spa/package.json + Dockerfile reference it
+	// there via a local file: path. Delivered by the PUBLIC client, offline:
+	// no npm, no private srcgo, no console round-trip. Not marker-bearing, so
+	// the orphan prune below leaves it alone. See vendorAdminRuntime for why
+	// this is not gated on the run's write list any more.
+	if err := vendorAdminRuntime(root, servicesDir, writes, core.Stdout); err != nil {
+		return err
 	}
 
 	// The bundle `.env` is author-owned (generate-if-missing), so a regen that
@@ -576,20 +577,8 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	for _, f := range writes {
 		kept[filepath.ToSlash(f.GetRelativePath())] = true
 	}
-	n, pErr := pruneOrphans(root, view.GetCleanPaths(), kept, servicesDir, core.Stdout)
-	if pErr != nil {
-		return fmt.Errorf("prune orphans: %w", pErr)
-	}
-	// The infrastructure's roots (deploy/, .github/workflows) are shared with
-	// files people own, so they prune by the infra target's OWN banner, not the
-	// general one: a w17 file a person copied into .github/workflows (the
-	// w17/ci/ templates say to) carries the general banner and is theirs.
-	m, pErr := pruneOrphansMarked(root, view.GetPrunePaths(), kept, hasInfraMarker, core.Stdout)
-	if pErr != nil {
-		return fmt.Errorf("prune orphans: %w", pErr)
-	}
-	if n+m > 0 {
-		fmt.Fprintf(core.Stdout, "codegen: pruned %d stale generated file(s)\n", n+m)
+	if err := pruneStale(root, view.GetCleanPaths(), view.GetPrunePaths(), kept, servicesDir, hadRecord, core.Stdout); err != nil {
+		return err
 	}
 
 	// Add every generated bundle module + the stubs module to the project's
@@ -1259,17 +1248,8 @@ func latestVersionFromProxy(ctx context.Context, mod string) (string, error) {
 	return parseModuleVersion([]byte(info.Version))
 }
 
-// envDriftWarnings compares each bundle's live on-disk `.env` against the
-// `.env.defaults` regenerated in the SAME run and returns a warning per
-// bundle whose live `.env` is missing keys the defaults now carry. The `.env`
-// is generate-if-missing (author-owned) so codegen never overwrites it; this
-// is the non-destructive nudge that a new/renamed setting (e.g. a freshly
-// added `<PREFIX>_BUSINESS_BACKEND_ADDR`) hasn't reached the live file, which
-// otherwise surfaces only as a runtime failure. Values are never compared —
-// only key presence — so operator-tuned values never trip it.
 // adminBundleEmitted reports whether the write set includes an admin
-// bundle's SPA package.json — the signal that this project needs the
-// vendored @w17/admin-runtime dropped alongside it.
+// bundle's SPA package.json.
 func adminBundleEmitted(writes []*codegenpb.GeneratedFile) bool {
 	for _, f := range writes {
 		if strings.Contains(filepath.ToSlash(f.GetRelativePath()), "-admin/spa/package.json") {
@@ -1279,6 +1259,59 @@ func adminBundleEmitted(writes []*codegenpb.GeneratedFile) bool {
 	return false
 }
 
+// vendorAdminRuntime keeps <w17>/admin-runtime/ equal to the runtime this
+// client ships, for every project that has an admin bundle.
+//
+// It used to run only when THIS run's write list carried an admin bundle's
+// spa/package.json. A run that did not rewrite the bundle therefore left
+// whatever runtime an earlier client had vendored, and since the copy is
+// gitignored output no diff showed it either: an adopter read an old
+// runtime, concluded a shipped fix had not landed, and reported it.
+//
+// Re-vendoring outside the write list is safe, and is what the other
+// client-delivered artefacts already do (w17/specs/* is refreshed on every
+// codegen, the sdk embeds every build): the tree is a verbatim copy owned by
+// w17ctl, never edited in the project, and rebuilt by every client. So the
+// copy is compared with what this client ships — by the stamp it carries
+// and by its bytes — and re-vendored on any difference, with the old and new
+// provenance printed so the refresh is visible. A copy with no stamp was
+// written before the stamp existed and is refreshed once.
+//
+// A project without an admin bundle is left alone, a leftover copy
+// included: nothing builds against it.
+func vendorAdminRuntime(root, servicesDir string, writes []*codegenpb.GeneratedFile, out io.Writer) error {
+	if !adminBundleEmitted(writes) && !adminruntime.ProjectHasAdmin(root, servicesDir) {
+		return nil
+	}
+	rel := adminruntime.ProjectDir(servicesDir)
+	dir := filepath.Join(root, filepath.FromSlash(rel))
+	before, err := adminruntime.Inspect(dir)
+	if err != nil {
+		return fmt.Errorf("vendor admin runtime: inspect %s: %w", rel, err)
+	}
+	n, err := adminruntime.Sync(dir)
+	if err != nil {
+		return fmt.Errorf("vendor admin runtime: %w", err)
+	}
+	switch before.State {
+	case adminruntime.Missing:
+		fmt.Fprintf(out, "vendored admin runtime → %s (w17ctl %s)\n", rel, before.Want.W17ctl)
+	case adminruntime.Fresh:
+		// Nothing to say: the copy was already this client's.
+	default:
+		fmt.Fprintf(out, "refreshed vendored admin runtime → %s (%d file(s)): it %s\n", rel, n, before.Describe())
+	}
+	return nil
+}
+
+// envDriftWarnings compares each bundle's live on-disk `.env` against the
+// `.env.defaults` regenerated in the SAME run and returns a warning per
+// bundle whose live `.env` is missing keys the defaults now carry. The `.env`
+// is generate-if-missing (author-owned) so codegen never overwrites it; this
+// is the non-destructive nudge that a new/renamed setting (e.g. a freshly
+// added `<PREFIX>_BUSINESS_BACKEND_ADDR`) hasn't reached the live file, which
+// otherwise surfaces only as a runtime failure. Values are never compared —
+// only key presence — so operator-tuned values never trip it.
 func envDriftWarnings(root string, writes []*codegenpb.GeneratedFile) []string {
 	defaultsByDir := map[string][]byte{}
 	for _, f := range writes {
@@ -1355,13 +1388,17 @@ func envKeys(b []byte) map[string]bool {
 // unchanged names files the project already holds in the exact form this run
 // would write. They stay in `writes` for the orphan prune's sake and are
 // skipped HERE, at the write itself.
-func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile, force bool, unchanged map[string]bool) error {
+func applyWriteOps(root, languagesDir, servicesDir string, writes []*codegenpb.GeneratedFile, force bool, unchanged map[string]bool) error {
 	type plannedWrite struct {
 		target   string
 		contents []byte
 	}
 	var planned []plannedWrite
-	var collisions []string
+	var collisions, foreign, owned []string
+	record, err := loadWrittenManifest(root)
+	if err != nil {
+		return fmt.Errorf("codegen: %w", err)
+	}
 	langPrefix := strings.TrimSuffix(languagesDir, "/") + "/"
 	for _, f := range writes {
 		rel := filepath.ToSlash(f.GetRelativePath())
@@ -1391,6 +1428,18 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 			}
 		}
 		contents := f.GetContents()
+		// deploy/ and .github/workflows are shared with files people own:
+		// an extra core service, an edge site, a hook. A rendered file landing
+		// on one of them — a connection declared under the name an extra
+		// service already had — would replace it, --force or not, and with it
+		// whatever it set (a password, an eviction policy). The infra
+		// target's own banner is what tells the two apart, as for pruning.
+		if infraMarkerRe.Match(contents) {
+			if _, statErr := os.Stat(target); statErr == nil && !hasInfraMarker(target) {
+				owned = append(owned, rel)
+				continue
+			}
+		}
 		// Every generated go.mod (bundle, e2erunner, stubs, …) may carry
 		// operator-maintained `replace` directives the server has no
 		// project-extrinsic knowledge of (co-dev paths to the project srcgo +
@@ -1436,12 +1485,45 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 			if unchangedApartFromTimestamp(target, contents) {
 				continue
 			}
+			// A file codegen would STAMP but whose disk copy carries no stamp
+			// is not codegen's: someone wrote it by hand at a path a generator
+			// also claims (a hand-written compose.test.yaml beside the one the
+			// scaffold emits). --force means "overwrite what you generated",
+			// not "overwrite whatever sits at your path", so it is refused in
+			// both modes, by name.
+			//
+			// A header-less format cannot carry that proof, so for it the
+			// question goes to codegen's record of what it wrote
+			// (written_manifest.go): written by codegen, and unchanged since.
+			if !isPoCatalog && !isLock {
+				if why := notOwnedByCodegen(root, servicesDir, rel, target, contents, record); why != "" {
+					foreign = append(foreign, target+" ("+why+")")
+					continue
+				}
+			}
 			if !isPoCatalog && !isLock && !force {
 				collisions = append(collisions, target)
 				continue
 			}
 		}
 		planned = append(planned, plannedWrite{target: target, contents: contents})
+	}
+	if len(owned) > 0 {
+		sort.Strings(owned)
+		return fmt.Errorf("codegen: the infra target now renders %d file(s) that are yours:\n  %s\n"+
+			"  why: a file there without the `Code generated by w17 (infra target …)` banner is yours (an extra\n"+
+			"       service, a site, a hook), and writing over it would drop what it sets — even with --force\n"+
+			"  fix: move what it sets into compose.override.yaml beside it (the deploy merges that over the\n"+
+			"       generated compose.yaml), delete the file, and re-run codegen",
+			len(owned), strings.Join(owned, "\n  "))
+	}
+	if len(foreign) > 0 {
+		sort.Strings(foreign)
+		return fmt.Errorf("%d file(s) at a path codegen writes are not what codegen wrote there, so it "+
+			"will not overwrite them, even with --force:\n  %s\n"+
+			"Rename the file to keep it as your own (and point whatever reads it at the new name), "+
+			"or delete it to let codegen own that path",
+			len(foreign), strings.Join(foreign, "\n  "))
 	}
 	if len(collisions) > 0 {
 		sort.Strings(collisions)
@@ -1455,6 +1537,13 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 	// Write pass — every body is final (go.mod already merged), so nothing here
 	// can fail on input parsing: a half-regenerated tree is reachable only via a
 	// filesystem error (mkdir/write), not a malformed input.
+	//
+	// The record is written however the pass ends. Interrupted halfway, the
+	// files already written are codegen's and must be recorded as such, or
+	// the next run refuses them as "changed since codegen wrote it"; the
+	// targets not reached yet still hold bytes this pass already accepted as
+	// codegen's (every refusal happened above), so recording those is true too.
+	defer recordWrittenManifest(root, writes)
 	for _, p := range planned {
 		// A body whose ONLY difference from the file on disk is its own
 		// generation timestamp is not a change. Writing it anyway produces a
@@ -1493,6 +1582,50 @@ func applyWriteOps(root, languagesDir string, writes []*codegenpb.GeneratedFile,
 		}
 	}
 	return nil
+}
+
+// notOwnedByCodegen says why the file at target is NOT one codegen may
+// replace, or "" when it is.
+//
+// A stamped output (the incoming body carries the general banner or the infra
+// target's) is codegen's when the disk copy carries the banner too, or lives
+// in a bundle's staged plugin tree, which is staging's by PATH (staged copies
+// carried no header until 2026-10-03 — see stagedPluginFile).
+//
+// A header-less output (JSON, a .env.defaults, a package.json) has no banner
+// to look for, so its absence proves nothing. It is codegen's when codegen's
+// record names it with the digest of what is on disk now (written by codegen,
+// edited by nobody since), or when the project has no record yet — the first
+// run after an upgrade, or a fresh clone; see loadWrittenManifest. Two
+// header-less outputs are codegen's by path, like the staged tree: a go.mod,
+// which codegen merges (operator `replace` lines and the resolved sdk/go pin
+// are spliced back in, so an edit to one is expected, not foreign — and
+// codegen never emits the project's own), and the staged plugin tree.
+func notOwnedByCodegen(root, servicesDir, rel, target string, incoming []byte, record *writtenManifest) string {
+	if stagedPluginFile(root, servicesDir, target) {
+		return ""
+	}
+	if !headerlessOutput(incoming) {
+		if hasGeneratedMarker(target) || hasInfraMarker(target) {
+			return ""
+		}
+		// An output that GAINED a header (a compiler upgrade): the copy on
+		// disk is from before, and the record knows whether codegen wrote it.
+		if record != nil && record.wrote(rel, target) {
+			return ""
+		}
+		return "no generated header"
+	}
+	if record == nil || filepath.Base(rel) == "go.mod" {
+		return ""
+	}
+	if _, ok := record.Files[rel]; !ok {
+		return "not written by codegen"
+	}
+	if !record.wrote(rel, target) {
+		return "changed since codegen wrote it"
+	}
+	return ""
 }
 
 // pinFingerprintOf reads the ecosystem-pin fingerprint a generated go.mod
@@ -1844,21 +1977,36 @@ func ConnectionDomain(name string) string {
 	return name
 }
 
-// generatedMarkerRe matches the Go-convention "generated code" banner
-// (`// Code generated <tool>. DO NOT EDIT.`) in any comment style — w17's
-// own variants (`Code generated by w17 / w17ctl / wandering-compiler …`) and
-// the protoc-gen-go pb banner all share the `Code generated … DO NOT EDIT`
-// shape. The leading `.{0,16}` bounds the match to a comment prefix at line
-// start (`//`, `#`, `--`, `<!--`, `/*` + space), so prose that merely mentions
-// the phrase mid-line never matches.
+// generatedMarkerRe matches every "generated, do not edit" banner codegen
+// writes, in any comment style. The families, as the generators spell them:
 //
-// The FE client generator writes its own banner (`// Generated by
-// wandering-compiler client generator (C1).`), and that is the second
-// alternative. Without it no client file was ever recognised as generated, so
-// neither codegen nor `target client generate` pruned a client tree: a client
-// switched to another rest_surface kept every file of the old surface beside
-// the new one.
-var generatedMarkerRe = regexp.MustCompile(`(?m)^.{0,16}(Code generated .*DO NOT EDIT|Generated by wandering-compiler client generator)`)
+//   - `Code generated <tool>. DO NOT EDIT.` — the Go convention; w17's own
+//     variants (`by w17`, `by w17ctl`, `by wandering-compiler …`, `by w17
+//     plugin staging …`, `by fasttmplgen …`) and protoc-gen-go's pb banner;
+//   - `Generated by w17 codegen[ — <file>]. DO NOT EDIT.` — compose.w17.yaml,
+//     w17/rsync.ignore, every bundle Dockerfile, .env.defaults …;
+//   - `Generated by wandering-compiler eventbus codegen. DO NOT EDIT.`;
+//   - the same with `DO NOT EDIT.` on the NEXT line (the eventbus and gateway
+//     Go generators, the ACL lock embed);
+//   - `generated by w17ctl projectmap. DO NOT EDIT.` — w17/map/, w17/AGENTS.md,
+//     whose first line names the file before it;
+//   - `(GENERATED — DO NOT EDIT; refresh with `w17ctl guide`)` — w17/specs/;
+//   - `Generated by wandering-compiler client generator` — the FE client
+//     banner, which says no DO NOT EDIT at all.
+//
+// A banner that INVITES edits (`Generated by w17 codegen. Adjust as needed.`,
+// `… ; .env is yours to edit`) is deliberately not one: such a file is the
+// author's to change, and codegen's record of what it wrote decides it.
+//
+// The `.{0,16}` prefix bounds a match to a comment opener at line start
+// (`//`, `#`, `--`, `<!--`, `/*` + space), so prose that merely mentions the
+// phrase mid-line never matches. TestGeneratedMarker_EveryBannerInTheExamples
+// holds this list to the generated example trees.
+var generatedMarkerRe = regexp.MustCompile(`(?m)` +
+	`^.{0,16}(?:Code generated|Generated by (?:w17|wandering-compiler)\b)[^\n]*(?:\n.{0,16})?DO NOT EDIT` +
+	`|^.{0,16}Generated by wandering-compiler client generator` +
+	`|^.{0,48}generated by w17ctl projectmap\. DO NOT EDIT` +
+	`|^# [^\n]*\(GENERATED — DO NOT EDIT; refresh with`)
 
 // hasGeneratedMarker reports whether the file's head carries the
 // generated-code banner. Only the first 4 KiB is read — the banner is a
@@ -1888,6 +2036,52 @@ func hasGeneratedMarker(path string) bool {
 	head := make([]byte, 4096)
 	n, _ := f.Read(head)
 	return generatedMarkerRe.Match(head[:n])
+}
+
+// pruneStale is codegen's orphan prune: it removes a file only when an
+// EARLIER run wrote it — the record (written_manifest.go) lists it — this run
+// did not, and its digest still matches what codegen left. A banner alone is
+// not enough: a person's copy of a generated file (a Dockerfile.custom copied
+// from the bundle's Dockerfile; a compose.prod.yaml from compose.w17.yaml
+// under a client root of `.`; their own .pb.go there) carries the banner it
+// was copied with, and the prune deleted it on every codegen. A recorded file
+// edited since is left in place and said so.
+//
+// Without a record from an earlier run (the first run after an upgrade, a
+// fresh clone) nothing is pruned: nothing says which of the banner-carrying
+// files codegen wrote. That run writes the record, and the next one prunes.
+// A leftover from before the record is therefore never pruned automatically;
+// deleting it by hand is the way.
+//
+// The infrastructure's roots (deploy/, .github/workflows) are shared with
+// files people own, so they also require the infra target's OWN banner, not
+// the general one: a w17 file a person copied into .github/workflows (the
+// w17/ci/ templates say to) carries the general banner and is theirs.
+func pruneStale(root string, cleanPaths, prunePaths []string, kept map[string]bool, servicesDir string, hadRecord bool, stdout io.Writer) error {
+	if !hadRecord {
+		return nil
+	}
+	record, err := loadWrittenManifest(root)
+	if err != nil {
+		return fmt.Errorf("prune orphans: %w", err)
+	}
+	if record == nil {
+		return nil
+	}
+	n, err := pruneOrphansRecorded(root, cleanPaths, kept, func(p string) bool {
+		return hasGeneratedMarker(p) || stagedPluginFile(root, servicesDir, p)
+	}, record, stdout)
+	if err != nil {
+		return fmt.Errorf("prune orphans: %w", err)
+	}
+	m, err := pruneOrphansRecorded(root, prunePaths, kept, hasInfraMarker, record, stdout)
+	if err != nil {
+		return fmt.Errorf("prune orphans: %w", err)
+	}
+	if n+m > 0 {
+		fmt.Fprintf(stdout, "codegen: pruned %d stale generated file(s)\n", n+m)
+	}
+	return nil
 }
 
 // pruneOrphans deletes stale w17-generated files left behind when a surface
@@ -1965,6 +2159,18 @@ func hasClientMarker(path string) bool {
 // caller whose write set covers only some generators must sweep only what
 // those generators mark.
 func pruneOrphansMarked(root string, roots []string, kept map[string]bool, marked func(string) bool, stdout io.Writer) (int, error) {
+	return pruneOrphansRecorded(root, roots, kept, marked, nil, stdout)
+}
+
+// pruneOrphansRecorded is pruneOrphansMarked gated by codegen's record: with
+// a record, a file is removed only when the record lists it and its digest
+// still matches (see pruneStale); nil applies the marker alone, which is
+// what `target client generate` — whose writes keep no record — still does.
+//
+// Neither descends into node_modules or vendor: those trees are installed by
+// a package manager, never written by codegen, and a dependency carrying a
+// `Code generated` banner is the norm there.
+func pruneOrphansRecorded(root string, roots []string, kept map[string]bool, marked func(string) bool, record *writtenManifest, stdout io.Writer) (int, error) {
 	removed := 0
 	for _, r := range roots {
 		// The clean roots are SERVER-SUPPLIED (view.GetCleanPaths()); guard each
@@ -1985,6 +2191,9 @@ func pruneOrphansMarked(root string, roots []string, kept map[string]bool, marke
 				return err
 			}
 			if d.IsDir() {
+				if n := d.Name(); n == "node_modules" || n == "vendor" {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			rel, relErr := filepath.Rel(root, p)
@@ -1994,6 +2203,15 @@ func pruneOrphansMarked(root string, roots []string, kept map[string]bool, marke
 			relSlash := filepath.ToSlash(rel)
 			if kept[relSlash] || !marked(p) {
 				return nil
+			}
+			if record != nil {
+				if _, ok := record.Files[relSlash]; !ok {
+					return nil // codegen never wrote it: not its to delete
+				}
+				if !record.wrote(relSlash, p) {
+					fmt.Fprintf(stdout, "left in place: %s (edited since codegen wrote it; delete it if it is not needed)\n", relSlash)
+					return nil
+				}
 			}
 			if rmErr := os.Remove(p); rmErr != nil {
 				return fmt.Errorf("prune orphan %s: %w", relSlash, rmErr)

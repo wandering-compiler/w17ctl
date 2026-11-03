@@ -39,7 +39,7 @@ type BinaryCmd struct {
 // tier stack), else a gateway set → `<domain>-gateway`.
 type BinaryComposeCmd struct {
 	Domain     string `arg:"" help:"Domain whose components to compose (matches proto/domains/<DOMAIN>/)."`
-	Components string `name:"components" placeholder:"LIST" required:"" help:"Comma-separated component set. gateway is required: the domain's gateway, or its private one when it has no other. gateway,admin folds admin into the gateway; gateway,storage[,business] (±admin ±eventbus) folds the full tier stack into one <domain>-server with direct in-process tier calls — the only fold for a domain whose only gateway is private."`
+	Components string `name:"components" placeholder:"LIST" required:"" help:"Comma-separated component set; gateway is required. gateway stands for every gateway surface the domain declares — REST, public gRPC, MCP and its private gateway — all served by the one binary, each on its own listener; for a domain with no public surface it is the private gateway alone. gateway,admin folds admin into the gateway; gateway,storage[,business] (±admin ±eventbus) folds the full tier stack into one <domain>-server with direct in-process tier calls — the only fold for a domain whose only gateway is private."`
 	LockPath   string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
 	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
 }

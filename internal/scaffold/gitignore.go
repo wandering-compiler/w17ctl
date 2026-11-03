@@ -41,6 +41,10 @@ var w17IgnoreEntries = []w17IgnoreEntry{
 	{"Local env + secrets. The committed *.defaults / *.example templates are the\n# tracked source; the filled-in local copies below stay out of git.", ".env"},
 	{"", ".env.local"},
 	{"", ".secrets"},
+	// Codegen's record of what it wrote (digests of this checkout's
+	// header-less outputs). Machine-local: it describes this disk, most of
+	// it the ignored compiler output, so a committed copy would churn.
+	{"Codegen's record of the files it wrote — describes this checkout's disk.", "/.codegen-manifest.json"},
 
 	// ---- Compiler output -------------------------------------------------
 	//
