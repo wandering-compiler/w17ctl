@@ -196,6 +196,14 @@ func (c *BuildCmd) Run() error {
 				fmt.Fprintln(core.Stdout, line)
 			}
 		}
+		// The build replaced IMAGES, not containers: a running service keeps
+		// the image and the environment it started with. A changed `.env` is
+		// the case nobody suspects — the rebuilt service reads like a fresh
+		// one and still answers with the old value — so say once what picks
+		// both up. Only when something runs; a failed lookup says nothing.
+		if running, err := composeRunningFn(root); err == nil && len(running) > 0 {
+			fmt.Fprintln(core.Stdout, recreateHint)
+		}
 	}
 	// --no-build stops HERE and falls through to the diff-apply. The two steps
 	// are independent and only share a command: building images has nothing to
@@ -206,6 +214,14 @@ func (c *BuildCmd) Run() error {
 
 	return c.diffApplyTail(root, applyWrap)
 }
+
+// describeLockIfPresent reads the lock's projection (core.DescribeLockIfPresent);
+// a variable so this package's tests, which run with a lock and no console,
+// can stand in for it.
+var describeLockIfPresent = core.DescribeLockIfPresent
+
+// recreateHint is what a local build prints while the stack runs.
+const recreateHint = "stack build: the running containers keep the image and the .env they started with — run 'w17ctl stack up' to recreate them (a changed .env needs it too)"
 
 // diffApplyTail resolves the dev-diff-apply inputs (model protos + local
 // store targets, both auto-resolved so the zero-flag build just works) and
@@ -245,10 +261,15 @@ func (c *BuildCmd) resolveProtos(root string) (protos, imports []string, cleanup
 	if len(c.Protos) > 0 {
 		return c.Protos, c.Imports, cleanup, nil
 	}
-	// proto dir from the console's lock projection (best-effort: a lock-less /
-	// console-down project falls back to the conventional "proto").
+	// proto dir from the console's lock projection: a lock-less project falls
+	// back to the conventional "proto"; a lock the console cannot read is the
+	// error, never a silent fallback (DescribeLockIfPresent).
 	protoDir := "proto"
-	if view := core.DescribeLockBestEffort(c.Console); view != nil && view.GetProtoDir() != "" {
+	view, err := describeLockIfPresent(c.Console)
+	if err != nil {
+		return nil, nil, cleanup, fmt.Errorf("stack build: %w", err)
+	}
+	if view.GetProtoDir() != "" {
 		protoDir = view.GetProtoDir()
 	}
 	base := filepath.Join(root, protoDir)
@@ -481,13 +502,15 @@ func (c *BuildCmd) ResolveTargets(root string) ([]factory.TargetSpec, error) {
 	if rerr != nil {
 		return nil, fmt.Errorf("stack build: %w", rerr)
 	}
-	// Connection names from the console's lock projection (best-effort: a
-	// lock-less / console-down project yields no auto-resolved targets).
+	// Connection names from the console's lock projection: a lock-less project
+	// yields no auto-resolved targets; an unreadable lock is the error.
 	var connNames []string
-	if view := core.DescribeLockBestEffort(c.Console); view != nil {
-		for _, conn := range view.GetConnections() {
-			connNames = append(connNames, conn.GetName())
-		}
+	view, err := describeLockIfPresent(c.Console)
+	if err != nil {
+		return nil, fmt.Errorf("stack build: %w", err)
+	}
+	for _, conn := range view.GetConnections() {
+		connNames = append(connNames, conn.GetName())
 	}
 	// What compose publishes NOW beats what this machine's config remembers —
 	// see localtarget.ResolveLive for why the memory was the remaining half of

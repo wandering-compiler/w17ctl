@@ -25,6 +25,7 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/remote"
+	"github.com/wandering-compiler/w17ctl/internal/stackship"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 )
 
@@ -61,56 +62,12 @@ var run = func(stdin io.Reader, stdout io.Writer, dir, name string, args ...stri
 // self is the path of this binary, for the steps that are other w17ctl commands.
 var self = os.Executable
 
-// fetchTokenVar names the token the values are fetched with: a machine
-// account's, given Deploy access to the environment on the project's page.
-// Not W17_TOKEN — the rest of a deploy (the lock, the migrations, codegen)
-// runs as you, and the deploy-fetch role may do nothing but fetch.
-const fetchTokenVar = "W17_FETCH_TOKEN" //nolint:gosec // G101: the variable's name, not a credential.
+// fetchTokenVar names the token the values are fetched with (stackship).
+const fetchTokenVar = stackship.FetchTokenVar
 
-// fetchEnv is the seam the tests replace: the deploy bot's fetch, run as
-// `w17ctl secrets fetch` in a child whose W17_TOKEN is $W17_FETCH_TOKEN (and
-// with no device key: that one belongs to your login). It writes one file per
-// service into dir, checked against the rendered stack — or nothing.
-//
-// The console is resolved here and handed to the child both as --console and
-// as W17_CONSOLE_ADDR: an env token is presented only to the console it is
-// bound to, and a child left to resolve it on its own could bind it to
-// another one and send the stored login instead.
-var fetchEnv = func(root, selfPath, lockPath, console, env, ref, dir string, asJSON bool) error {
-	addr, err := core.ResolveConsoleAddr(console)
-	if err != nil {
-		return err
-	}
-	args := []string{"secrets", "fetch", "--env", env, "--ref", ref, "--out", dir, "--lock", lockPath, "--console", addr}
-	if asJSON {
-		args = append(args, "--json")
-	}
-	// No deploy bot: the values are read as you, under a read code from the
-	// project's page (secrets fetch --read) — a deploy from your own machine
-	// needs no bot. Your login and key stay; the code is asked on the terminal
-	// unless $W17_SECRETS_CODE carries it.
-	if os.Getenv(fetchTokenVar) == "" {
-		fmt.Fprintf(core.Stdout, "no %s: reading %s's values as you, with a read code\n", fetchTokenVar, env)
-		cmd := exec.Command(selfPath, append(args, "--read")...) // #nosec G204 -- this binary
-		cmd.Dir, cmd.Stdin, cmd.Stdout, cmd.Stderr = root, os.Stdin, core.Stdout, os.Stderr
-		for _, kv := range os.Environ() {
-			if !strings.HasPrefix(kv, core.EnvConsoleAddrVar+"=") {
-				cmd.Env = append(cmd.Env, kv)
-			}
-		}
-		cmd.Env = append(cmd.Env, core.EnvConsoleAddrVar+"="+addr)
-		return cmd.Run()
-	}
-	cmd := exec.Command(selfPath, args...) // #nosec G204 -- this binary
-	cmd.Dir, cmd.Stdout, cmd.Stderr = root, core.Stdout, os.Stderr
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "W17_TOKEN=") && !strings.HasPrefix(kv, core.EnvDPoPKeyVar+"=") && !strings.HasPrefix(kv, core.EnvConsoleAddrVar+"=") {
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
-	cmd.Env = append(cmd.Env, "W17_TOKEN="+os.Getenv(fetchTokenVar), core.EnvConsoleAddrVar+"="+addr)
-	return cmd.Run()
-}
+// fetchEnv is the seam the tests replace: the deploy bot's fetch
+// (stackship.FetchEnv), one file per service into dir — or nothing.
+var fetchEnv = stackship.FetchEnv
 
 func (c *Cmd) Run() error {
 	fmt.Fprint(core.Stdout, warning)
@@ -323,39 +280,13 @@ func (c *Cmd) Run() error {
 
 	stack := "/opt/stack/" + c.Env
 	step("the stack's files")
-	rsync := append(append([]string(nil), rsyncFlags...), target.RsyncArgs()...)
-	srcs := append([]string(nil), remote.StackFiles...)
-	if st, err := os.Stat(filepath.Join(envDir, "hooks")); err == nil && st.IsDir() {
-		srcs = append(srcs, "hooks")
-	} else if err := target.Run(nil, io.Discard, target.Sudo("rm -rf "+stack+"/hooks")); err != nil {
-		// A hook deleted here must not keep running there.
-		return fmt.Errorf("deploy: removing %s/hooks: %w", stack, err)
-	}
-	if err := run(nil, core.Stdout, envDir, "rsync", append(append(rsync, "--exclude", ".env*"), append(srcs, target.Dest()+":"+stack+"/")...)...); err != nil {
-		return fmt.Errorf("deploy: rsync: %w", err)
-	}
-	files := []string{"w17/lock.yaml"}
-	if st, err := os.Stat(filepath.Join(root, "w17", "fixtures")); err == nil && st.IsDir() {
-		files = append(files, "w17/fixtures")
-	}
-	if err := run(nil, core.Stdout, root, "rsync", append(append(rsync, "-R"), append(files, target.Dest()+":"+stack+"/")...)...); err != nil {
-		return fmt.Errorf("deploy: rsync: %w", err)
+	if err := stackship.SendFiles(run, target, root, envDir, stack); err != nil {
+		return fmt.Errorf("deploy: %w", err)
 	}
 
 	step("the env files, from the console into ssh")
-	envFiles, _ := filepath.Glob(filepath.Join(valuesDir, "*.env"))
-	sort.Strings(envFiles)
-	for _, p := range envFiles {
-		svc := strings.TrimSuffix(filepath.Base(p), ".env")
-		body, err := os.ReadFile(p) // #nosec G304 -- the fetch's own output
-		if err != nil {
-			return err
-		}
-		dst := remote.ShellQuote(stack + "/env/" + svc + ".env")
-		write := fmt.Sprintf("umask 077; mkdir -p %s && cat > %s.new && mv %s.new %s", remote.ShellQuote(stack+"/env"), dst, dst, dst)
-		if err := target.Run(bytes.NewReader(body), io.Discard, target.Sudo("sh -c "+remote.ShellQuote(write))); err != nil {
-			return fmt.Errorf("deploy: delivering %s.env: %w", svc, err)
-		}
+	if err := stackship.SendEnv(target, valuesDir, stack); err != nil {
+		return fmt.Errorf("deploy: %w", err)
 	}
 
 	exports := fmt.Sprintf("export DEPLOY_TAG=%s PG_TAG=%s IMAGE_PREFIX=%s CUSTOM_IMAGES=%s REGISTRY=\n",
@@ -394,7 +325,7 @@ func (c *Cmd) Run() error {
 }
 
 // rsyncFlags copy a stack's files to a server as root's, read-only to others.
-var rsyncFlags = []string{"-az", "--delete-after", "--chown=root:root", "--chmod=go-w"}
+var rsyncFlags = stackship.RsyncFlags
 
 // fingerprintLine is how a deploy-server.sh hands a fingerprint to the
 // deploy, for the other machine.

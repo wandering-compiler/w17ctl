@@ -111,7 +111,7 @@ func (c *DevCmd) Run() error {
 	}
 	defer restore()
 
-	if err := devScaffold(abs, name, feats, companions, c.Console); err != nil {
+	if err := devScaffold(abs, name, feats, companions, c.Console, c.Org); err != nil {
 		return err
 	}
 
@@ -147,17 +147,16 @@ func (c *DevCmd) Run() error {
 // once, because the lock and the domain proto must agree on it.
 const devConnection = "app-postgres"
 
-// devScaffold writes the project files that turn this plugin on.
-//
-// Two files, and they are the whole activation: a domain sentinel carrying the
-// plugin with its features, and a REST registry including the plugin's presets
-// so its endpoints exist on a surface. Anything else a project has is not
-// needed to find out whether a plugin generates.
-func devScaffold(dir, name string, feats []string, companions []*signInPlugin, console string) error {
-	initc := &initcmd.Cmd{
+// devInitCmd is the init a throwaway project starts from. It carries --org:
+// without it init asks which organization owns the project whenever the
+// caller belongs to several and set no default — a prompt no unattended run
+// (a check, a pipeline) can answer.
+func devInitCmd(org string) *initcmd.Cmd {
+	return &initcmd.Cmd{
 		LockPath: filepath.Join("w17", "lock.yaml"),
 		Name:     "plugindev",
 		GoModule: "example.com/plugindev",
+		Org:      org,
 		// The values the documented first run uses, so this project is shaped
 		// like one a person would get rather than one only this command makes.
 		StubsRoot:       filepath.Join("srcgo", "gen"),
@@ -169,6 +168,16 @@ func devScaffold(dir, name string, feats []string, companions []*signInPlugin, c
 		CI:              "none",
 		SkipConnections: true,
 	}
+}
+
+// devScaffold writes the project files that turn this plugin on.
+//
+// Two files, and they are the whole activation: a domain sentinel carrying the
+// plugin with its features, and a REST registry including the plugin's presets
+// so its endpoints exist on a surface. Anything else a project has is not
+// needed to find out whether a plugin generates.
+func devScaffold(dir, name string, feats []string, companions []*signInPlugin, console, org string) error {
+	initc := devInitCmd(org)
 	if err := os.WriteFile("go.mod", []byte("module example.com/plugindev\n\ngo 1.26\n"), 0o644); err != nil {
 		return fmt.Errorf("plugin dev: %w", err)
 	}
@@ -828,10 +837,10 @@ func devFeatures(dir, csv string, all bool) ([]string, error) {
 //
 // ⚠️ "EVERY FEATURE" IS NOT NECESSARILY AN ACTIVATION, and the first version of
 // this command assumed it was. Measured on the first run of the dev lane: auth
-// declares `tenant_scope` as incompatible with `oauth`, so asking for all
-// seventeen is refused by the compiler — `features "oauth" and "tenant_scope"
-// cannot be enabled together`. A flag whose whole job is to reach features
-// nothing else turns on cannot be a flag that never generates.
+// declared two of its features incompatible, so asking for all of them was
+// refused by the compiler — `features "…" and "…" cannot be enabled
+// together`. A flag whose whole job is to reach features nothing else turns
+// on cannot be a flag that never generates.
 //
 // So it walks the manifest IN ORDER and takes each feature unless it conflicts
 // with one already taken. Manifest order rather than a search for the true

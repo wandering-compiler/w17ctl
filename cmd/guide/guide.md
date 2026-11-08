@@ -289,6 +289,7 @@ compiler directly — you drive `w17ctl`.
 | Check for generated-vs-proto drift (CI) | `w17ctl verify` |
 | Plan / list migrations | `w17ctl migrate generate` / `migrate list` |
 | Will a mint need a decision? (every PR) | `w17ctl migrate check` (`--write` to create the decision files) |
+| Repair a stored migration a deploy stopped on (no environment applied it) | `w17ctl migrate replace <id> --confirm-not-applied` — see `w17/specs/migrations.md` |
 | Seed fixtures | `w17ctl fixtures …` |
 | Run the local stack | `w17ctl stack up` / `down` / `logs` |
 | Run the e2e suite | `w17ctl test --target <url>` |
@@ -328,7 +329,7 @@ All four combinations mean something:
 column is NOT NULL **and the server does not supply the value itself**". The
 server supplies it when the field is a primary key, carries a `default_` /
 `default_auto`, or is stamped from a data scope (`org_id`, `user_id`,
-`tenant_id`). Those are `NOT NULL` columns you must never send — and are not
+`team_id`). Those are `NOT NULL` columns you must never send — and are not
 required inputs.
 
 State `required` explicitly only to override that:

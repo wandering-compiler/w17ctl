@@ -31,6 +31,8 @@ type Cmd struct {
 	Migrate  MigrateCmd  `cmd:"" help:"Move a lock's infra block into w17/infra.yaml (once; every infra edit does it too)."`
 	Plan     PlanCmd     `cmd:"" help:"What a deploy of an environment would change: the rendered stack against what the server runs (swarm), or terraform plan (aws-ecs / gcp-cloudrun)."`
 	Setup    SetupCmd    `cmd:"" help:"Prepare an environment's server (swarm): copy deploy/<env>/install to the target's ssh and run setup.sh there as root, with your own SSH key."`
+	Recover  RecoverCmd  `cmd:"" help:"A dead server's environment on a new one (swarm): setup.sh on --to, the stack's files and the values from the console, then every backed-up database server restored from its latest backup (install/recover.sh) after you confirm the old server is off. Deploys nothing: the deploy that follows starts the databases."`
+	Restore  RestoreCmd  `cmd:"" help:"One database of a running swarm environment back from its server's latest backup (install/restore-db.sh): a side instance, a dump of the database from it, the current one kept as <db>_before_restore_<ts>, the dump restored and migrated by the release running now. --drop-previous <ts> drops a kept copy."`
 }
 
 // flags are the pre-answers shared by init and update.

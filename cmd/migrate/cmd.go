@@ -36,6 +36,10 @@ import (
 //	                     collapse the history into one baseline the
 //	                     collapsed rows point at (they are KEPT, which
 //	                     is what separates this from reset)
+//	migrate replace    — repair a stored migration that cannot apply:
+//	                     supersede it (kept) and every later one on its
+//	                     connection, store one replacement planned from
+//	                     the schema before it, re-pin the lock
 //
 // FETCH, APPLY AND ROLLBACK ARE NOT HERE. They belong to the generated binary
 // that owns the database — see the note at the top of apply.go. This client
@@ -55,6 +59,7 @@ type Cmd struct {
 	VerifyHistory VerifyHistoryCmd `cmd:"" name:"verify-history" help:"Ask the console whether this project's recorded migration history reproduces its stored schema — the clean-gate. Read-only. Answers consistent / drifted / unknown; unknown means no evidence (a project pushed before revisions were recorded), not drift."`
 	Check         CheckCmd         `cmd:"" help:"What would 'migrate generate' do now? Plans the current proto on the console WITHOUT storing anything, with the decisions in w17/migrate-decisions/. Exit 0 = nothing to decide; 2 = a change needs a decision (--write creates the file to decide in); 3 = decision files need tidying (--write, or --rewrite to start over); 4 = with --generated, the proto has changes not generated or not pinned in the lock. Safe for every member and every PR: it mints nothing."`
 	Squash        SquashCmd        `cmd:"" help:"Freeze a change request together with its migrations: collapse the project's history into one baseline the collapsed migrations point at. Unlike reset the rows are KEPT, and a deployment already at the old head records the baseline without running it."`
+	Replace       ReplaceCmd       `cmd:"" help:"Repair a stored migration that cannot apply (a deploy stopped on it): supersede it and every later migration on its connection (KEPT, never served again), store one replacement the console plans from the schema before it, and re-pin the lock. Only for a migration NO environment applied — '--confirm-not-applied' states it, and the console refuses one a database last reported applied."`
 }
 
 // GenerateCmd backs `w17ctl migrate generate` — the compiled-IR

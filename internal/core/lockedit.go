@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -119,21 +120,30 @@ func DescribeLockFromRoot(console, root string) (*codegenpb.LockView, error) {
 	return DescribeLock(console, lockBytes)
 }
 
-// DescribeLockBestEffort finds the project root + returns the lock's routing
-// projection, or nil on ANY failure (no root / no lock / console unreachable).
-// The best-effort counterpart to the old LoadLockBestEffort — for read sites
-// that fall back to defaults when the lock can't be resolved (e.g. stack's
-// proto-dir / connection auto-resolution).
-func DescribeLockBestEffort(console string) *codegenpb.LockView {
+// DescribeLockIfPresent returns the lock's routing projection, nil with no
+// error when there is no project or no lock (a caller falls back to the
+// conventions then), and the ERROR when a lock exists but could not be read
+// through the console.
+//
+// A best-effort read that swallows the failure is wrong here: with a lock and
+// an unreachable or refusing console it falls back to the conventional
+// "proto" dir, so `stack build` in a project whose protos live elsewhere
+// reports "no model protos found" and syncs 0 tables — a message that points
+// at the schema instead of at the console. The failure has to be the one
+// reported.
+func DescribeLockIfPresent(console string) (*codegenpb.LockView, error) {
 	root, err := FindProjectRoot()
 	if err != nil {
-		return nil
+		return nil, nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "w17", "lock.yaml")); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
 	view, err := DescribeLockFromRoot(console, root)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("read the project's lock through the console: %w", err)
 	}
-	return view
+	return view, nil
 }
 
 func dialLockConsole(console string) (CodegenConsole, *grpc.ClientConn, error) {

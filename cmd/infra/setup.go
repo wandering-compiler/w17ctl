@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -58,14 +59,14 @@ func (c *SetupCmd) Run() error {
 	if err != nil {
 		return fmt.Errorf("infra setup: %w", err)
 	}
-	if err := setupServer(target, envDir, "deploy/"+c.Env, c.Args); err != nil {
+	if err := setupServer(os.Stdin, target, envDir, "deploy/"+c.Env, c.Args); err != nil {
 		return err
 	}
 	fmt.Fprintf(core.Stdout, "server %s is ready for environment %s\n", target, c.Env)
 	for _, m := range machines {
 		// setup.sh's arguments are this server's (a backup device): the
 		// other machine backs nothing up.
-		if err := setupServer(m.SSH, m.Dir, "deploy/"+c.Env+"/machines/"+m.Name, nil); err != nil {
+		if err := setupServer(os.Stdin, m.SSH, m.Dir, "deploy/"+c.Env+"/machines/"+m.Name, nil); err != nil {
 			return err
 		}
 		fmt.Fprintf(core.Stdout, "server %s (target %s) is ready for environment %s\n", m.SSH, m.Name, c.Env)
@@ -74,8 +75,9 @@ func (c *SetupCmd) Run() error {
 }
 
 // setupServer copies dir's install/ (and hooks/) to target and runs its
-// setup.sh there as root, with the operator's own SSH key.
-func setupServer(target, dir, label string, setupArgs []string) error {
+// setup.sh there as root, with the operator's own SSH key; stdin is the
+// terminal's ssh forwards (a sudo password).
+func setupServer(stdin io.Reader, target, dir, label string, setupArgs []string) error {
 	tg, err := remote.Parse(target)
 	if err != nil {
 		return fmt.Errorf("infra setup: %w", err)
@@ -110,7 +112,7 @@ func setupServer(target, dir, label string, setupArgs []string) error {
 		run = "sudo " + run
 	}
 	remoteCmd := run + `; rc=$?; rm -rf ` + d + `; exit $rc`
-	if err := remote.SSH(os.Stdin, core.Stdout, append([]string{"-t", "-p", port, "--", dest}, remoteCmd)...); err != nil {
+	if err := remote.SSH(stdin, core.Stdout, append([]string{"-t", "-p", port, "--", dest}, remoteCmd)...); err != nil {
 		return fmt.Errorf("infra setup: setup.sh on %s failed: %w", target, err)
 	}
 	return nil

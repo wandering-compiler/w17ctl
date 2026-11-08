@@ -77,12 +77,16 @@ func (c *RenderCmd) Run() error {
 	}
 	defer cleanup()
 	if len(protos) == 0 {
+		dir, derr := c.protoDir()
+		if derr != nil {
+			return derr
+		}
 		return fmt.Errorf(
 			"fixtures render: no model protos found under %s\n"+
 				"  why: rendering a fixture is schema-aware, and an empty file set renders every\n"+
 				"       fixture to zero statements — a seed that silently does nothing\n"+
 				"  fix: pass --proto explicitly, or run this from the project root",
-			c.protoDir())
+			dir)
 	}
 	ir, err := schema.LoadIRBytes(ctx, protos, imports, c.Console)
 	if err != nil {
@@ -306,7 +310,11 @@ func (c *RenderCmd) resolveProtos() (protos, imports []string, cleanup func(), e
 	// The same discovery codegen and verify use to compute the schema a seed
 	// would be rendered against now (fixtureschema), so the two cannot come
 	// to disagree about what a render reads.
-	models, err := fixtureschema.ModelProtos(root, c.protoDir())
+	dir, err := c.protoDir()
+	if err != nil {
+		return nil, nil, cleanup, err
+	}
+	models, err := fixtureschema.ModelProtos(root, dir)
 	if err != nil {
 		return nil, nil, cleanup, fmt.Errorf("fixtures render: %w", err)
 	}
@@ -319,13 +327,18 @@ func (c *RenderCmd) resolveProtos() (protos, imports []string, cleanup func(), e
 	return models, nil, cleanup, nil
 }
 
-// protoDir is the project's proto root, from the console's lock projection
-// (best-effort: a console-down project falls back to the convention).
-func (c *RenderCmd) protoDir() string {
-	if view := core.DescribeLockBestEffort(c.Console); view != nil && view.GetProtoDir() != "" {
-		return view.GetProtoDir()
+// protoDir is the project's proto root, from the console's lock projection: a
+// lock-less project falls back to the convention; a lock the console cannot
+// read is the error (DescribeLockIfPresent).
+func (c *RenderCmd) protoDir() (string, error) {
+	view, err := core.DescribeLockIfPresent(c.Console)
+	if err != nil {
+		return "", fmt.Errorf("fixtures render: %w", err)
 	}
-	return "proto"
+	if view.GetProtoDir() != "" {
+		return view.GetProtoDir(), nil
+	}
+	return "proto", nil
 }
 
 // renderInput is one authoring fixture to render.

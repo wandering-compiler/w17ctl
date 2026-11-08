@@ -56,8 +56,14 @@ func (c *ListCmd) Run() error {
 
 	fmt.Fprintf(core.Stdout, "project %s — %d migration(s):\n", c.ProjectID, len(migrations))
 	for _, m := range migrations {
-		fmt.Fprintf(core.Stdout, "  - %s [%s]  sha256=%s\n",
+		fmt.Fprintf(core.Stdout, "  - %s [%s]  sha256=%s",
 			m.GetId(), m.GetConnection(), schema.ShortHash(m.GetContentSha256()))
+		// A superseded migration stays listed — nothing leaves a history —
+		// and is no longer served to apply; say what took its place.
+		if by := m.GetSupersededBy(); by != "" {
+			fmt.Fprintf(core.Stdout, "  (superseded by %s)", by)
+		}
+		fmt.Fprintln(core.Stdout)
 	}
 	return nil
 }
