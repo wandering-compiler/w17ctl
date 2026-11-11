@@ -120,7 +120,11 @@ func explainOutdatedClient(addr string) string {
 			"  fix first: remove the local build and install the release (curl -fsSL " + InstallerURL + " | sh),\n" +
 			"  check `which -a w17ctl` shows no other copy earlier on PATH, then w17ctl login " + displayAddr(addr) + "\n"
 	}
-	if ClientLatestFn == nil || !semver.IsValid(Version) {
+	// Read the resolver once, here: the lookup below may outlive this call
+	// (it is abandoned at the timeout, not stopped), and reading the variable
+	// from that goroutine would race whoever sets it next.
+	latestFn := ClientLatestFn
+	if latestFn == nil || !semver.IsValid(Version) {
 		return ""
 	}
 	type answer struct {
@@ -128,7 +132,7 @@ func explainOutdatedClient(addr string) string {
 		err error
 	}
 	ch := make(chan answer, 1)
-	go func() { v, err := ClientLatestFn(); ch <- answer{strings.TrimSpace(v), err} }()
+	go func() { v, err := latestFn(); ch <- answer{strings.TrimSpace(v), err} }()
 	var latest string
 	select {
 	case a := <-ch:

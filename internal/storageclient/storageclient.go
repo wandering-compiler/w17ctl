@@ -105,6 +105,9 @@ type StorageClients struct {
 	// set|unset|list|import`, and the deploy's fetch).
 	ES consolerpcpb.EnvironmentSecretsClient
 
+	// IR is the organization's issue reports (`w17ctl report`).
+	IR consolerpcpb.IssueReportsClient
+
 	Close func()
 }
 
@@ -143,6 +146,7 @@ func DialStorage(addr string) (*StorageClients, error) {
 		CQ:    consolerpcpb.NewCheckpointQueryClient(conn),
 		CM:    consolerpcpb.NewCheckpointMutationClient(conn),
 		ES:    consolerpcpb.NewEnvironmentSecretsClient(conn),
+		IR:    consolerpcpb.NewIssueReportsClient(conn),
 		Close: func() { _ = conn.Close() },
 	}, nil
 }

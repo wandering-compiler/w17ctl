@@ -243,7 +243,10 @@ and in a commit, not in the pipeline. `--no-update-check` skips the question.
 A CI that tests the project against an sdk/go it has not adopted yet (a pull
 request of the SDK itself) runs `w17ctl codegen --sdk-version <version>`
 (or `W17_SDK_VERSION`): the generated modules are written against that version
-and the floor is checked against it, while the lock keeps its pin. That is the
+and the floor is checked against it, while the lock keeps its pin. A Python,
+TypeScript or Rust business tier's image takes its business SDK at it too — a
+release from its `py/<version>` / `ts/<version>` / `rs/<version>` tag, a
+pseudo-version from its commit. That is the
 one way past a stale pin that is not an update, and it changes nothing a commit
 would keep.
 
@@ -285,7 +288,8 @@ compiler directly — you drive `w17ctl`.
 | **Activate** it — installing does NOT | name it in `(w17.domain).plugins` in the domain's `w17.proto`, then `w17ctl codegen --force` |
 | Generate all code | `w17ctl codegen` |
 | Is anything behind? (w17ctl, sdk/go, plugins) | `w17ctl update --check` |
-| Bring all of it up to date | `w17ctl update --all` (sdk update + pin, every plugin, then the binary) |
+| Bring all of it up to date | `w17ctl update --all` (sdk update + pin, the codegen version, every plugin, then the binary) |
+| Pin the codegen engine the project generates with | `w17ctl codegen-version v0.1` (a minor — always its newest patch; `update --all` sets it with the SDK) |
 | Check for generated-vs-proto drift (CI) | `w17ctl verify` |
 | Plan / list migrations | `w17ctl migrate generate` / `migrate list` |
 | Will a mint need a decision? (every PR) | `w17ctl migrate check` (`--write` to create the decision files) |

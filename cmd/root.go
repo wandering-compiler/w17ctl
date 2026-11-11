@@ -20,6 +20,7 @@ import (
 	cicmd "github.com/wandering-compiler/w17ctl/cmd/ci"
 	clientcmd "github.com/wandering-compiler/w17ctl/cmd/client"
 	codegencmd "github.com/wandering-compiler/w17ctl/cmd/codegen"
+	codegenversioncmd "github.com/wandering-compiler/w17ctl/cmd/codegenversion"
 	compatcmd "github.com/wandering-compiler/w17ctl/cmd/compat"
 	connectioncmd "github.com/wandering-compiler/w17ctl/cmd/connection"
 	consolecmd "github.com/wandering-compiler/w17ctl/cmd/console"
@@ -41,6 +42,7 @@ import (
 	plugincmd "github.com/wandering-compiler/w17ctl/cmd/plugin"
 	projectcmd "github.com/wandering-compiler/w17ctl/cmd/project"
 	pushcmd "github.com/wandering-compiler/w17ctl/cmd/push"
+	reportcmd "github.com/wandering-compiler/w17ctl/cmd/report"
 	reviewcmd "github.com/wandering-compiler/w17ctl/cmd/review"
 	sdkcmd "github.com/wandering-compiler/w17ctl/cmd/sdk"
 	secrets "github.com/wandering-compiler/w17ctl/cmd/secrets"
@@ -145,9 +147,13 @@ var root struct {
 	Client clientcmd.Cmd `cmd:"" help:"Clients of THIRD-PARTY REST APIs, from their OpenAPI documents: generate / update / list / remove. Each is a signed, generated gRPC client under proto/clients/<name>/. (The project's own frontend clients are 'target client'.)"`
 
 	// --- Secrets & TLS ---
-	Sdk     sdkcmd.Cmd  `cmd:"" help:"Public sdk/go operations — move this project onto a new SDK release (update). Needs no local Go toolchain: the require + go.sum hashes are resolved from the module proxy."`
-	Secrets secrets.Cmd `cmd:"" help:"Production-secrets operations (age tier) — mint a project age keypair (init) and encrypt a plain .secrets into a committable .secrets.age (encrypt). The runtime decrypts when a key is present, reads plain otherwise: seamless dev, strong devops."`
-	Certs   certs.Cmd   `cmd:"" help:"Fill a directory with a local dev PKI (self-signed CA + CA-signed server leaf) for the internal-mesh TLS switch (W17_INTERNAL_TLS=on). Idempotent — never overwrites existing files. init seeds w17/certs/dev.local/ automatically; use this to refill or to scaffold a prod cert dir's missing material."`
+	Sdk            sdkcmd.Cmd            `cmd:"" help:"Public sdk/go operations — move this project onto a new SDK release (update). Needs no local Go toolchain: the require + go.sum hashes are resolved from the module proxy."`
+	CodegenVersion codegenversioncmd.Cmd `cmd:"" name:"codegen-version" help:"Pin the codegen engine this project generates with — a release minor (v0.1, always its newest patch) or an exact release candidate. 'update --all' sets it to the minor of the SDK it pins."`
+	Secrets        secrets.Cmd           `cmd:"" help:"Production-secrets operations (age tier) — mint a project age keypair (init) and encrypt a plain .secrets into a committable .secrets.age (encrypt). The runtime decrypts when a key is present, reads plain otherwise: seamless dev, strong devops."`
+	Certs          certs.Cmd             `cmd:"" help:"Fill a directory with a local dev PKI (self-signed CA + CA-signed server leaf) for the internal-mesh TLS switch (W17_INTERNAL_TLS=on). Idempotent — never overwrites existing files. init seeds w17/certs/dev.local/ automatically; use this to refill or to scaffold a prod cert dir's missing material."`
+
+	// --- Issue reports ---
+	Report reportcmd.Cmd `cmd:"" help:"Tell w17 what is wrong, missing or unclear — a security issue, a bug, a docs gap, a feature request — and follow what happens to it. Kept and triaged by the console; you are mailed when it ships, or when triage makes it later than you expect."`
 
 	// --- Testing ---
 	Test   testcmd.Cmd   `cmd:"" help:"Run the generated e2e suite against a deployed gateway. Walks parent dirs to the w17 project root, locates the e2erunner module, and runs it in Docker against --target (a pure HTTP/MCP client — never touches a DB)."`

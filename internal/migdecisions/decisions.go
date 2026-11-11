@@ -475,7 +475,7 @@ func Render(f *w17registrypb.Finding, base, commit, branch string, earlier ...Fi
 		}
 	}
 	if !f.GetCustomRefused() {
-		b.WriteString("  # - custom: path/to/your.sql   # your own SQL instead (path from the project root)\n")
+		b.WriteString("  # - custom: path/to/your.sql   # your own SQL; the why above says when it runs (path from the project root)\n")
 	}
 	return b.Bytes()
 }

@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -676,6 +677,28 @@ func storePort(image string) int {
 	return port
 }
 
+// TestHostPortsEnv narrows the dynamic host ports `w17ctl test` publishes to
+// a range, `<low>-<high>` (e.g. 17100-17199): Docker then picks a free port
+// IN it for every publication. For a machine where a workspace owns a port
+// range and nothing outside it is reachable or its own. Unset = any free port.
+const TestHostPortsEnv = "W17_TEST_HOST_PORTS"
+
+// testHostPorts is the `<low>-<high>:` prefix of every published port the
+// override writes, or "" when TestHostPortsEnv is unset.
+func testHostPorts() (string, error) {
+	v := strings.TrimSpace(os.Getenv(TestHostPortsEnv))
+	if v == "" {
+		return "", nil
+	}
+	lo, hi, ok := strings.Cut(v, "-")
+	l, lerr := strconv.Atoi(lo)
+	h, herr := strconv.Atoi(hi)
+	if !ok || lerr != nil || herr != nil || l < 1 || h > 65535 || l > h {
+		return "", fmt.Errorf("%s=%q: want a host port range <low>-<high>, e.g. 17100-17199", TestHostPortsEnv, v)
+	}
+	return fmt.Sprintf("%d-%d:", l, h), nil
+}
+
 func (c *Config) analyzeCompose(composeFile, root string) (override string, hasBuild bool, err error) {
 	out, err := outputCmd(exec.Command("docker", "compose", "-f", composeFile, "--project-directory", root, "config", "--format", "json"))
 	if err != nil {
@@ -704,6 +727,11 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 	}
 	sort.Strings(names)
 	testEnv, err := testOverlayEnv(filepath.Join(root, TestOverlayFile))
+	if err != nil {
+		return "", false, err
+	}
+
+	hostPorts, err := testHostPorts()
 	if err != nil {
 		return "", false, err
 	}
@@ -748,7 +776,7 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 			// port. Published dynamically like everything else, so it cannot
 			// collide with a parallel run.
 			if port := storePort(svc.Image); port != 0 {
-				fmt.Fprintf(&b, "    ports: !override\n      - \"%d\"\n", port)
+				fmt.Fprintf(&b, "    ports: !override\n      - \"%s%d\"\n", hostPorts, port)
 			}
 			continue
 		}
@@ -758,7 +786,7 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 			if p.Protocol != "" && p.Protocol != "tcp" {
 				proto = "/" + p.Protocol
 			}
-			fmt.Fprintf(&b, "      - \"%d%s\"\n", p.Target, proto)
+			fmt.Fprintf(&b, "      - \"%s%d%s\"\n", hostPorts, p.Target, proto)
 		}
 	}
 	// The reclaim label on the stack's own NETWORKS too. A signalled run

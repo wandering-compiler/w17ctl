@@ -90,9 +90,11 @@ type OAuthLogin struct {
 	// on another machine than the browser (an ssh session, a remote
 	// workspace), which a redirect to this machine cannot reach: the browser
 	// ends on the console's code page (oauthas.CodePath) and the person types
-	// the `code#state` it shows; ReadCode asks for it. nil = the browser on
-	// this machine, answering on a loopback redirect.
-	ReadCode func() (string, error)
+	// the `code#state` it shows; ReadCode asks for it. It gets the URL the
+	// person opens (a terminal offers to copy it) and a context that ends
+	// when the login stops waiting. nil = the browser on this machine,
+	// answering on a loopback redirect.
+	ReadCode func(ctx context.Context, authURL string) (string, error)
 }
 
 // OAuthCallbackWait is how long a browser login waits for the user.
@@ -531,10 +533,14 @@ func (l OAuthLogin) awaitCode(ctx context.Context, check callbackCheck, authURL 
 		res callbackResult
 		err error
 	}
+	// readCtx ends when this stops waiting, so a terminal the reader put in
+	// raw mode is restored even while it still waits for a key.
+	readCtx, stopReading := context.WithCancel(ctx)
+	defer stopReading()
 	got := make(chan read, 1)
 	go func() {
 		for range 3 {
-			raw, err := l.ReadCode()
+			raw, err := l.ReadCode(readCtx, authURL)
 			if err != nil {
 				got <- read{err: err}
 				return

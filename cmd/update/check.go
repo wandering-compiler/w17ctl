@@ -9,7 +9,10 @@ import (
 
 	"golang.org/x/mod/semver"
 	"golang.org/x/term"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
+	codegenversioncmd "github.com/wandering-compiler/w17ctl/cmd/codegenversion"
 	plugincmd "github.com/wandering-compiler/w17ctl/cmd/plugin"
 	sdkcmd "github.com/wandering-compiler/w17ctl/cmd/sdk"
 	"github.com/wandering-compiler/w17ctl/internal/core"
@@ -23,6 +26,10 @@ var reportFn = report
 
 // applyFn applies a report; a seam for the same reason.
 var applyFn = apply
+
+// pinCodegenFn moves the lock's codegen_version to the SDK's minor; a seam so
+// apply's tests need no console.
+var pinCodegenFn = pinCodegenWithSdk
 
 // report builds the full check for the project at root ("" = no project: the
 // binary alone).
@@ -110,6 +117,7 @@ func (c *Cmd) runAll() error {
 // binary, so a caller about to keep working knows it is now the old one.
 func apply(console, root string, r updatecheck.Report, self *Cmd) (bool, error) {
 	clientMoved := false
+	sdkMoved := false
 	for _, it := range r.Items {
 		switch it.Kind {
 		case updatecheck.KindSDK:
@@ -120,6 +128,18 @@ func apply(console, root string, r updatecheck.Report, self *Cmd) (bool, error) 
 			if err := inProject(root, pin.Run); err != nil {
 				return false, fmt.Errorf("update: sdk pin: %w", err)
 			}
+			if err := pinCodegenWithSdk(console, root, it.Latest); err != nil {
+				return false, err
+			}
+			sdkMoved = true
+		}
+	}
+	if !sdkMoved {
+		// The SDK is current, but the codegen pin may still be missing (a
+		// lock from before the field) or lag it: the NO_PIN notice sends
+		// the owner here, so this is where it gets set.
+		if err := pinCodegenFn(console, root, sdkupdate.LockedVersion(root)); err != nil {
+			return false, err
 		}
 	}
 	for _, it := range r.Items {
@@ -143,6 +163,53 @@ func apply(console, root string, r updatecheck.Report, self *Cmd) (bool, error) 
 		}
 	}
 	return clientMoved, nil
+}
+
+// pinCodegenWithSdk moves the lock's codegen_version to the minor of the SDK
+// just pinned: the two are released together, so the project generates with
+// the engine of the SDK it runs on. An exact release-candidate pin is the
+// owner's deliberate choice and is left alone, with a line saying so.
+func pinCodegenWithSdk(console, root, sdkVersion string) error {
+	channel := sdkupdate.CodegenChannelOf(sdkVersion)
+	if channel == "" {
+		return nil
+	}
+	cur := sdkupdate.LockedCodegenVersion(root)
+	if cur == channel {
+		return nil
+	}
+	if semver.Prerelease(cur) != "" {
+		fmt.Fprintf(core.Stdout, "update: codegen_version stays %s — a release candidate is pinned by hand (`w17ctl codegen-version %s` moves it to the release)\n", cur, channel)
+		return nil
+	}
+	set := &codegenversioncmd.Cmd{Version: channel, LockPath: "w17/lock.yaml", Console: console}
+	if err := inProject(root, set.Run); err != nil {
+		if consoleLacksCodegenVersion(err) {
+			// A console from before the version key answers the intent as an
+			// empty one. It generates as it always did, so the update is not
+			// failed for it — the SDK pin before this already moved.
+			fmt.Fprintf(core.Stdout, "update: codegen_version not set — this console predates it and generates as before; `w17ctl codegen-version %s` once it is upgraded\n", channel)
+			return nil
+		}
+		return fmt.Errorf("update: codegen-version: %w", err)
+	}
+	return nil
+}
+
+// consoleLacksCodegenVersion: the console's EditLock does not know the
+// set_codegen_version intent, so it saw none. Its answer to an unknown oneof
+// member is exactly InvalidArgument "EditLock: no intent set"; matched on the
+// status, not on text, so no other refusal that happens to quote it is
+// swallowed.
+func consoleLacksCodegenVersion(err error) bool {
+	// errors.As, not status.FromError: through a wrapped error FromError
+	// reports the whole wrapped text as the message, not the console's own.
+	var se interface{ GRPCStatus() *status.Status }
+	if !errors.As(err, &se) {
+		return false
+	}
+	s := se.GRPCStatus()
+	return s.Code() == codes.InvalidArgument && s.Message() == "EditLock: no intent set"
 }
 
 // inProject runs fn with the working directory at root — the lock paths the

@@ -258,6 +258,32 @@ func LockedVersion(root string) string {
 // sdkVersionInLock reads the one lock field this package needs.
 var sdkVersionInLock = regexp.MustCompile(`(?m)^sdk_version:\s*"?([^"\s]+)"?\s*$`)
 
+// LockedCodegenVersion is the lock's codegen_version, or "" — read off the
+// file as LockedVersion reads sdk_version.
+func LockedCodegenVersion(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, "w17", "lock.yaml"))
+	if err != nil {
+		return ""
+	}
+	if m := codegenVersionInLock.FindSubmatch(b); m != nil {
+		return string(m[1])
+	}
+	return ""
+}
+
+var codegenVersionInLock = regexp.MustCompile(`(?m)^codegen_version:\s*"?([^"\s]+)"?\s*$`)
+
+// CodegenChannelOf is the codegen release minor an SDK version moves a
+// project to: its `vMAJOR.MINOR`. The SDK and the codegen engine are released
+// together, so the minor of the SDK pinned is the minor generated with.
+// Empty for a version that is not semver.
+func CodegenChannelOf(sdkVersion string) string {
+	if !semver.IsValid(sdkVersion) {
+		return ""
+	}
+	return semver.MajorMinor(sdkVersion)
+}
+
 // requiredVersion reads one module's recorded requirement for `mod`.
 func requiredVersion(dir, mod string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))

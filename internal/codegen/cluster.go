@@ -15,6 +15,7 @@ import (
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
@@ -59,7 +60,51 @@ var placeAgainReasons = map[string]bool{
 	// back; one that does not is an operator's problem, reported after the
 	// last attempt.
 	"NO_RELAY": true,
+	// The relay refused the call for naming another engine than its
+	// reservation (the w17-cluster-engine header). The console's resolution
+	// is binding; a fresh placement carries a fresh pair.
+	"ENGINE_MISMATCH": true,
 }
+
+// WorkerErrorDomain is the google.rpc.ErrorInfo domain a codegen worker's
+// shell puts on a run its engine lost. Not ClusterErrorDomain on purpose: a
+// w17ctl released before it treats an unknown reason in that domain as
+// final, while one in an unknown domain falls through to the status code
+// (Unavailable: a lost run, run again) — the same answer this client gives.
+const WorkerErrorDomain = "codegen-worker.w17"
+
+// lostReasons are ErrorInfo reasons (domain WorkerErrorDomain) that mean the
+// run was lost mid-stream for a cause a fresh run may not repeat: they are
+// answered like a lost connection — run again --retries times — not placed
+// again as often as a refusal.
+var lostReasons = map[string]bool{
+	// The worker's engine was killed for memory during the run. The same
+	// input may be killed again, so once, not five times.
+	"ENGINE_OUT_OF_MEMORY": true,
+}
+
+// workerPlaceAgainReasons are ErrorInfo reasons (domain WorkerErrorDomain)
+// that mean the worker reached cannot run this placement and another one can:
+// answered with a new placement, like placeAgainReasons.
+var workerPlaceAgainReasons = map[string]bool{
+	// The shell does not carry the engine the placement was bound to (the
+	// w17-cluster-engine header) — a relay before engines sent the run to it.
+	"ENGINE_NOT_CARRIED": true,
+}
+
+// CodegenVersionErrorDomain is the ErrorInfo domain of the console refusing a
+// project's codegen_version at placement. Every reason in it is final.
+const CodegenVersionErrorDomain = "codegen-version.w17"
+
+// SupportedStreamProtocols are the generating-stream protocols this client
+// speaks, declared in the codegen handshake. A console whose engine for the
+// project speaks none of them refuses before placing.
+var SupportedStreamProtocols = []int32{1}
+
+// EngineHeader names the codegen engine a run was placed for
+// (CodegenEnvelope.engine_version). The relay holds the call to its
+// reservation's engine, and the worker's shell routes on it.
+const EngineHeader = "w17-cluster-engine"
 
 // DefaultRetries is how many times a run that lost its connection mid-stream
 // is placed and run again. One: a lost relay or worker is usually a deploy or
@@ -144,6 +189,18 @@ func classifyFailure(err error) (failClass, string) {
 		case *codegenpb.CodegenError:
 			return failFatal, "rejected by the compiler"
 		case *errdetails.ErrorInfo:
+			if dd.GetDomain() == WorkerErrorDomain && lostReasons[dd.GetReason()] {
+				return failLost, "the run was lost (" + dd.GetReason() + ")"
+			}
+			if dd.GetDomain() == WorkerErrorDomain && workerPlaceAgainReasons[dd.GetReason()] {
+				return failPlaceAgain, "the worker refused the placement (" + dd.GetReason() + ")"
+			}
+			if dd.GetDomain() == CodegenVersionErrorDomain {
+				// The console will not generate this project's codegen_version
+				// (out of the window, ahead of it, an RC not opted in, a client
+				// that cannot speak the engine). The message says what to do.
+				return failFatal, "the console refused the codegen version (" + dd.GetReason() + ")"
+			}
 			if dd.GetDomain() == ClusterErrorDomain {
 				if placeAgainReasons[dd.GetReason()] {
 					return failPlaceAgain, "the cluster refused the placement (" + dd.GetReason() + ")"
@@ -186,6 +243,9 @@ type clusterRun struct {
 	out     io.Writer
 	// root is the project root: a SignRequest's prior lock is read from it.
 	root string
+	// codegenVersion is the lock's codegen_version (DescribeLock), sent typed
+	// in the handshake.
+	codegenVersion string
 }
 
 // clusterResult is a run's buffered output plus what the placement handed back.
@@ -216,11 +276,12 @@ const deployGitignore = "deploy/.gitignore"
 // it, so the caller can print them ahead of the error.
 func (r *clusterRun) run() (*clusterResult, error) {
 	var res *clusterResult
-	start := &codegenpb.PlaceGenerateStart{Lock: r.lock, ProtoLines: r.protoLines, Op: codegenpb.PlacementOp_PLACEMENT_OP_GENERATE_PROJECT}
+	start := &codegenpb.PlaceGenerateStart{Lock: r.lock, ProtoLines: r.protoLines, Op: codegenpb.PlacementOp_PLACEMENT_OP_GENERATE_PROJECT,
+		CodegenVersion: r.codegenVersion}
 	err := placeAndRun(r.placer, start, true, r.retries, r.out, attemptDeadline(r.protoLines),
-		func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string) error {
+		func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string, engine string) error {
 			var err error
-			res, err = r.stream(g, signed)
+			res, err = r.stream(g, signed, engine)
 			if err != nil {
 				return err
 			}
@@ -250,11 +311,22 @@ func (e finalError) Unwrap() error { return e.error }
 // lock (a project run): a grant without one is refused rather than run.
 // `attempt` runs once per placement; `deadline` only names the window in a
 // timed-out run's error.
+//
+// Every placement carries the handshake: this client's version and the
+// stream protocols it speaks. The console answers with the engine the run is bound to — `attempt`
+// gets it, to name it on the stream — and with notices, printed once.
 func placeAndRun(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSigned bool, retries int, out io.Writer,
-	deadline time.Duration, attempt func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string) error) error {
+	deadline time.Duration, attempt func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string, engine string) error) error {
+	start.W17CtlVersion = core.VersionString()
+	start.SupportedStreamProtocols = SupportedStreamProtocols
 	placeFailures, reruns := 0, 0
+	told := false
 	for {
-		granted, signed, placeWarnings, err := place(placer, start, needSigned, out)
+		granted, signed, placeWarnings, envelope, err := place(placer, start, needSigned, out)
+		if err == nil && !told {
+			printEnvelope(out, envelope)
+			told = true
+		}
 		if err != nil {
 			class, cause := classifyFailure(err)
 			if class == failLost {
@@ -276,7 +348,7 @@ func placeAndRun(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSi
 			continue
 		}
 
-		err = attempt(granted, signed, placeWarnings)
+		err = attempt(granted, signed, placeWarnings, boundEngine(envelope))
 		if err == nil {
 			return nil
 		}
@@ -328,7 +400,7 @@ func RunOnWorker(placer core.Placer, start *codegenpb.PlaceGenerateStart, out io
 	deadline := attemptDeadline(start.GetProtoLines())
 	warned := false
 	return placeAndRun(placer, start, needSigned, 1, out, deadline,
-		func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string) error {
+		func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string, engine string) error {
 			// Once per command, not per placement: a re-run is placed again
 			// and the console answers with the same warnings.
 			if !warned {
@@ -342,7 +414,7 @@ func RunOnWorker(placer core.Placer, start *codegenpb.PlaceGenerateStart, out io
 				return err
 			}
 			defer func() { _ = conn.Close() }()
-			ctx, cancel := context.WithTimeout(context.Background(), deadline)
+			ctx, cancel := context.WithTimeout(withEngine(context.Background(), engine), deadline)
 			defer cancel()
 			err = run(ctx, cl, signed)
 			if err == nil {
@@ -360,6 +432,40 @@ func RunOnWorker(placer core.Placer, start *codegenpb.PlaceGenerateStart, out io
 			}
 			return err
 		})
+}
+
+// boundEngine is the engine a placement was bound to, or empty when the
+// console named none (one from before the handshake) or is a dev console that
+// knows no version.
+func boundEngine(env *codegenpb.CodegenEnvelope) string {
+	if e := env.GetEngineVersion(); e != "dev" {
+		return e
+	}
+	return ""
+}
+
+// withEngine names the bound engine on the stream (EngineHeader): the relay
+// holds the call to its reservation, and the worker routes on it.
+func withEngine(ctx context.Context, engine string) context.Context {
+	if engine == "" {
+		return ctx
+	}
+	return metadata.AppendToOutgoingContext(ctx, EngineHeader, engine)
+}
+
+// printEnvelope says what the console said about the engine: its notices,
+// whatever their kind — a kind this client does not know is printed by its
+// text, which is why the console writes every notice as a sentence.
+func printEnvelope(out io.Writer, env *codegenpb.CodegenEnvelope) {
+	for _, n := range env.GetNotices() {
+		line := n.GetText()
+		if u := n.GetUrl(); u != "" {
+			line += " (" + u + ")"
+		}
+		if line != "" {
+			fmt.Fprintf(out, "codegen: %s\n", line)
+		}
+	}
 }
 
 // ProtoLines is the size a placement is admitted against: the proto source
@@ -410,25 +516,27 @@ func hasCodegenError(err error) bool {
 // place opens a placement and polls it until a worker is granted. The signed
 // lock and its warnings come with the answer to `start` and are kept across
 // polls.
-func place(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSigned bool, out io.Writer) (*codegenpb.PlaceGenerateGranted, []byte, []string, error) {
+func place(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSigned bool, out io.Writer) (*codegenpb.PlaceGenerateGranted, []byte, []string, *codegenpb.CodegenEnvelope, error) {
 	resp, err := placeCall(placer, &codegenpb.PlaceGenerateRequest{Step: &codegenpb.PlaceGenerateRequest_Start{Start: start}})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	signed, warnings := resp.GetSignedLockYaml(), resp.GetWarnings()
+	// The envelope, like the signed lock, comes with the answer to start
+	// only; polls carry neither.
+	signed, warnings, envelope := resp.GetSignedLockYaml(), resp.GetWarnings(), resp.GetEnvelope()
 	lastPosition := int32(-1)
 	var waited time.Duration
 	blips := 0
 	for {
 		if g := resp.GetGranted(); g != nil {
 			if needSigned && len(signed) == 0 {
-				return nil, nil, nil, errors.New("the console granted a placement without the signed lock — refusing to run on it")
+				return nil, nil, nil, nil, errors.New("the console granted a placement without the signed lock — refusing to run on it")
 			}
-			return g, signed, warnings, nil
+			return g, signed, warnings, envelope, nil
 		}
 		q := resp.GetQueued()
 		if q == nil {
-			return nil, nil, nil, errors.New("the console answered the placement with neither queued nor granted")
+			return nil, nil, nil, nil, errors.New("the console answered the placement with neither queued nor granted")
 		}
 		if q.GetPosition() != lastPosition {
 			fmt.Fprintf(out, "codegen: waiting for a codegen worker — position %d in the queue\n", q.GetPosition())
@@ -441,7 +549,7 @@ func place(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSigned b
 		// A queue that never moves — a pool with no worker attached — must
 		// not hold a run (or a CI job) forever.
 		if waited >= queueTimeout {
-			return nil, nil, nil, fmt.Errorf("no codegen worker became free within %s (still position %d in the queue) — "+
+			return nil, nil, nil, nil, fmt.Errorf("no codegen worker became free within %s (still position %d in the queue) — "+
 				"the pool may have no worker attached; an operator can check the backoffice admin", queueTimeout, q.GetPosition())
 		}
 		sleepFn(wait)
@@ -461,7 +569,7 @@ func place(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSigned b
 			}})
 		}
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		blips = 0
 	}
@@ -500,14 +608,14 @@ func placeCall(placer core.Placer, req *codegenpb.PlaceGenerateRequest) (*codege
 
 // stream runs GenerateProject once on the granted worker and buffers the op
 // stream. On failure the result carries the warnings received so far.
-func (r *clusterRun) stream(g *codegenpb.PlaceGenerateGranted, signed []byte) (*clusterResult, error) {
+func (r *clusterRun) stream(g *codegenpb.PlaceGenerateGranted, signed []byte, engine string) (*clusterResult, error) {
 	cl, conn, err := core.DialWorker(g.GetAddress(), g.GetCertFingerprint(), g.GetTicket())
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = conn.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), attemptDeadline(r.protoLines))
+	ctx, cancel := context.WithTimeout(withEngine(context.Background(), engine), attemptDeadline(r.protoLines))
 	defer cancel()
 	stream, err := cl.GenerateProject(ctx)
 	if err != nil {

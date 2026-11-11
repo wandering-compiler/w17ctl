@@ -453,11 +453,12 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 			W17CtlVersion: core.Version,
 			Infra:         infraYAML,
 		},
-		files:    files,
-		genFiles: readGenGoFiles(root, genDir),
-		retries:  retries,
-		out:      core.Stdout,
-		root:     root,
+		files:          files,
+		genFiles:       readGenGoFiles(root, genDir),
+		retries:        retries,
+		out:            core.Stdout,
+		root:           root,
+		codegenVersion: view.GetCodegenVersion(),
 	}
 	res, runErr := run.run()
 	if runErr != nil {
@@ -534,6 +535,15 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	// `.env` stale — the operator would silently run on old values. Surface the
 	// divergence as a warning (the client owns the disk-diff the server can't).
 	warnings = append(warnings, envDriftWarnings(root, writes)...)
+	// The same file can keep a key whose DEFAULT moved — a topology change
+	// (storage folded into a -server) re-points every backend address — so a
+	// backend address naming a service no compose of this run defines is
+	// reported too.
+	warnings = append(warnings, staleBackendAddrWarnings(root, writes)...)
+	// And the developer's compose.yaml can keep overriding a service the
+	// topology change renamed (the business companion folded into the
+	// -server), which compose refuses without saying where it went.
+	warnings = append(warnings, orphanedComposeOverrideWarnings(root, writes)...)
 	// The private PKI's dev leaves: one per identity the private proxy lists
 	// (local dev-machine crypto, like `init`'s mesh leaves — never shipped).
 	if minted, err := ensurePrivatePKI(root, servicesDir); err != nil {
@@ -606,6 +616,26 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 			"  set the version by hand in the project's go.mod files, or make a module\n"+
 			"  proxy reachable (GOPROXY) and re-run codegen\n",
 			core.SdkModuleBase+"/sdk/go", err)
+	}
+	// The generated Python business images, against the same override: the
+	// console rendered them at the lock's sdk_version. Non-fatal like the
+	// go.mod pins above — the files are written; say what to fix.
+	if err := repinPythonBusinessSDK(root, servicesDir, sdkVersion, core.Stdout); err != nil {
+		fmt.Fprintf(core.Stdout, "codegen: warning: could not pin the Python business SDK at %s (%v);\n"+
+			"  edit the pip requirement in the business bundle's Dockerfile by hand\n", sdkVersion, err)
+	}
+	if err := repinTypeScriptBusinessSDK(root, servicesDir, sdkVersion, core.Stdout); err != nil {
+		fmt.Fprintf(core.Stdout, "codegen: warning: could not pin the TypeScript business SDK at %s (%v);\n"+
+			"  edit the ARG W17_SDK_TS_REF line in the business bundle's Dockerfile by hand\n", sdkVersion, err)
+	}
+	if err := repinRustBusinessSDK(root, servicesDir, sdkVersion, core.Stdout); err != nil {
+		fmt.Fprintf(core.Stdout, "codegen: warning: could not pin the Rust business SDK at %s (%v);\n"+
+			"  edit the ARG W17_SDK_RS_REF line in the business bundle's Dockerfile by hand\n", sdkVersion, err)
+	}
+	// A Rust crate's Cargo.lock against the tag its image now pins: the
+	// release image refuses a mismatch, and saying so here costs no build.
+	if err := warnRustCargoLocks(root, servicesDir, core.Stdout); err != nil {
+		fmt.Fprintf(core.Stdout, "codegen: warning: could not compare the Rust crates' Cargo.lock with the business SDK (%v)\n", err)
 	}
 	// Say what this project's git will do with what was just written. Last,
 	// after the pins, because it is about the tree as it now stands — and only

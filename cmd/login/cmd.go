@@ -49,7 +49,7 @@ type Cmd struct {
 	Host string `arg:"" optional:"" help:"Console host to log in to (e.g. grpcs://api.w17.app:50051). Prompted if omitted; defaults to the current console."`
 	// Method picks the sign-in; empty asks in a terminal and is the browser
 	// on this machine elsewhere (a script), as before the choice existed.
-	Method string `name:"method" help:"How to sign in: browser (a browser on this machine), code (a browser on any device; you paste the code it shows — for w17ctl over ssh or in a remote workspace), password (email + password here). Asked when omitted in a terminal; browser otherwise."`
+	Method string `name:"method" help:"How to sign in: browser (a browser on this machine), code (a browser on any device; you paste the code it shows — for w17ctl over ssh or in a remote workspace; in a terminal the code is masked and c copies the URL), password (email + password here). Asked when omitted in a terminal; browser otherwise."`
 	// NoBrowser selects the email + password sign-in in the terminal (a host
 	// without a browser).
 	NoBrowser bool   `name:"no-browser" help:"Same as --method password. Implied by --email, --password or W17_PASSWORD."`
@@ -167,6 +167,12 @@ func (c *Cmd) runBrowser(p prompter.Prompter, withCode bool) error {
 		return err
 	}
 	fmt.Fprintf(core.Stdout, "Signing in to %s through %s\n", host, issuer)
+	// A sign-in that stops waiting for the code (it timed out) returns while
+	// the masked read still holds the terminal raw; restore it before w17ctl
+	// exits, not in a goroutine the exit does not wait for.
+	if r, ok := p.(prompter.TerminalRestorer); ok {
+		defer r.RestoreTerminal()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), core.OAuthCallbackWait+2*loginTimeout)
 	defer cancel()
 	signed, err := core.SignInWithBrowser(ctx, core.OAuthLogin{
@@ -185,12 +191,22 @@ func (c *Cmd) runBrowser(p prompter.Prompter, withCode bool) error {
 }
 
 // readCode asks for the code the console's code page shows, for the sign-in
-// with a code; nil for the browser on this machine.
-func readCode(p prompter.Prompter, withCode bool) func() (string, error) {
+// with a code; nil for the browser on this machine. At a terminal the code is
+// masked as it is pasted, and `c` copies the sign-in URL.
+func readCode(p prompter.Prompter, withCode bool) func(context.Context, string) (string, error) {
 	if !withCode {
 		return nil
 	}
-	return func() (string, error) { return p.Text("Code", "") }
+	return func(ctx context.Context, authURL string) (string, error) {
+		if cr, ok := p.(prompter.CodeReader); ok {
+			code, err := cr.ReadCode(ctx, "Code", authURL)
+			if errors.Is(err, prompter.ErrInputAborted) {
+				return "", errors.New("browser sign-in: cancelled")
+			}
+			return code, err
+		}
+		return p.Text("Code", "")
+	}
 }
 
 // saveOAuthClientID keeps the client id the issuer registered w17ctl under.

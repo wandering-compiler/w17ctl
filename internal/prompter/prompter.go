@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/term"
 )
@@ -41,9 +42,13 @@ type Prompter interface {
 // answers from os.Stdin and writes prompts to os.Stdout.
 // Tests use stubPrompter (in prompter_test.go).
 type stdinPrompter struct {
-	in   *bufio.Reader
-	out  io.Writer
-	file *os.File // underlying terminal for hidden (no-echo) reads
+	in      *bufio.Reader
+	out     io.Writer
+	file    *os.File // underlying terminal for hidden (no-echo) reads
+	outFile *os.File // out as a file, to tell whether it is a terminal
+
+	mu         sync.Mutex
+	restoreRaw func() // set while ReadCode holds the terminal in raw mode
 }
 
 // NewStdinPrompter constructs the production Prompter wired
@@ -51,9 +56,10 @@ type stdinPrompter struct {
 // wizard run.
 func NewStdinPrompter() Prompter {
 	return &stdinPrompter{
-		in:   bufio.NewReader(os.Stdin),
-		out:  os.Stdout,
-		file: os.Stdin,
+		in:      bufio.NewReader(os.Stdin),
+		out:     os.Stdout,
+		file:    os.Stdin,
+		outFile: os.Stdout,
 	}
 }
 

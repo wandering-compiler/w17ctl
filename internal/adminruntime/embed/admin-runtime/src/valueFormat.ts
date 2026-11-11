@@ -123,9 +123,12 @@ export function resolveFormats(locale: string): Formats {
 
 /**
  * resolveFormats with the project's override map applied first: a hit on
- * (language, kind) swaps the locale before the chain runs. An override naming
- * an unknown locale falls through instead of failing — the lock parser is what
- * rejects a bad override, and a runtime must not break on data that got past it.
+ * (language, kind) swaps the locale before the chain runs. The override is
+ * looked up along the same chain as the table row — the tag, then its base
+ * language — because overrides are keyed by declared language (`cs`) while a
+ * browser reports a regional tag (`cs-CZ`). An override naming an unknown
+ * locale falls through instead of failing — the lock parser is what rejects a
+ * bad override, and a runtime must not break on data that got past it.
  */
 export function resolveFormatsKind(
   locale: string,
@@ -133,8 +136,10 @@ export function resolveFormatsKind(
   overrides?: FormatOverrides,
 ): Formats {
   const l = normalizeFormatLocale(locale ?? "");
-  const target = overrides?.[l]?.[kind];
-  if (target) {
+  const dash = l.indexOf("-");
+  for (const lang of dash > 0 ? [l, l.slice(0, dash)] : [l]) {
+    const target = overrides?.[lang]?.[kind];
+    if (!target) continue;
     const row = TABLE.get(normalizeFormatLocale(target));
     if (row) return row;
   }
@@ -249,7 +254,9 @@ export function formatMoney(
   const neg = d.neg && !isZeroDigits(d.ipart, d.fpart);
   const amount = renderDecimal({ ...d, neg: false }, f);
   const shape = spaceWordSymbol(f.currency_format || "{value} {symbol}", symbol);
-  const out = shape.replace(/\{value\}|\{symbol\}/g, (tok) => (tok === "{value}" ? amount : symbol));
+  const out = shape.replace(/\{value\}|\{symbol\}/g, (tok) =>
+    tok === "{value}" ? amount : symbol,
+  );
   return neg ? "-" + out : out;
 }
 
@@ -348,7 +355,9 @@ function parseDecimal(value: string): DecimalParts | null {
   if (!isDigits(ip) || !isDigits(fp)) return null;
   if (ip === "" && fp === "") return null; // "", ".", "-."
   if (hasDot && fp === "") return null; // "5."
-  return { neg, ipart: ip === "" ? "0" : ip, fpart: fp };
+  // Leading zeros carry no value: "0001234" is 1234, "000.5" is 0.5.
+  const trimmed = ip.replace(/^0+/, "");
+  return { neg, ipart: trimmed === "" ? "0" : trimmed, fpart: fp };
 }
 
 function isDigits(s: string): boolean {

@@ -1,13 +1,13 @@
 # Build and publish w17ctl binaries for a tag.
 #
-# Lives in the PUBLIC w17ctl repo, mirrored there from the private monorepo by
-# scripts/publish-w17ctl.sh. It is inert in the monorepo — GitHub reads
-# workflows only from a repository's ROOT .github/workflows, and this file sits
-# under w17ctl/.
+# Lives in the PUBLIC w17ctl repo, exported there with the sources on every
+# release. It is inert where w17ctl is developed — GitHub reads workflows only
+# from a repository's ROOT .github/workflows, and this file sits under w17ctl/
+# there.
 #
 # Public repo, so Actions minutes are unmetered. That is the reason releases
-# belong here rather than in the monorepo, whose minutes are a finite monthly
-# allowance the console image build already spends.
+# are built here rather than where w17ctl is developed, whose minutes are a
+# finite monthly allowance.
 name: Release
 
 on:

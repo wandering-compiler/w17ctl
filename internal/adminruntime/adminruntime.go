@@ -70,18 +70,18 @@ var (
 	shipFiles map[string][]byte
 	shipPaths []string
 	shipSum   string
-	shipErr   error
+	errShip   error
 )
 
 func shipped() (map[string][]byte, []string, string, error) {
 	shipOnce.Do(func() {
 		sub, err := fs.Sub(adminRuntimeFS, "embed/admin-runtime")
 		if err != nil {
-			shipErr = err
+			errShip = err
 			return
 		}
 		shipFiles = map[string][]byte{}
-		shipErr = fs.WalkDir(sub, ".", func(p string, d fs.DirEntry, walkErr error) error {
+		errShip = fs.WalkDir(sub, ".", func(p string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
@@ -99,7 +99,7 @@ func shipped() (map[string][]byte, []string, string, error) {
 		sort.Strings(shipPaths)
 		shipSum = digestOf(shipPaths, shipFiles)
 	})
-	return shipFiles, shipPaths, shipSum, shipErr
+	return shipFiles, shipPaths, shipSum, errShip
 }
 
 // digestOf is length-prefixed so no two different trees can concatenate to
