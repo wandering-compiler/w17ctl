@@ -270,7 +270,7 @@ compiler directly — you drive `w17ctl`.
 6. w17ctl migrate generate      # plan the SQL migrations from the schema
 7. w17ctl stack up              # bring up the local docker stack
 8. …write business-handler bodies… then re-run codegen as the schema evolves
-9. w17ctl test --target <url>   # run the generated e2e suite against the gateway
+9. w17ctl test                 # run the generated e2e suite on a throwaway stack (--keep leaves it up)
 10. w17ctl stress <url>         # load-test the gateway with the generated stress presets
 ```
 
@@ -296,7 +296,7 @@ compiler directly — you drive `w17ctl`.
 | Repair a stored migration a deploy stopped on (no environment applied it) | `w17ctl migrate replace <id> --confirm-not-applied` — see `w17/specs/migrations.md` |
 | Seed fixtures | `w17ctl fixtures …` |
 | Run the local stack | `w17ctl stack up` / `down` / `logs` |
-| Run the e2e suite | `w17ctl test --target <url>` |
+| Run the e2e suite | `w17ctl test` — brings up its own throwaway stack, runs the suite against it, tears it down (`--keep` leaves it up for `docker compose -p <project> logs`; `--transport rest,admin` narrows it) |
 | Load-test a gateway | `w17ctl stress <url>` (`--preset` for one preset; `-c/-d/-n` to override the plan) |
 | Snapshot / switch dev DB | `w17ctl db snapshot …` |
 | Review a schema change (PR flow) | `w17ctl review open` → `approve` → `merge` |

@@ -156,7 +156,7 @@ var root struct {
 	Report reportcmd.Cmd `cmd:"" help:"Tell w17 what is wrong, missing or unclear — a security issue, a bug, a docs gap, a feature request — and follow what happens to it. Kept and triaged by the console; you are mailed when it ships, or when triage makes it later than you expect."`
 
 	// --- Testing ---
-	Test   testcmd.Cmd   `cmd:"" help:"Run the generated e2e suite against a deployed gateway. Walks parent dirs to the w17 project root, locates the e2erunner module, and runs it in Docker against --target (a pure HTTP/MCP client — never touches a DB)."`
+	Test   testcmd.Cmd   `cmd:"" help:"Run the generated e2e suite against a throwaway stack of its own: brings the project's compose up (unique project name, dynamic host ports), syncs the stores, runs the suite as an external HTTP/MCP client, then removes it (--keep leaves it running)."`
 	Stress stresscmd.Cmd `cmd:"" help:"Load-test a deployed gateway with the generated stress presets. 'stress <target>' — hammers the URL under each preset's stress.yaml plan (concurrency/duration/thresholds), prints a throughput/latency report, and fails on a breached threshold (a CI load gate). Owns no stack; one run per invocation."`
 
 	// --- Local stack (docker compose) ---
