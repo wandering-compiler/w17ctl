@@ -26,9 +26,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The newest 1.26 patch, not go.mod's version: `go 1.26.0` there is the
+      # language floor the module needs, and go-version-file installs exactly
+      # it — rc.101 and rc.102 shipped on go1.26.0, with every standard
+      # library fix since (GO-2026-6859 in net/http among them). A release
+      # is built with what the fixes are in.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
+          check-latest: true
 
       - name: Resolve version
         id: v
