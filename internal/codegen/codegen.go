@@ -2216,6 +2216,7 @@ func pruneOrphansRecorded(root string, roots []string, kept map[string]bool, mar
 		if err != nil || !info.IsDir() {
 			continue
 		}
+		var emptied []string
 		walkErr := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -2247,14 +2248,34 @@ func pruneOrphansRecorded(root string, roots []string, kept map[string]bool, mar
 				return fmt.Errorf("prune orphan %s: %w", relSlash, rmErr)
 			}
 			removed++
+			emptied = append(emptied, filepath.Dir(p))
 			fmt.Fprintf(stdout, "pruned stale %s\n", relSlash)
 			return nil
 		})
 		if walkErr != nil {
 			return removed, walkErr
 		}
+		removeEmptiedDirs(base, emptied)
 	}
 	return removed, nil
+}
+
+// removeEmptiedDirs removes the directories a prune left empty — a removed
+// egress client's `pb/clients/<name>/`, whose files went one by one — from
+// each pruned file's directory up to, never including, base. Only directories
+// that held a pruned file are tried, and os.Remove refuses a non-empty one, so
+// nothing the author keeps there (or an empty directory nobody pruned into)
+// is touched.
+func removeEmptiedDirs(base string, dirs []string) {
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, d := range dirs {
+		for d != base && strings.HasPrefix(d, base+string(filepath.Separator)) {
+			if os.Remove(d) != nil {
+				break
+			}
+			d = filepath.Dir(d)
+		}
+	}
 }
 
 // orphanedDBInitWarnings reports `db/init/<domain>/*.sql` files that nothing

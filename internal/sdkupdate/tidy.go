@@ -3,14 +3,20 @@ package sdkupdate
 import (
 	"bytes"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 // tidyModules runs `go mod tidy` in each updated module, so a requirement the
@@ -25,12 +31,19 @@ import (
 // off, because a module's own go.mod is what a standalone build (a Dockerfile,
 // a test suite) reads.
 //
-// A module whose tidy fails keeps exactly what the update wrote. That is the
-// normal answer for a module that only builds inside a workspace (it imports a
-// module it does not require), whose requirements the workspace supplies; it
-// is reported, never fatal, because the update itself succeeded.
+// A module that imports another module of the workspace without requiring it
+// — the hand-written srcgo importing the stubs module's pb packages, which
+// only go.work ties together — is lent the edge for the tidy alone: a require
+// and a `replace` to the workspace module's directory, the pair codegen gives
+// a generated bundle, dropped again afterwards (lendWorkspaceEdges). Without
+// it the tidy went to the network for the stubs module's import path and
+// reported a 404, every update, on a module that builds fine.
+//
+// A module whose tidy fails keeps exactly what the update wrote. It is
+// reported, never fatal, because the update itself succeeded.
 func tidyModules(stdout io.Writer, root string, mods []string) {
 	var unrun []string
+	workspace := workspaceModules(root)
 	for _, d := range mods {
 		dir := filepath.Join(root, d)
 		minor := moduleGoMinor(dir)
@@ -41,6 +54,12 @@ func tidyModules(stdout io.Writer, root string, mods []string) {
 		}
 		before, err := snapshotModFiles(dir)
 		if err != nil {
+			fmt.Fprintf(stdout, "  tidy %s: skipped: %v\n", filepath.ToSlash(d), err)
+			continue
+		}
+		lent, err := lendWorkspaceEdges(dir, workspace)
+		if err != nil {
+			before.restore()
 			fmt.Fprintf(stdout, "  tidy %s: skipped: %v\n", filepath.ToSlash(d), err)
 			continue
 		}
@@ -55,6 +74,11 @@ func tidyModules(stdout io.Writer, root string, mods []string) {
 				filepath.ToSlash(d), how, causeLine(errBuf.String(), err))
 			continue
 		}
+		if err := dropLentEdges(dir, lent); err != nil {
+			before.restore()
+			fmt.Fprintf(stdout, "  tidy %s: tidied, but the workspace edges it was lent did not come off (%v); it keeps the update\n", filepath.ToSlash(d), err)
+			continue
+		}
 		fmt.Fprintf(stdout, "  tidy %s: done (%s)\n", filepath.ToSlash(d), how)
 	}
 	if len(unrun) > 0 {
@@ -64,6 +88,182 @@ func tidyModules(stdout io.Writer, root string, mods []string) {
 				"  fix: run `go mod tidy` in each, with the Go version its go.mod declares\n",
 			strings.Join(unrun, ", "))
 	}
+}
+
+// lentVersion is the version a lent require names: a `replace` to a directory
+// decides what it resolves to, and codegen writes the same one for a bundle's
+// stubs module.
+const lentVersion = "v0.0.0-00010101000000-000000000000"
+
+// workspaceModules is root's go.work `use` list: each module's path → its
+// directory. Empty without a go.work, or for one that does not parse.
+func workspaceModules(root string) map[string]string {
+	b, err := os.ReadFile(filepath.Join(root, "go.work"))
+	if err != nil {
+		return nil
+	}
+	wf, err := modfile.ParseWork("go.work", b, nil)
+	if err != nil {
+		return nil
+	}
+	mods := map[string]string{}
+	for _, u := range wf.Use {
+		dir := filepath.Join(root, filepath.FromSlash(u.Path))
+		gm, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if err != nil {
+			continue
+		}
+		if p := modfile.ModulePath(gm); p != "" {
+			mods[p] = dir
+		}
+	}
+	return mods
+}
+
+// lendWorkspaceEdges gives dir's go.mod a require + `replace => <relative
+// dir>` for each workspace module its packages import but it neither requires
+// nor replaces, and returns the paths it lent. Only the imported ones: a lent
+// module's own requirements join the graph the tidy resolves, and a workspace
+// module dir never imports must not be able to fail its tidy.
+func lendWorkspaceEdges(dir string, workspace map[string]string) ([]string, error) {
+	if len(workspace) == 0 {
+		return nil, nil
+	}
+	gomod := filepath.Join(dir, "go.mod")
+	b, err := os.ReadFile(gomod)
+	if err != nil {
+		return nil, err
+	}
+	mf, err := modfile.Parse(gomod, b, nil)
+	if err != nil {
+		return nil, err
+	}
+	has := map[string]bool{}
+	if mf.Module != nil {
+		has[mf.Module.Mod.Path] = true
+	}
+	for _, r := range mf.Require {
+		has[r.Mod.Path] = true
+	}
+	for _, r := range mf.Replace {
+		has[r.Old.Path] = true
+	}
+	var paths []string
+	for p := range importedModules(dir, workspace) {
+		if !has[p] {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		rel, err := filepath.Rel(dir, workspace[p])
+		if err != nil {
+			return nil, err
+		}
+		rel = filepath.ToSlash(rel)
+		if !strings.HasPrefix(rel, ".") {
+			rel = "./" + rel
+		}
+		if err := mf.AddRequire(p, lentVersion); err != nil {
+			return nil, err
+		}
+		if err := mf.AddReplace(p, "", rel, ""); err != nil {
+			return nil, err
+		}
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	out, err := mf.Format()
+	if err != nil {
+		return nil, err
+	}
+	return paths, os.WriteFile(gomod, out, 0o644)
+}
+
+// importedModules is the set of workspace modules dir's packages import,
+// tests included (the tidy reads them too). Nested modules, vendor/, testdata/
+// and hidden directories are not dir's packages and are not read.
+func importedModules(dir string, workspace map[string]string) map[string]bool {
+	found := map[string]bool{}
+	fset := token.NewFileSet()
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if p == dir {
+				return nil
+			}
+			n := d.Name()
+			if n == "vendor" || n == "testdata" || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(p, "go.mod")); err == nil {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") {
+			return nil
+		}
+		f, err := parser.ParseFile(fset, p, nil, parser.ImportsOnly)
+		if err != nil {
+			return nil
+		}
+		for _, imp := range f.Imports {
+			path, err := strconv.Unquote(imp.Path.Value)
+			if err != nil {
+				continue
+			}
+			// The longest match: srcgo's `example.com/p` is a prefix of the
+			// stubs module's `example.com/p/w17/stubs`, and an import of the
+			// latter's packages belongs to it alone.
+			best := ""
+			for mod := range workspace {
+				if (path == mod || strings.HasPrefix(path, mod+"/")) && len(mod) > len(best) {
+					best = mod
+				}
+			}
+			if best != "" {
+				found[best] = true
+			}
+		}
+		return nil
+	})
+	return found
+}
+
+// dropLentEdges takes the lent requires and replaces off dir's go.mod again,
+// keeping everything the tidy wrote besides them: the author's go.mod names
+// no workspace module, and a standalone build should not find one there.
+func dropLentEdges(dir string, lent []string) error {
+	if len(lent) == 0 {
+		return nil
+	}
+	gomod := filepath.Join(dir, "go.mod")
+	b, err := os.ReadFile(gomod)
+	if err != nil {
+		return err
+	}
+	mf, err := modfile.Parse(gomod, b, nil)
+	if err != nil {
+		return err
+	}
+	for _, p := range lent {
+		if err := mf.DropRequire(p); err != nil {
+			return err
+		}
+		if err := mf.DropReplace(p, ""); err != nil {
+			return err
+		}
+	}
+	mf.Cleanup()
+	out, err := mf.Format()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(gomod, out, 0o644)
 }
 
 var goDirective = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+)`)
