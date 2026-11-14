@@ -47,7 +47,7 @@ func notePresentedToken(addr, token string) {
 		return
 	}
 	presentedMu.Lock()
-	presentedTokens[normalizeConsoleAddr(addr)] = token
+	presentedTokens[NormalizeConsoleAddr(addr)] = token
 	presentedMu.Unlock()
 }
 
@@ -59,7 +59,7 @@ func presentedToken(addr string) string {
 	}
 	presentedMu.Lock()
 	defer presentedMu.Unlock()
-	return presentedTokens[normalizeConsoleAddr(addr)]
+	return presentedTokens[NormalizeConsoleAddr(addr)]
 }
 
 // FormatSessionTime renders a session expiry the way every line that mentions

@@ -113,10 +113,11 @@ migration, no lock change; `ci_only` does not apply to it. Exit codes:
 |---|---|---|
 | 0 | nothing needs a decision | — |
 | 2 | a change needs a decision — no file yet, or its file waits for a database owner | no file: `w17ctl migrate check --write`, commit `w17/migrate-decisions/`; waiting: a database owner keeps ONE option |
-| 3 | a decision file needs tidying (decides nothing any more, duplicated, conflicting, broken) | the message names what gets out: `--write` (keeps every choice made), a person, or `--rewrite` (starts the files over) |
-| 4 | (`--generated` only) the proto has changes no stored migration covers, or the lock does not pin them (id or digest) | mint, and commit the lock |
+| 3 | a decision file needs tidying (decides nothing any more, duplicated, conflicting, broken, refused by the console, or decided on another console) | the message names what gets out: `--write` (keeps every choice made), a person, `--rewrite` (starts the files over), or `--console <the one the file names>` |
+| 4 | (`--generated` only) the proto has changes no stored migration covers, or the lock does not pin them (id or digest), or — with `--planner-floor N` — a migration this release adds (the head; with `--released-lock <last release's lock>` every one since) that a console below planner version N minted; a `push-raw` body is not judged | mint, and commit the lock; for a floor, review the migration (`migrate replace` while no environment applied it) |
 
-A console or network failure is exit 1, never 4.
+A console or network failure is exit 1, never 4 — and so is a console below
+`--planner-floor`: its plan may lack a decision a newer console asks for.
 
 `--write` creates one file per open question, offering the options; **deciding
 is deleting every option but one**, and approving the PR. Put the directory in

@@ -240,10 +240,47 @@ func DevSync(ctx context.Context, base, current []byte, applierFor migrate.Appli
 		}
 	}
 
-	if err := migrate.DevApply(ctx, res.Plan, applierFor); err != nil {
-		return nil, wrapDesync(base, err)
+	// One connection at a time, so a failure knows what had already applied.
+	// Returning nothing on a failure left every
+	// store that DID apply described by the previous checkpoint — and a
+	// store this client cannot read is planned from nothing else, so the
+	// next sync re-planned the change it already held and collided.
+	var applied []string
+	for _, m := range res.Plan.GetMigrations() {
+		one := &applyplanpb.DevApplyPlan{Migrations: []*applyplanpb.DevMigration{m}}
+		if err := migrate.DevApply(ctx, one, applierFor); err != nil {
+			return partialRecord(base, current, observed, p.checkpoint, applied, m.GetConnection(), logf), wrapDesync(base, err)
+		}
+		applied = append(applied, m.GetConnection())
 	}
 	return res, nil
+}
+
+// partialRecord is what a sync that failed part-way hands back to be
+// recorded: the console's checkpoint for exactly the connections that
+// applied — the head for them, the previous record for the rest, the same
+// composition a targeted run gets — or nil when there is nothing it can
+// honestly record (nothing applied, an older console that composes no
+// checkpoint, or a failure in the unnamed default bucket, which no target
+// list can leave out).
+func partialRecord(base, current []byte, observed []*codegenpb.ObservedStore, checkpoint []byte, applied []string, failed string, logf func(string, ...any)) *SyncResult {
+	if len(applied) == 0 || checkpoint == nil || failed == "" {
+		return nil
+	}
+	named := make([]string, 0, len(applied))
+	for _, c := range applied {
+		if c != "" {
+			named = append(named, c)
+		}
+	}
+	p, err := planObserved(base, current, nil, observed, named)
+	if err != nil || p.checkpoint == nil {
+		logf("⚠ %v applied before %q failed, but the record of it could not be composed (%v): "+
+			"the next sync plans them from the previous checkpoint", applied, failed, err)
+		return nil
+	}
+	logf("⚠ %v applied before %q failed — recording what applied, so the next sync plans only what is missing", applied, failed)
+	return &SyncResult{Checkpoint: p.checkpoint}
 }
 
 // warnUnreadable says, per store this client could not read, what the
@@ -454,6 +491,12 @@ func observeStores(ctx context.Context, conns []string, applierFor migrate.Appli
 					// a generation expression from a default, because both
 					// arrive through the same slot.
 					Generated: c.Generated, Identity: c.Identity,
+					// The KIND of each: sent with presence,
+					// so the server can tell this client's `false` from an
+					// older client's silence.
+					IdentityAlways:   proto.Bool(c.IdentityAlways),
+					GeneratedVirtual: proto.Bool(c.GeneratedVirtual),
+					NotNullNotValid:  proto.Bool(c.NotNullNotValid),
 				})
 			}
 			for _, idx := range t.Indexes {

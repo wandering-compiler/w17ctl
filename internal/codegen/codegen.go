@@ -1531,7 +1531,15 @@ func applyWriteOps(root, languagesDir, servicesDir string, writes []*codegenpb.G
 					continue
 				}
 			}
-			if !isPoCatalog && !isLock && !force {
+			// What --force guards is an EDIT: a file codegen owns that someone
+			// changed since. A file holding exactly what codegen last wrote
+			// there (its record says so, by digest) has no edit to lose, and
+			// regenerating it is the point of the run — a proto changed, so
+			// its .pb.go differs. Refusing those made every regeneration a
+			// --force run, which is the habit that turns the guard off where
+			// it matters.
+			ownUnchanged := record != nil && record.wrote(rel, target)
+			if !isPoCatalog && !isLock && !force && !ownUnchanged {
 				collisions = append(collisions, target)
 				continue
 			}

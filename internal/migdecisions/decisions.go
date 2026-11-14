@@ -26,12 +26,18 @@
 // # A decision is bound to the schema it was made against
 //
 // Each file records the console's BASE — the stored schema the finding was
-// planned against. A decision applies only while the base is the same. Every
-// mint moves the base, so once a release has consumed a decision it can
-// never decide a LATER change of the same column, even when the file is
-// still in the repository (a CI job that mints on a runner and does not
-// commit back leaves it there). Such a file is reported as consumed and is
-// inert; `migrate check --write` deletes it.
+// planned against, and the history that produced it. A decision applies only
+// while the base is the same. Every mint moves the base (even one that
+// returns the schema to an earlier shape), so once a release has consumed a
+// decision it can never decide a LATER change of the same column, even when
+// the file is still in the repository (a CI job that mints on a runner and
+// does not commit back leaves it there). Such a file is reported as consumed
+// and is inert; `migrate check --write` deletes it.
+//
+// A base means something to ONE console: the file records which (`console:`).
+// Checked against another console (a local one, while the decision was made
+// for production) it is neither current nor consumed — it is left alone, and
+// the check says which console to ask.
 //
 // # A decision is bound to the change it was made for
 //
@@ -89,6 +95,13 @@ type File struct {
 	// ID is the console's id of the finding — the CHANGE — this decides,
 	// copied from Finding.finding_id. Opaque here.
 	ID string
+	// Console is the console the file was written against (`console:`, the
+	// address `migrate check --write` dialed, in its normalised form — see
+	// core.NormalizeConsoleAddr; compared in that form too, so a file another
+	// spelling wrote still matches); "" for a file that predates it. Its base means something to that console only: another console
+	// stores another schema under the same project, so it is never asked
+	// whether the file was consumed.
+	Console string
 	// Change is the file's `change:` line, for messages only.
 	Change string
 	// Table is the file's `table:` line — the console's table_fqn when the
@@ -143,6 +156,7 @@ type onDisk struct {
 	Finding string      `yaml:"finding"`
 	ID      string      `yaml:"id"`
 	Base    string      `yaml:"base"`
+	Console string      `yaml:"console"`
 	Change  string      `yaml:"change"`
 	Table   string      `yaml:"table"`
 	Choose  []yaml.Node `yaml:"choose"`
@@ -204,6 +218,7 @@ func readOne(path string) File {
 		return f
 	}
 	f.ID = strings.TrimSpace(d.ID)
+	f.Console = strings.TrimSpace(d.Console)
 	f.Change = strings.TrimSpace(d.Change)
 	f.Table = strings.TrimSpace(d.Table)
 	readChoice(&f, d.Choose)
@@ -409,6 +424,13 @@ func ReplacedFor(f *w17registrypb.Finding, files []File) []File {
 // quoted as a comment, never carried over: the owner chooses again, for the
 // change in front of them.
 func Render(f *w17registrypb.Finding, base, commit, branch string, earlier ...File) []byte {
+	return RenderOn(f, base, "", commit, branch, earlier...)
+}
+
+// RenderOn is Render for a file decided on console (the address the check
+// dialed, normalised by the caller), recorded as `console:` so no other console ever judges it — its
+// base means nothing to another one. "" writes none.
+func RenderOn(f *w17registrypb.Finding, base, console, commit, branch string, earlier ...File) []byte {
 	var b bytes.Buffer
 	b.WriteString("# A database owner decides this — delete every option under `choose:`\n")
 	b.WriteString("# but ONE, then approve. `w17ctl migrate generate` applies it at release\n")
@@ -444,7 +466,10 @@ func Render(f *w17registrypb.Finding, base, commit, branch string, earlier ...Fi
 	if t := f.GetTableFqn(); t != "" {
 		fmt.Fprintf(&b, "table: %s\n", t)
 	}
-	fmt.Fprintf(&b, "base: %s   # the stored schema this is decided against — a release consumes it\n", BaseName(base))
+	if console != "" {
+		fmt.Fprintf(&b, "console: %s   # the console this was decided on — only it can say whether a release consumed it\n", console)
+	}
+	fmt.Fprintf(&b, "base: %s   # the stored schema and history this is decided against — a release consumes it\n", BaseName(base))
 	if p, c := f.GetPrevSummary(), f.GetCurrSummary(); p != "" || c != "" {
 		fmt.Fprintf(&b, "change: %s\n", quote(strings.TrimSpace(p+" → "+c)))
 	}

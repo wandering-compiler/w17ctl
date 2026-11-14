@@ -63,7 +63,7 @@ func envTokenFor(addr string) string {
 			EnvTokenVar, addr, envConsoleAddrVar))
 		return ""
 	}
-	if normalizeConsoleAddr(addr) != normalizeConsoleAddr(bound) {
+	if NormalizeConsoleAddr(addr) != NormalizeConsoleAddr(bound) {
 		warnEnvTokenOnce(fmt.Sprintf(
 			"%s is bound to %q and was NOT presented to %q.\n"+
 				"  a token is only sent to the console it was minted for; expect an authentication failure below.",
@@ -107,7 +107,7 @@ func EnvTokenBinding(addr string) (bound string, presented bool) {
 	if bound == "" {
 		return "", false
 	}
-	return bound, normalizeConsoleAddr(addr) == normalizeConsoleAddr(bound)
+	return bound, NormalizeConsoleAddr(addr) == NormalizeConsoleAddr(bound)
 }
 
 // EnvToken returns the raw environment-supplied token, or "".

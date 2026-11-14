@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"google.golang.org/grpc/status"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
@@ -72,8 +75,15 @@ type CheckCmd struct {
 	Generated bool     `name:"generated" help:"Release gate: also fail (exit 4) when the proto has changes no stored migration covers, or the lock does not pin them — i.e. 'migrate generate' has not run, or its lock was not committed."`
 	Protos    []string `name:"proto" short:"p" placeholder:"PROTO" help:"Path to a .proto schema. Repeatable. Empty = every .proto under the project's proto root."`
 	ProjectID string   `name:"project" placeholder:"ID" help:"Project identifier. Empty = project_id from w17/lock.yaml."`
-	Console   string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
+	Console   string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to W17_CONSOLE_ADDR, then the console you last logged in to (w17ctl console use), then the binary's compile-time default. A decision file records the console it was written on, and only that console judges it."`
 	LockPath  string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Lock file whose pinned targets --generated compares against the console."`
+	// PlannerFloor — the project's own floor. The client compares
+	// the number the console reports; it never learns what it means.
+	PlannerFloor uint32 `name:"planner-floor" placeholder:"N" env:"W17_PLANNER_FLOOR" help:"The lowest planner version (the console's decision vocabulary) this project accepts. Refuses a check planned by a console below it, and with --generated a lock whose pinned migrations a planner below it minted (exit 4). 0 = no floor. A console that predates planner versions reports 0."`
+	// ReleasedLock — without it the floor judged the heads
+	// only, so a migration minted between two releases below the head
+	// deployed unjudged.
+	ReleasedLock string `name:"released-lock" placeholder:"PATH" env:"W17_RELEASED_LOCK" help:"With --planner-floor: the lock of the last release (e.g. git show <release-tag>:w17/lock.yaml > released.yaml). The floor then judges EVERY migration this release adds after that lock's pins, not only the heads. Without it only the heads are judged."`
 }
 
 func (c *CheckCmd) Run() error {
@@ -91,22 +101,39 @@ func (c *CheckCmd) Run() error {
 	dir := filepath.Join(root, migdecisions.Dir)
 	args := schema.SchemaPushArgs{Protos: src.Protos, Imports: src.Imports, ProjectID: src.ProjectID, Console: src.Console}
 
-	var removed []string
+	// --rewrite plans WITHOUT the files and deletes them only once the
+	// console has answered and repair has accepted the answer: deleting first
+	// lost every choice when the console was unreachable, or predated finding
+	// ids, which repair refuses to write against.
+	var st *schema.DecisionState
 	if c.Rewrite {
-		gone, err := removeAll(dir)
-		if err != nil {
-			return err
-		}
-		for _, p := range gone {
-			removed = append(removed, rel(root, p))
-		}
+		st, err = schema.ResolveDecisionFiles(root, args, nil)
+	} else {
+		st, err = schema.ResolveDecisions(root, args)
 	}
-	st, err := schema.ResolveDecisions(root, args)
+	var refused *schema.RefusedDecisionsError
+	if errors.As(err, &refused) {
+		// A file the console refuses is a file to tidy (exit 3), named — not
+		// a console failure (exit 1).
+		var paths []string
+		for _, f := range refused.Files {
+			paths = append(paths, rel(root, f.Path))
+		}
+		return checkExitError{exitTidyDecisions, fmt.Sprintf("the console refuses a decision in %s: %v — a database owner fixes the file (keep one option the finding offers; a custom: file must hold SQL), or start over with `w17ctl migrate check --rewrite`", strings.Join(paths, ", "), status.Convert(refused.Err).Message())}
+	}
 	if err != nil {
 		return err
 	}
+	if v := st.Plan.GetPlannerVersion(); c.PlannerFloor > 0 && v < c.PlannerFloor {
+		// Its plan may lack a decision a newer planner asks before it mints
+		// (2026-11-11: a bare SET NOT NULL) — so nothing it says is a verdict.
+		return fmt.Errorf("migrate check: the console reports planner version %d, below this project's floor %d (--planner-floor) — it may plan, without a decision, a change a newer console stops on; check against a console at planner version %d or later", v, c.PlannerFloor, c.PlannerFloor)
+	}
+	if v := st.Plan.GetPlannerVersion(); v > 0 {
+		fmt.Fprintf(core.Stdout, "migrate check: planned by %s (planner version %d)\n", st.Console, v)
+	}
 	r := assess(root, st)
-	r.removed = append(removed, r.removed...)
+	r.rewrite = c.Rewrite
 	if c.Write || c.Rewrite {
 		if err := r.repair(root, dir, st); err != nil {
 			return err
@@ -141,6 +168,12 @@ type report struct {
 	written  []string
 	removed  []string
 	changed  []string // connections a push would migrate
+	// rewrite: repair deletes every decision file first (--rewrite), once
+	// the console's answer has been accepted.
+	rewrite bool
+	// elsewhere: the consoles files were decided on that are not this one —
+	// only they can judge those files.
+	elsewhere []string
 	// notGenerated lists why --generated fails.
 	notGenerated []string
 	base         string
@@ -189,6 +222,12 @@ func assess(root string, st *schema.DecisionState) *report {
 	for _, f := range st.Files {
 		p := rel(root, f.Path)
 		switch {
+		case st.OnAnotherConsole(f):
+			// Its base is another console's: this one cannot say whether a
+			// release consumed it, so nothing here judges or deletes it.
+			r.byHand = true
+			r.elsewhere = append(r.elsewhere, f.Console)
+			r.tidy = append(r.tidy, fmt.Sprintf("%s: was decided on console %s, and this check asked %s — check it there: `w17ctl migrate check --console %s` (nothing here judges or deletes it)", p, f.Console, st.Console, f.Console))
 		case f.Base != "" && !st.Current(f):
 			// consumed — reported by print, never a failure
 		case f.Unbound && st.ForAnotherChange(f):
@@ -249,6 +288,17 @@ func (r *report) repair(root, dir string, st *schema.DecisionState) error {
 			return fmt.Errorf("migrate check --write: the console does not identify the change behind %s (its findings carry no finding_id — it predates decisions bound to a change); update the console, then run this again", f.GetDecideKey())
 		}
 	}
+	if r.rewrite {
+		// Files decided on another console stay: their base is that
+		// console's, and starting over here cannot re-ask them.
+		gone, err := removeAll(dir, st.OnAnotherConsole)
+		if err != nil {
+			return err
+		}
+		for _, p := range gone {
+			r.removed = append(r.removed, rel(root, p))
+		}
+	}
 	for _, f := range append(append([]migdecisions.File(nil), r.consumed...), r.deletable...) {
 		if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
 			return err
@@ -274,7 +324,7 @@ func (r *report) repair(root, dir string, st *schema.DecisionState) error {
 			continue
 		}
 		p := filepath.Join(dir, migdecisions.FileName(now, r.commit, ident))
-		if err := os.WriteFile(p, migdecisions.Render(f, st.Base, r.commit, r.branch, migdecisions.ReplacedFor(f, r.replaced)...), 0o644); err != nil {
+		if err := os.WriteFile(p, migdecisions.RenderOn(f, st.Base, core.NormalizeConsoleAddr(st.Console), r.commit, r.branch, migdecisions.ReplacedFor(f, r.replaced)...), 0o644); err != nil {
 			return err
 		}
 		r.fileFor[ident] = true
@@ -301,7 +351,7 @@ func (c *CheckCmd) notGenerated(plan *w17registrypb.PushSchemaResponse, src *Gen
 	if len(out) > 0 {
 		return out, nil
 	}
-	return lockBehindConsole(src.Console, src.ProjectID, c.LockPath)
+	return lockBehindConsole(src.Console, src.ProjectID, c.LockPath, c.PlannerFloor, c.ReleasedLock)
 }
 
 func (r *report) print() {
@@ -358,6 +408,9 @@ func (r *report) tableNote(f *w17registrypb.Finding) string {
 // tidyAdvice names what gets out of exit 3 for THIS state: --write when it
 // can settle everything left, otherwise the person (or --rewrite).
 func (r *report) tidyAdvice() string {
+	if len(r.elsewhere) > 0 {
+		return "some were decided on another console — run the check there (`w17ctl migrate check --console " + r.elsewhere[0] + "`); nothing here judges or deletes them"
+	}
 	if r.byHand {
 		return "a database owner settles them (keep ONE decision per change, fix broken files), or start over with `w17ctl migrate check --rewrite`; then commit " + migdecisions.Dir
 	}
@@ -426,14 +479,17 @@ func writeStepSummary(r *report) {
 }
 
 // removeAll deletes every decision file (not the directory, and nothing that
-// is not a .yaml decision).
-func removeAll(dir string) ([]string, error) {
+// is not a .yaml decision) except those keep reports.
+func removeAll(dir string, keep func(migdecisions.File) bool) ([]string, error) {
 	files, err := migdecisions.Load(dir)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
 	for _, f := range files {
+		if keep(f) {
+			continue
+		}
 		if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
 			return out, err
 		}
@@ -465,7 +521,18 @@ func rel(root, p string) string {
 // pin was not committed (or was overwritten). Migrations come back in stored
 // order, so the last one per connection is its head; a squash appends its
 // baseline at the end, so that holds after one too.
-func lockBehindConsole(console, projectID, lockPath string) ([]string, error) {
+//
+// floor > 0 also names every migration a planner below it minted
+// (Migration.planner_version, 0 = a console that predates it): it may lack a
+// decision the project requires its planner to ask. Judged
+// is what this release adds. With releasedLock (the lock of the last
+// release) that is every live migration after its pin on the connection —
+// two pushes between releases put one below the head. Without it, the
+// newest one only, as before. A push-raw body is
+// never judged: no planner decided it, so its 0 says nothing, and `migrate
+// replace` — the repair the refusal names — refuses one. In the
+// heads-only mode the newest PLANNED migration stands in for a raw head.
+func lockBehindConsole(console, projectID, lockPath string, floor uint32, releasedLock string) ([]string, error) {
 	lk, err := lockfile.Load(lockPath)
 	if err != nil {
 		return nil, err
@@ -473,6 +540,17 @@ func lockBehindConsole(console, projectID, lockPath string) ([]string, error) {
 	pinned := map[string]lockfile.Connection{}
 	for _, c := range lk.Connections {
 		pinned[c.Name] = c
+	}
+	var released map[string]string
+	if floor > 0 && releasedLock != "" {
+		rl, err := lockfile.Load(releasedLock)
+		if err != nil {
+			return nil, fmt.Errorf("--released-lock: %w", err)
+		}
+		released = map[string]string{}
+		for _, c := range rl.Connections {
+			released[c.Name] = c.TargetMigrationID
+		}
 	}
 	addr, err := core.ResolveConsoleAddr(console)
 	if err != nil {
@@ -489,12 +567,12 @@ func lockBehindConsole(console, projectID, lockPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	head := map[string]*w17registrypb.Migration{}
+	history := map[string][]*w17registrypb.Migration{}
 	for _, m := range resp.GetMigrations() {
-		head[m.GetConnection()] = m
+		history[m.GetConnection()] = append(history[m.GetConnection()], m)
 	}
-	conns := make([]string, 0, len(head))
-	for c := range head {
+	conns := make([]string, 0, len(history))
+	for c := range history {
 		conns = append(conns, c)
 	}
 	sort.Strings(conns)
@@ -502,14 +580,71 @@ func lockBehindConsole(console, projectID, lockPath string) ([]string, error) {
 	// Id AND digest: the deploy verifies the artefact against the pinned
 	// digest, so a right id with an empty or stale digest pins nothing.
 	for _, c := range conns {
-		got, h := pinned[c], head[c]
+		hist := history[c]
+		got, h := pinned[c], hist[len(hist)-1]
 		switch {
 		case got.TargetMigrationID == "":
 			out = append(out, fmt.Sprintf("%s: the lock pins no migration, the console's latest is %s — commit the lock `migrate generate` wrote", c, h.GetId()))
+			continue
 		case got.TargetMigrationID != h.GetId():
 			out = append(out, fmt.Sprintf("%s: the lock pins %s, the console's latest is %s — commit the lock `migrate generate` wrote", c, got.TargetMigrationID, h.GetId()))
+			continue
 		case got.TargetContentSha256 != h.GetContentSha256():
 			out = append(out, fmt.Sprintf("%s: the lock pins %s with digest %q, the console's is %q — commit the lock `migrate generate` wrote", c, h.GetId(), got.TargetContentSha256, h.GetContentSha256()))
+			continue
+		}
+		if floor == 0 {
+			continue
+		}
+		judged, err := migrationsThisReleaseAdds(c, hist, released)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range judged {
+			if m.GetPlannerVersion() >= floor {
+				continue
+			}
+			line := fmt.Sprintf("%s: %s was minted by planner version %d, below this project's floor %d — it may lack a decision a newer planner asks (a drop, a narrowing, a NOT NULL); review it, and if no environment applied it yet, repair it with `w17ctl migrate replace` on a console at planner version %d or later", c, m.GetId(), m.GetPlannerVersion(), floor, floor)
+			if released == nil {
+				line += " (shipped in an earlier release? pass --released-lock with that release's lock, and only what this release adds is judged)"
+			}
+			out = append(out, line)
+		}
+	}
+	return out, nil
+}
+
+// migrationsThisReleaseAdds is what the planner floor judges on one
+// connection's history (stored order): with the last release's pins, every
+// live migration after the released one; without them, the newest live one.
+// Push-raw bodies are left out either way — no planner decided them.
+func migrationsThisReleaseAdds(conn string, hist []*w17registrypb.Migration, released map[string]string) ([]*w17registrypb.Migration, error) {
+	planned := func(m *w17registrypb.Migration) bool { return m.GetSupersededBy() == "" && !m.GetRaw() }
+	if released == nil {
+		for i := len(hist) - 1; i >= 0; i-- {
+			if planned(hist[i]) {
+				return hist[i : i+1], nil
+			}
+		}
+		return nil, nil
+	}
+	from := 0
+	if id := released[conn]; id != "" {
+		from = -1
+		for i, m := range hist {
+			if m.GetId() == id {
+				from = i + 1
+				break
+			}
+		}
+		if from < 0 {
+			return nil, fmt.Errorf("--released-lock pins %s on %s, which the console does not list for it — pass the lock of a release of this project", id, conn)
+		}
+	}
+	var out []*w17registrypb.Migration
+	for _, m := range hist[from:] {
+		if planned(m) {
+			out = append(out, m)
 		}
 	}
 	return out, nil

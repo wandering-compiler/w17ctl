@@ -78,26 +78,29 @@ func LookupInstance(st *authstore.Store, addr string) *authstore.Instance {
 	if inst := st.Instance(addr); inst != nil {
 		return inst
 	}
-	want := normalizeConsoleAddr(addr)
+	want := NormalizeConsoleAddr(addr)
 	for key, inst := range st.Instances {
 		if inst == nil {
 			continue
 		}
-		if normalizeConsoleAddr(key) == want {
+		if NormalizeConsoleAddr(key) == want {
 			return inst
 		}
 	}
 	return nil
 }
 
-// normalizeConsoleAddr reduces a console address to the form two spellings
+// NormalizeConsoleAddr reduces a console address to the form two spellings
 // of the SAME console share: no readability scheme, lowercase host, every
-// loopback spelling collapsed onto one, port preserved verbatim.
+// loopback spelling collapsed onto one, port preserved verbatim. Two
+// addresses name one console when their normalised forms are equal — the
+// credential store, the machine-token binding and a decision file's
+// `console:` (review R1-5) all compare that way.
 //
 // The port is load-bearing and is never defaulted: a workspace's dev console
 // and its deployed one commonly differ only there, and merging them is the
 // wrong-token bug dc45782c0 fixed.
-func normalizeConsoleAddr(addr string) string {
+func NormalizeConsoleAddr(addr string) string {
 	_, target := splitConsoleScheme(addr)
 	host, port := target, ""
 	if h, p, err := net.SplitHostPort(target); err == nil {

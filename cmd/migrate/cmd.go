@@ -161,7 +161,7 @@ func (c *GenerateCmd) Run() error {
 	if err := schema.RunSchemaPush(args); err != nil {
 		return err
 	}
-	return schema.ConsumeDecisionFiles(root, c.LockPath)
+	return schema.ConsumeDecisionFiles(root, c.LockPath, c.Console)
 }
 
 // ====================================================================

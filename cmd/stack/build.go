@@ -738,6 +738,17 @@ func runDevDiffApplyLossy(sc *storageclient.StorageClients, project, actor, init
 	defer cancel()
 	res, err := plan.DevSync(ctx, baseBytes, currentBytes, applierFor, conns, logf, lossyMode, snapshot)
 	if err != nil {
+		// A sync that failed part-way hands back the record of the stores it
+		// DID apply to: stored, the next sync plans
+		// only what is still missing; dropped, a store this client cannot
+		// read is re-planned the change it already holds and collides.
+		if res != nil && !throwaway {
+			if record := res.Record(currentBytes); record != nil {
+				if aerr := adoptCheckpoint(sc, project, actor, initiative, record, compilerVersion); aerr != nil {
+					return "", fmt.Errorf("%w\n(and recording the stores that did apply failed too: %w)", err, aerr)
+				}
+			}
+		}
 		// Nil-checkpoint "already exists": the store was bootstrapped from
 		// db/init (full schema on a fresh volume) but has no dev checkpoint
 		// yet, so the first diff-apply — base nil → full create — collides

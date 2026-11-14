@@ -98,7 +98,7 @@ func (c *Cmd) Run() error {
 		return err
 	}
 	if rootErr == nil {
-		if err := schemahub.ConsumeDecisionFiles(root, c.LockPath); err != nil {
+		if err := schemahub.ConsumeDecisionFiles(root, c.LockPath, c.Console); err != nil {
 			return err
 		}
 	}

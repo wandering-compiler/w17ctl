@@ -35,7 +35,7 @@ type lockOrg struct {
 // A lock with no w17_url cannot say, so it gets only the cache translation —
 // the cache is per console, so an id from elsewhere matches nothing there.
 func (lo lockOrg) forConsole(addr string) bool {
-	return lo.URL != "" && normalizeConsoleAddr(lo.URL) == normalizeConsoleAddr(addr)
+	return lo.URL != "" && NormalizeConsoleAddr(lo.URL) == NormalizeConsoleAddr(addr)
 }
 
 var (
@@ -203,7 +203,7 @@ func resetOrgListings() {
 // A transport failure is not remembered: the console may be back for the next
 // call, and the call that needed the answer fails with the reason anyway.
 func listOrgsOnce(addr, token, keySlug string) orgListing {
-	key := normalizeConsoleAddr(addr) + "|" + keySlug
+	key := NormalizeConsoleAddr(addr) + "|" + keySlug
 	orgListingsMu.Lock()
 	defer orgListingsMu.Unlock()
 	if l, ok := orgListings[key]; ok {

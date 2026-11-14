@@ -180,6 +180,7 @@ func GenerateClientViaConsole(root, console, protoDir, lockPath string) error {
 			return err
 		}
 	}
+	recordClientWrites(root, got)
 	var roots []string
 	for _, c := range view.GetClients() {
 		if r := c.GetOutputRoot(); r != "" {
@@ -194,6 +195,19 @@ func GenerateClientViaConsole(root, console, protoDir, lockPath string) error {
 		fmt.Fprintf(core.Stdout, "client generate: pruned %d stale generated file(s)\n", n)
 	}
 	return nil
+}
+
+// recordClientWrites puts what `target client generate` wrote into codegen's
+// record. The client trees are codegen's output too (their roots are among
+// its clean paths); left out, the next `codegen` finds a file it recorded
+// with other bytes and refuses it as edited (a regenerated i18n.ts). Only
+// into a record that exists and reads: started from this run alone, it would
+// name only the client files, and the next codegen would refuse every other
+// header-less output as never written by it.
+func recordClientWrites(root string, writes []*codegenpb.GeneratedFile) {
+	if record, err := loadWrittenManifest(root); err == nil && record != nil {
+		recordWrittenManifest(root, writes)
+	}
 }
 
 // GuideViaConsole fetches the w17 PLATFORM self-description (w17/specs/*) from
