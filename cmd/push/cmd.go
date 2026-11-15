@@ -46,7 +46,7 @@ type Cmd struct {
 	Protos      []string `name:"proto" short:"p" placeholder:"PROTO" help:"Path to a .proto FILE to build from (repeatable). Leave it out to build the whole project — what a push should mint from; a subset that leaves out a table plans its DROP, and the console refuses that without a table_drop decision."`
 	Imports     []string `name:"import" short:"I" placeholder:"DIR" help:"IGNORED — the console compiles the IR and resolves imports from the uploaded proto tree. Kept so existing scripts do not break; it warns."`
 	ProjectID   string   `name:"project" placeholder:"ID" env:"W17_PROJECT_ID" help:"Project identifier. Falls back to W17_PROJECT_ID env var; then to w17/lock.yaml project_id."`
-	Console     string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of console. Optional — falls back to console_addr in w17/lock.yaml, then the binary's compile-time default."`
+	Console     string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of console. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 	LockPath    string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file. Updated to pin target_migration_id per connection after a successful schema push."`
 	NoLock      bool     `name:"no-lock" help:"Skip lock-file write."`
 	FixturesDir string   `name:"fixtures-dir" placeholder:"DIR" default:"fixtures" help:"Root of the fixtures tree. Files are read from <dir>/<domain>/<name>.json (default group) or <dir>/<domain>/<group>/<name>.json (named group). Every group is pushed."`

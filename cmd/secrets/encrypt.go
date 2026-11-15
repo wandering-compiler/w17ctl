@@ -14,7 +14,7 @@ import (
 // encryption stays client-side.
 type EncryptCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 	File     string `arg:"" name:"file" help:"Plain secrets file to encrypt (e.g. app-business/.secrets). Output is <file>.age."`
 }
 

@@ -20,7 +20,7 @@ var generateAgeKey = secret.GenerateAgeKey
 // InitCmd implements `w17ctl secrets init`.
 type InitCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 	KeyFile  string `name:"key-file" placeholder:"PATH" default:"w17/keys/age.key" help:"Where to write the private age key (gitignored; mount this at deploy time via W17_SECRETS_AGE_KEY_FILE)."`
 	Force    bool   `name:"force" help:"Overwrite an existing key file (mints a NEW keypair — anything encrypted for the old recipient becomes undecryptable unless that recipient is kept)."`
 }

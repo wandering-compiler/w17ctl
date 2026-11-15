@@ -28,8 +28,12 @@ func displaySnapshot(id string) string {
 // snapshots. Pure client orchestration over the generated storage
 // services + the console's ClassifyIR RPC (semantic diff over the API);
 // no server facade. v1 ships
-// self-approval. The prod-mode gate (merge into a prod environment) is
-// the point where the compat engine becomes a hard ENFORCEMENT.
+// self-approval. The prod-mode gate (a deploy into a prod environment) is
+// the point where the compat engine becomes a hard ENFORCEMENT — the
+// console's: it classifies every SetDeployed into a prod environment itself
+// and refuses BREAKING for any client. This command
+// reports the same verdict first, so trunk does not move on a merge the
+// console would refuse to deploy.
 type Cmd struct {
 	Console string `name:"console" placeholder:"HOST:PORT" env:"CONSOLE_STORAGE_ADDR" help:"Console storage endpoint. Defaults to the logged-in console (w17ctl login), else the compiled-in default."`
 
@@ -289,9 +293,11 @@ func (c *MergeCmd) Run(parent *Cmd) error {
 		compat.RenderReportPB(dresp, "dev")
 	}
 
-	// Prod-mode gate: re-run compat against the target env's deployed
-	// snapshot; a prod env BLOCKS a BREAKING merge (the only new
-	// enforcement — same compat report the author already saw).
+	// Prod-mode report: re-run compat against the target env's deployed
+	// snapshot and stop a BREAKING merge into a prod env before trunk moves.
+	// The enforcement is the console's — SetDeployed into a prod env
+	// classifies server-side and refuses BREAKING for any client — this keeps
+	// trunk from advancing first.
 	var env *reviewpb.Environment
 	if c.Env != "" {
 		env, err = sc.FindEnv(project, c.Env)
@@ -401,6 +407,11 @@ func (c *MergeCmd) Run(parent *Cmd) error {
 		if err != nil {
 			if status.Code(err) == codes.NotFound {
 				return fmt.Errorf("deploy to env %q: its deployed snapshot moved from %s under this merge, so the compat gate ran against a baseline that is no longer live; trunk is already advanced — re-run `w17ctl review merge --env %s`", c.Env, displaySnapshot(env.GetDeployedSnapshotId()), c.Env)
+			}
+			if status.Code(err) == codes.FailedPrecondition {
+				// The console's own prod gate: it
+				// classifies every deploy into a prod environment itself.
+				return fmt.Errorf("deploy to env %q: the console refused it — %s; trunk is already advanced, the environment is not", c.Env, status.Convert(err).Message())
 			}
 			return fmt.Errorf("deploy to env %q: %w", c.Env, err)
 		}

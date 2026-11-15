@@ -85,7 +85,7 @@ var root struct {
 	// and someone reading only --help concludes there is no unattended path
 	// when there is one. The browser login now exists; the password one stays
 	// beside it, and --email / W17_PASSWORD still select it.
-	Login   logincmd.Cmd   `cmd:"" help:"Log in to a console. Default: in the browser — w17ctl prints and opens the console's sign-in page (OAuth 2.1, loopback redirect + PKCE) and waits up to 5 minutes for you to approve; --issuer / W17_CONSOLE_OAUTH_ISSUER names the console's web API when it is not https://<console host>. A console without the OAuth server yet falls back to that. --no-browser: email + password in the terminal over gRPC (AuthService.SignIn) for a host without a browser; --email, --password or the W17_PASSWORD env var select it, and --email + W17_PASSWORD make it unattended. Stores the bearer + org memberships in ~/.w17/auth.yaml; a console that binds devices binds the session to this machine's key for that console, ~/.w17/device-<hash>.key (made on first login). 'login grpcs://api.w17.app:50051' (or an enterprise self-host URL)."`
+	Login   logincmd.Cmd   `cmd:"" help:"Log in to a console. In a terminal it asks how (--method browser|code|password answers); without one it is the browser — w17ctl prints and opens the console's sign-in page (OAuth 2.1, loopback redirect + PKCE) and waits up to 5 minutes for you to approve; --issuer / W17_CONSOLE_OAUTH_ISSUER names the console's web API when it is not https://<console host>. A console without the OAuth server yet falls back to that. --no-browser: email + password in the terminal over gRPC (AuthService.SignIn) for a host without a browser; --email, --password or the W17_PASSWORD env var select it, and --email + W17_PASSWORD make it unattended. Stores the bearer + org memberships in ~/.w17/auth.yaml; a console that binds devices binds the session to this machine's key for that console, ~/.w17/device-<hash>.key (made on first login). 'login grpcs://api.w17.app:50051' (or an enterprise self-host URL)."`
 	Logout  logoutcmd.Cmd  `cmd:"" help:"Log out of a console — drop its stored credential from ~/.w17/auth.yaml. Defaults to the active console."`
 	Whoami  whoamicmd.Cmd  `cmd:"" help:"Show the stored identity + organizations for the active console (--all for every logged-in console)."`
 	Org     orgcmd.Cmd     `cmd:"" help:"Organizations on the active console — list the ones you belong to (list) and pick the default (use <slug>). The default org scopes subsequent commands."`
@@ -105,7 +105,7 @@ var root struct {
 	// --- Infrastructure (where and how the project is deployed) ---
 	Infra  infracmd.Cmd  `cmd:"" help:"The project's infrastructure — swarm (your own servers), aws-ecs or gcp-cloudrun — its environments, edge, TLS, database backups and server setup. init / update prompt; show / remove. The next codegen renders deploy/<env>/."`
 	Ci     cicmd.Cmd     `cmd:"" help:"The automation that builds and deploys the declared infrastructure: GitHub workflows written by codegen into .github/workflows/w17-*.yaml. init / update prompt; show / remove."`
-	Deploy deploycmd.Cmd `cmd:"" help:"One person's shortcut for an MVP/PoC: mint the migrations, build the images, ship them over SSH and run the blue/green deploy on a swarm environment's server — no CI, no registry. Always warns; the recommended way is 'w17ctl ci init' and the deploy workflow."`
+	Deploy deploycmd.Cmd `cmd:"" help:"One person's shortcut for an MVP/PoC: mint the migrations, build the images, then ship them over SSH and run the blue/green deploy on a swarm environment's server (no registry), or apply an aws-ecs / gcp-cloudrun environment's Terraform. No CI. Always warns; the recommended way is 'w17ctl ci init' and the deploy workflow."`
 
 	// --- Code generation ---
 	// codegen generates EVERYTHING (gRPC stubs + the ACL / eventbus /
@@ -114,7 +114,7 @@ var root struct {
 	// standalone `acl` / `eventbus` / `mcp` commands are gone: their
 	// generation is folded into codegen and their drift checks into
 	// verify.
-	Codegen codegencmd.Cmd `cmd:"" help:"Generate ALL derived code: Storage-layer Go gRPC handlers + the ACL / eventbus / MCP bundles. Walks parent dirs to the .w17/ project root, reads w17/lock.yaml, uploads every .proto under proto/ to the console, writes returned files under <root>/<gen_dir>/."`
+	Codegen codegencmd.Cmd `cmd:"" help:"Generate ALL derived code: Storage-layer Go gRPC handlers + the ACL / eventbus / MCP bundles. Walks parent dirs to the project root (the directory holding w17/), reads w17/lock.yaml, uploads every .proto under proto/ to the console, writes returned files under <root>/<gen_dir>/."`
 	Verify  verify.Cmd     `cmd:"" help:"Verify every committed generated lock (ACL + eventbus) still matches the current proto — the CI drift hook paired with codegen. Non-zero exit on drift. Requires console access: the recompute + signature check run server-side (--console / W17_CONSOLE_ADDR)."`
 	// admission reads the counters behind the console's codegen gate. It sits
 	// next to codegen because it answers a question ABOUT codegen — how much
@@ -137,13 +137,13 @@ var root struct {
 	Initiative initiativecmd.Cmd `cmd:"" help:"Initiatives + snapshots — current / list / show / materialize / push. Git branch → initiative (main/master → trunk); lazy materialize on first push. See 'initiative --help'."`
 	// Compat engine surface — semantic diff + policy gate (dev=warn /
 	// prod=block breaking). The functions a future console GUI mirrors.
-	Compat compatcmd.Cmd `cmd:"" help:"Compatibility report between two snapshots (DB / WIRE / API findings + severity) with a dev/prod policy gate. report --base --head, or against-trunk. See 'compat --help'."`
+	Compat compatcmd.Cmd `cmd:"" help:"Compatibility report between two snapshots (DB / WIRE / API / EVENT findings + severity) with a dev/prod policy gate. report --base --head, or against-trunk. See 'compat --help'."`
 	// Review (PR analog) + environments + prod-mode gate (console v2 part B).
 	Review reviewcmd.Cmd `cmd:"" help:"Review flow (PR analog): open / show / approve / merge a set of schema changes. Merge into a prod-mode env blocks BREAKING changes. See 'review --help'."`
 	Env    envcmd.Cmd    `cmd:"" help:"Deployment environments + mode (dev/prod). A prod-mode env turns the compat engine's BREAKING verdict into a hard merge block. See 'env --help'."`
 
 	// --- Plugins ---
-	Plugin plugincmd.Cmd `cmd:"" help:"Plugin catalog operations — list the embedded + installed plugins and install one into this project."`
+	Plugin plugincmd.Cmd `cmd:"" help:"Plugin catalog operations — list the console's catalogue, install one into this project (activating it is naming it in (w17.domain).plugins), update it; and for plugin authors dev / gen / sign / render."`
 	Client clientcmd.Cmd `cmd:"" help:"Clients of THIRD-PARTY REST APIs, from their OpenAPI documents: generate / update / list / remove. Each is a signed, generated gRPC client under proto/clients/<name>/. (The project's own frontend clients are 'target client'.)"`
 
 	// --- Secrets & TLS ---

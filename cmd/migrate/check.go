@@ -83,12 +83,19 @@ type CheckCmd struct {
 	// ReleasedLock — without it the floor judged the heads
 	// only, so a migration minted between two releases below the head
 	// deployed unjudged.
-	ReleasedLock string `name:"released-lock" placeholder:"PATH" env:"W17_RELEASED_LOCK" help:"With --planner-floor: the lock of the last release (e.g. git show <release-tag>:w17/lock.yaml > released.yaml). The floor then judges EVERY migration this release adds after that lock's pins, not only the heads. Without it only the heads are judged."`
+	ReleasedLock string `name:"released-lock" placeholder:"PATH" env:"W17_RELEASED_LOCK" help:"With --generated and --planner-floor (refused without them): the lock of the last release (e.g. git show <release-tag>:w17/lock.yaml > released.yaml). The floor then judges EVERY migration this release adds after that lock's pins, not only the heads. Without it only the heads are judged."`
 }
 
 func (c *CheckCmd) Run() error {
 	if c.Write && c.Rewrite {
 		return fmt.Errorf("migrate check: --write and --rewrite are alternatives — --rewrite already writes every file fresh")
+	}
+	// The released lock feeds the --generated gate's planner floor and
+	// nothing else; anywhere else it was read by nobody, and a pipeline
+	// believing every migration of the release judged got the heads only, or
+	// nothing.
+	if c.ReleasedLock != "" && (!c.Generated || c.PlannerFloor == 0) {
+		return fmt.Errorf("migrate check: --released-lock (W17_RELEASED_LOCK) is read only by the release gate's planner floor — pass it together with --generated and --planner-floor, or drop it")
 	}
 	src := &GenerateCmd{Protos: c.Protos, ProjectID: c.ProjectID, Console: c.Console}
 	if err := src.deriveFromProject(); err != nil {
@@ -571,12 +578,21 @@ func lockBehindConsole(console, projectID, lockPath string, floor uint32, releas
 	for _, m := range resp.GetMigrations() {
 		history[m.GetConnection()] = append(history[m.GetConnection()], m)
 	}
+	var out []string
+	// A pin the console has no history for is judged too: a lock entry left
+	// behind by a connection rename passed here and failed only at the
+	// deploy's fetch. A connection that pins nothing
+	// has nothing to deploy.
+	for _, c := range lk.Connections {
+		if _, known := history[c.Name]; !known && c.TargetMigrationID != "" {
+			out = append(out, fmt.Sprintf("%s: the lock pins %s, but the console lists no migration for this connection — a renamed or removed connection? run `w17ctl migrate generate` and commit the lock it writes", c.Name, c.TargetMigrationID))
+		}
+	}
 	conns := make([]string, 0, len(history))
 	for c := range history {
 		conns = append(conns, c)
 	}
 	sort.Strings(conns)
-	var out []string
 	// Id AND digest: the deploy verifies the artefact against the pinned
 	// digest, so a right id with an empty or stale digest pins nothing.
 	for _, c := range conns {

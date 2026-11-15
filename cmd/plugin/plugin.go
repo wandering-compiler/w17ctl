@@ -327,7 +327,7 @@ func catalogueError(op string, err error) error {
 // serves none and the lock records none.
 type ListCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default. Serves the plugin catalogue."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default. Serves the plugin catalogue."`
 }
 
 func (c *ListCmd) Run() error {
@@ -452,7 +452,7 @@ func (c *ListCmd) Run() error {
 //  6. Only then rename the staged tree into place.
 type InstallCmd struct {
 	Source  string `arg:"" name:"name|repo#tag" help:"Plugin name (the console's catalogue), or a release in a repository: <repo>#<plugin>/<version>."`
-	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default. Serves the plugin catalogue + validates the manifest."`
+	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default. Serves the plugin catalogue + validates the manifest."`
 }
 
 // looksLikeLocalDir reports whether a source names a directory on disk rather
@@ -734,7 +734,7 @@ type UpdateCmd struct {
 	All     bool   `name:"all" help:"Update every plugin recorded in lock.plugins[]."`
 	To      string `name:"to" placeholder:"vX.Y.Z" help:"For a git-sourced plugin: the release to move to. Omitted, the highest published one is used (release candidates included). Refused with --all, which spans plugins whose version lines are independent."`
 	From    string `name:"from" placeholder:"DIR" help:"Take the plugin again from a plugin tree on disk (the directory holding plugin.yaml) instead of a release — the loop for testing a tree before it is tagged. Records source: local. One plugin at a time; refused with --all and --to."`
-	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default. Serves the plugin catalogue + validates the manifest."`
+	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default. Serves the plugin catalogue + validates the manifest."`
 }
 
 func (c *UpdateCmd) Run() error {

@@ -399,14 +399,14 @@ func isAuthorTree(dir string) bool {
 func materialise(ctx context.Context, src Source, work string) error {
 	if src.Commit == "" {
 		if out, err := git(ctx, "", "clone", "--quiet", "--depth", "1",
-			"--branch", src.Tag(), "--filter=blob:none", "--sparse", src.Repo, work); err != nil {
+			"--branch", src.Tag(), "--filter=blob:none", "--sparse", "--", src.Repo, work); err != nil {
 			return fmt.Errorf(
 				"plugin fetch: %s %s is not published at %s (%w)\n\n"+
 					"  why: a plugin version is a git TAG, so a pin that resolves to nothing is a\n"+
 					"       version that was never released — or was released somewhere else.\n%s",
 				src.Plugin, src.Version, src.Repo, err, indent(out))
 		}
-		if out, err := git(ctx, work, "sparse-checkout", "set", src.Plugin); err != nil {
+		if out, err := git(ctx, work, "sparse-checkout", "set", "--", src.Plugin); err != nil {
 			return fmt.Errorf("plugin fetch: narrowing to %s: %w\n%s", src.Plugin, err, indent(out))
 		}
 		return nil
@@ -427,7 +427,7 @@ func materialise(ctx context.Context, src Source, work string) error {
 	// a depth-1 clone contains one commit, which is almost never the one asked
 	// for.
 	if out, err := git(ctx, "", "clone", "--quiet", "--filter=blob:none",
-		"--sparse", "--no-checkout", src.Repo, work); err != nil {
+		"--sparse", "--no-checkout", "--", src.Repo, work); err != nil {
 		return fmt.Errorf(
 			"plugin fetch: %s could not be read (%w)\n\n"+
 				"  why: a commit install needs the repository's commit graph to find the sha.\n%s",
@@ -435,10 +435,10 @@ func materialise(ctx context.Context, src Source, work string) error {
 	}
 	// Sparse BEFORE the checkout, so the narrow set is what lands rather than
 	// what gets pruned afterwards.
-	if out, err := git(ctx, work, "sparse-checkout", "set", src.Plugin); err != nil {
+	if out, err := git(ctx, work, "sparse-checkout", "set", "--", src.Plugin); err != nil {
 		return fmt.Errorf("plugin fetch: narrowing to %s: %w\n%s", src.Plugin, err, indent(out))
 	}
-	if out, err := git(ctx, work, "checkout", "--quiet", src.Commit); err != nil {
+	if out, err := git(ctx, work, "checkout", "--quiet", src.Commit, "--"); err != nil {
 		return fmt.Errorf(
 			"plugin fetch: commit %s is not in %s (%w)\n\n"+
 				"  why: the repository was read, so this is the sha and not the access — the commit\n"+
@@ -465,6 +465,14 @@ func (s Source) validate() error {
 		return fmt.Errorf(
 			"plugin fetch: %s names both version %s and commit %s — one or the other",
 			s.Plugin, s.Version, shortID(s.Commit))
+	}
+	// The repository and the name both reach git as arguments: a
+	// value starting with `-` would be an option there, not a positional.
+	if err := CheckRepo(s.Repo); err != nil {
+		return fmt.Errorf("plugin fetch: %w", err)
+	}
+	if strings.HasPrefix(s.Plugin, "-") {
+		return fmt.Errorf("plugin fetch: plugin name %q starts with `-`, which git reads as an option", s.Plugin)
 	}
 	// A name is a catalogue key and a directory, never a path: refusing
 	// separators here is what stops a crafted pin from writing outside the

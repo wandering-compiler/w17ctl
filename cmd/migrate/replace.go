@@ -48,7 +48,7 @@ type ReplaceCmd struct {
 	Decide            []string `name:"decide" placeholder:"DECISION" help:"Resolve a NEEDS_CONFIRM finding of the replacement plan, exactly as 'migrate generate --decide' does: <table>.<col>[:<axis>]=<strategy>, or =custom:<sql-file>. Repeatable. The usual repair for a body that failed on production data is a different strategy for the change it made."`
 	Initiative        string   `name:"initiative" placeholder:"ID" help:"Change request the replacement belongs to. Empty = the initiative of the current git branch."`
 	ProjectID         string   `name:"project" placeholder:"ID" help:"Project whose migration is replaced. Empty = project_id from w17/lock.yaml."`
-	Console           string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console ProjectRegistry. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
+	Console           string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console ProjectRegistry. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 	LockPath          string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file, re-pinned to the replacement afterwards."`
 	NoLock            bool     `name:"no-lock" help:"Skip the lock re-pin (then run 'w17ctl migrate generate' with the proto unchanged — it stores nothing and pins every connection to its head)."`
 }

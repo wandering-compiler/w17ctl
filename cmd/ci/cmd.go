@@ -29,7 +29,7 @@ type flags struct {
 	Platforms    string            `name:"platforms" help:"Image platforms: linux/amd64 (default), linux/arm64, or both comma-separated."`
 	DeployBranch map[string]string `name:"deploy-branch" help:"Per environment: --deploy-branch prod=production. 'any' = every ref may deploy."`
 	LockPath     string            `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console      string            `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console      string            `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 var newPrompter = prompter.NewStdinPrompter
@@ -205,7 +205,7 @@ func printSetup(in *codegenpb.LockInfra) {
 // ShowCmd is `w17ctl ci show`.
 type ShowCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *ShowCmd) Run() error {
@@ -229,7 +229,7 @@ func (c *ShowCmd) Run() error {
 // RemoveCmd is `w17ctl ci remove`.
 type RemoveCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *RemoveCmd) Run() error {

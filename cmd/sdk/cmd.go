@@ -98,7 +98,7 @@ func pinAdvice(resolved string) string {
 type PinCmd struct {
 	Version  string `arg:"" name:"version" help:"Go module version — v1.4.0, or a pseudo-version like v0.0.0-20260906130301-7b3d9c9300c9."`
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *PinCmd) Run() error {
@@ -122,7 +122,7 @@ func (c *PinCmd) Run() error {
 // project.
 type UnpinCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *UnpinCmd) Run() error {

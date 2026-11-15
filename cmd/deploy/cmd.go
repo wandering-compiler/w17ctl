@@ -38,7 +38,7 @@ type Cmd struct {
 	AllowDirty  bool     `name:"allow-dirty" help:"Deploy a tree with uncommitted changes (the images are then tagged as dirty)."`
 	BuildFlags  []string `name:"build-flag" placeholder:"FLAG" help:"Passed to every docker build, e.g. --build-flag=--build-arg=X=1. Repeatable."`
 	LockPath    string   `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console     string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default."`
+	Console     string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 
 	// lockPinned: migrate generate changed the lock, which then wants a commit.
 	lockPinned bool

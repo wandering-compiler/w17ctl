@@ -30,7 +30,7 @@ type PlanCmd struct {
 	NoCodegen   bool   `name:"no-codegen" help:"Plan what deploy/<env>/ holds now instead of rendering it first."`
 	StateBucket string `name:"state-bucket" env:"TF_STATE_BUCKET" help:"aws-ecs / gcp-cloudrun: the Terraform state bucket (deploy/<env>/terraform/bootstrap created it)."`
 	LockPath    string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default."`
+	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 // planRun is the seam the tests replace: every local program (this binary,

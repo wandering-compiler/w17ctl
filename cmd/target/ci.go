@@ -31,7 +31,7 @@ type CiCmd struct {
 type CiAddCmd struct {
 	Provider string `arg:"" help:"CI provider to generate e2e CI for: github|gitlab|circleci|azure|bitbucket|jenkins|generic."`
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *CiAddCmd) Run() error {
@@ -82,7 +82,7 @@ func (c *CiAddCmd) Run() error {
 // CiListCmd implements `w17ctl target ci list`.
 type CiListCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *CiListCmd) Run() error {
@@ -105,7 +105,7 @@ func (c *CiListCmd) Run() error {
 type CiRemoveCmd struct {
 	Provider string `arg:"" help:"CI provider whose declaration to remove (stop generating its config)."`
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *CiRemoveCmd) Run() error {

@@ -44,7 +44,10 @@ func LatestVersion(ctx context.Context, repo, plugin string) (string, error) {
 	if repo == "" || plugin == "" {
 		return "", fmt.Errorf("plugin versions: repository and plugin are both required")
 	}
-	out, err := git(ctx, "", "ls-remote", "--tags", repo, "refs/tags/"+plugin+"/*")
+	if err := CheckRepo(repo); err != nil {
+		return "", fmt.Errorf("plugin versions: %w", err)
+	}
+	out, err := git(ctx, "", "ls-remote", "--tags", "--", repo, "refs/tags/"+plugin+"/*")
 	if err != nil {
 		return "", fmt.Errorf("plugin versions: listing %s releases in %s: %w\n%s", plugin, repo, err, indent(out))
 	}
@@ -183,7 +186,10 @@ func ReleaseAtCommit(ctx context.Context, repo, plugin, commit string) (string, 
 	if repo == "" || plugin == "" || commit == "" {
 		return "", fmt.Errorf("plugin versions: repository, plugin and commit are all required")
 	}
-	out, err := git(ctx, "", "ls-remote", "--tags", repo, "refs/tags/"+plugin+"/*")
+	if err := CheckRepo(repo); err != nil {
+		return "", fmt.Errorf("plugin versions: %w", err)
+	}
+	out, err := git(ctx, "", "ls-remote", "--tags", "--", repo, "refs/tags/"+plugin+"/*")
 	if err != nil {
 		return "", fmt.Errorf("plugin versions: listing %s releases in %s: %w\n%s", plugin, repo, err, indent(out))
 	}
@@ -228,7 +234,10 @@ func PublishedPlugins(ctx context.Context, repo string) ([]string, error) {
 	if repo == "" {
 		return nil, fmt.Errorf("plugin registry: no repository given")
 	}
-	out, err := git(ctx, "", "ls-remote", "--tags", repo)
+	if err := CheckRepo(repo); err != nil {
+		return nil, fmt.Errorf("plugin registry: %w", err)
+	}
+	out, err := git(ctx, "", "ls-remote", "--tags", "--", repo)
 	if err != nil {
 		return nil, fmt.Errorf("plugin registry: listing %s: %w\n%s", repo, err, indent(out))
 	}

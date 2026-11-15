@@ -270,7 +270,8 @@ func PinLockTargets(console, path, projectID string, migrations []*w17registrypb
 	defer release()
 
 	// Read the current lock as opaque bytes (missing → empty, the server
-	// creates a fresh signed lock stamped with project_id).
+	// creates a fresh signed lock stamped with project_id — for a person; a
+	// machine account is refused, it pins only a lock the console signed).
 	lockBytes, readErr := os.ReadFile(path)
 	if readErr != nil && !os.IsNotExist(readErr) {
 		return false, readErr

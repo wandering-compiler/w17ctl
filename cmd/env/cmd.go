@@ -16,8 +16,9 @@ import (
 
 // Cmd is `w17ctl env` — deployment environments + their mode. A
 // prod-mode environment turns the compat engine's BREAKING verdict into
-// a hard block at review-merge (see `review merge`). Client orchestration
-// over the generated storage; no facade.
+// a hard block on every deploy into it (`review merge --env`, `env
+// set-deployed`): the console classifies and refuses server-side; these
+// commands report the verdict and stop first.
 type Cmd struct {
 	Console string `name:"console" placeholder:"HOST:PORT" env:"CONSOLE_STORAGE_ADDR" help:"Console storage endpoint. Defaults to the logged-in console (w17ctl login), else the compiled-in default."`
 
@@ -223,6 +224,28 @@ func (c *SetDeployedCmd) Run(parent *Cmd) error {
 	if env == nil {
 		return fmt.Errorf("no environment %q", c.Name)
 	}
+	// A prod environment: report the verdict and stop on BREAKING before
+	// asking. The console decides — it classifies every deploy into a prod
+	// environment itself and refuses a BREAKING one, whatever a client
+	// checked — so this is the report, not the gate.
+	if env.GetMode() == reviewpb.Environment_PROD {
+		base, err := sc.LoadIRBytes(env.GetDeployedSnapshotId())
+		if err != nil {
+			return err
+		}
+		head, err := sc.LoadIRBytes(c.Snapshot)
+		if err != nil {
+			return err
+		}
+		resp, err := compat.ClassifyCompat(base, head, "prod")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(core.Stdout, "compat (prod, env %q):\n", c.Name)
+		if compat.RenderReportPB(resp, "prod") {
+			return fmt.Errorf("set deployed BLOCKED: BREAKING change against prod env %q — make it backward-compatible first; a prod environment has no override for a BREAKING change", c.Name)
+		}
+	}
 	ctx, cancel := core.ClientCtx()
 	defer cancel()
 	// Carries the baseline read a line above: SetDeployed is a compare-and-set
@@ -236,6 +259,9 @@ func (c *SetDeployedCmd) Run(parent *Cmd) error {
 	}); err != nil {
 		if status.Code(err) == codes.NotFound {
 			return fmt.Errorf("set deployed: environment %q moved to another snapshot while this ran (it was %q when read) — re-run to pin over the new value", c.Name, env.GetDeployedSnapshotId())
+		}
+		if status.Code(err) == codes.FailedPrecondition {
+			return fmt.Errorf("set deployed: the console refused it — %s", status.Convert(err).Message())
 		}
 		return fmt.Errorf("set deployed: %w", err)
 	}

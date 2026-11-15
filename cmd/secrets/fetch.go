@@ -260,7 +260,7 @@ type FetchCmd struct {
 	JSON     bool   `name:"json" help:"Write <service>.json (one flat object of the values) instead — the cloud deploy scripts' form."`
 	Ref      string `name:"ref" env:"GITHUB_SHA" help:"The commit being deployed, recorded with the fetch."`
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file (the project the values belong to)."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *FetchCmd) Run() error {

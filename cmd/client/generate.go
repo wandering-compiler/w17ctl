@@ -27,7 +27,7 @@ type GenerateCmd struct {
 	Name      string   `name:"name" help:"The client's name (snake_case). Default: derived from the source — the organisation in the host name, or the directory of the file."`
 	Endpoint  []string `name:"endpoint" help:"An operation to include, as its request line: \"GET /users/{id}\" (path as the document writes it; * for any method; a trailing /* for a subtree). Repeatable."`
 	Operation []string `name:"operation" help:"An operation to include, by its operationId. Repeatable."`
-	Console   string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default."`
+	Console   string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 	Force     bool     `name:"force" help:"Replace an existing client of the same name. Without it generate refuses one — 'client update' is how an existing client is regenerated."`
 }
 

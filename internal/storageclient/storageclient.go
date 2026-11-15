@@ -302,6 +302,13 @@ func ResolveInitiativeTarget(explicit string) (name string, isTrunk bool, err er
 // (the marshalled IR) — the client passes these straight to the compat /
 // plan RPCs without ever decoding the compiler's IR type. Empty id → nil
 // (the "initial state" base).
+//
+// A NAMED snapshot without IR is refused: its empty bytes are indistinguishable from the initial state, so a
+// head without IR read as "no changes (SAFE)" and a base without IR compared
+// the head against an empty database — every change an addition, a prod
+// report "allow" the console's own gate refuses ("the live snapshot carries
+// no compiled schema"). Refused here, every caller (compat, env, review)
+// agrees with the console.
 func (s *StorageClients) LoadIRBytes(id string) ([]byte, error) {
 	if id == "" {
 		return nil, nil
@@ -311,6 +318,9 @@ func (s *StorageClients) LoadIRBytes(id string) ([]byte, error) {
 	snap, err := s.SQ.Get(ctx, &initiativespb.GetSnapshotReq{Id: id})
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot %s: %w", id, err)
+	}
+	if len(snap.GetIrSchema()) == 0 {
+		return nil, fmt.Errorf("snapshot %s carries no compiled IR — nothing to compare (a snapshot written before snapshots carried their IR; push the schema again to get one that does)", id)
 	}
 	return snap.GetIrSchema(), nil
 }

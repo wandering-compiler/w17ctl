@@ -32,7 +32,7 @@ type PushRawCmd struct {
 	ProjectID  string `name:"project" placeholder:"ID" required:"" help:"Project ID the migration targets. Must already have a stored schema (run 'migrate generate --initial' first)."`
 	Connection string `name:"connection" placeholder:"NAME" required:"" help:"Connection name within the project's schema. Must match a connection declared by the schema."`
 	BodyPath   string `name:"body" placeholder:"FILE" required:"" help:"Path to a YAML file containing the lib/datamigrate.Migration shape (version: 1; encoding: json|protobuf; operations: [...])."`
-	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console MigrationRegistry. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
+	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console MigrationRegistry. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 	Initiative string `name:"initiative" placeholder:"ID" help:"Change-request (initiative) id this migration belongs to. Empty = the initiative of the current git branch. A hand-authored body is inside its CR's range like any other migration — an unstamped one survives a freeze that collapses the rest."`
 }
 

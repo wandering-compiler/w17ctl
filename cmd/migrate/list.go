@@ -17,7 +17,7 @@ type ListCmd struct {
 	Connection string `name:"connection" short:"c" placeholder:"NAME" help:"Optional connection-name filter. Empty = every connection's migrations interleaved by stored order."`
 	From       string `name:"from" placeholder:"MIGRATION_ID" help:"Optional pagination cursor. Returned list starts strictly after this ID."`
 	UpTo       string `name:"up-to" placeholder:"MIGRATION_ID" help:"Optional upper bound. Stream stops after emitting this ID."`
-	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console MigrationRegistry. Optional — falls back to console_addr in w17/lock.yaml, then to the binary's compile-time default."`
+	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console MigrationRegistry. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *ListCmd) Run() error {

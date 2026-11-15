@@ -28,7 +28,7 @@ type Cmd struct {
 type AddCmd struct {
 	Ident       string `arg:"" name:"ident" help:"Module identifier in <domain>/[<groups>/]<module> shape (e.g. users/billing, storefront/engine/ledger). Group directories are organisational only — the module name stays the identity. Every segment lowercase letters / digits / underscores."`
 	WithExample bool   `name:"with-example" help:"Also lay down the four-layer (queries/mutations/business/types) example payload alongside the module sentinel."`
-	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 // renderTemplateFn is a test seam for the skeleton render arm,

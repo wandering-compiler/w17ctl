@@ -58,7 +58,7 @@ type flags struct {
 	Region         string            `name:"region" help:"aws-ecs / gcp-cloudrun: region."`
 	Account        string            `name:"account" help:"aws-ecs: account id; gcp-cloudrun: project id."`
 	LockPath       string            `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console        string            `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console        string            `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (f flags) answers() Answers {
@@ -150,7 +150,7 @@ type ShowCmd struct {
 	Effective bool   `name:"effective" help:"Every resolved value, with where it came from (w17/infra.yaml:<line>, or default)."`
 	Env       string `name:"env" help:"Only this environment (with --effective)."`
 	LockPath  string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console   string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console   string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *ShowCmd) Run() error {
@@ -244,7 +244,7 @@ func (c *ShowCmd) Run() error {
 type RemoveCmd struct {
 	Env      string `name:"env" help:"Remove only this environment. Without it the whole infrastructure is removed."`
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *RemoveCmd) Run() error {

@@ -32,7 +32,7 @@ type GrpcClientCmd struct {
 type GrpcClientRemoveCmd struct {
 	OutputRoot string `arg:"" optional:"" name:"output-root" help:"The entry's output root, as 'target grpc-client list' prints it. Omit it for the entry added without one (the root derived from the stubs)."`
 	LockPath   string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *GrpcClientRemoveCmd) Run() error {
@@ -71,7 +71,7 @@ func parseGrpcClientLanguage(s string) (string, error) {
 // default.
 type GrpcClientAddCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 
 	// Non-interactive overrides — when --language is set the
 	// wizard skips prompting + runs straight to validation + save.
@@ -175,7 +175,7 @@ func runGrpcClientAddWizard(p prompter.Prompter, existing []*codegenpb.LockGrpcC
 // GrpcClientListCmd implements `w17ctl target grpc-client list`.
 type GrpcClientListCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *GrpcClientListCmd) Run() error {

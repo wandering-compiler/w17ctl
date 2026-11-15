@@ -41,7 +41,7 @@ type Cmd struct {
 type AddCmd struct {
 	Name        string `arg:"" name:"name" help:"Domain identifier (lowercase letters, digits, underscores; e.g. users, billing, analytics)."`
 	WithExample bool   `name:"with-example" help:"Also lay down an example/ module showing the four-layer (queries/mutations/business/types) shape with annotation samples."`
-	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 // Test seams (overridden in _test.go) for the --with-example

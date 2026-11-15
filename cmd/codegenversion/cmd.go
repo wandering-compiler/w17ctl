@@ -19,7 +19,7 @@ type Cmd struct {
 	Version  string `arg:"" optional:"" name:"version" help:"A release minor (v0.1) — the project then gets that minor's newest patch — or an exact release candidate (v0.2.0-rc.3), which the console serves only to a project opted in on its page in the console (Codegen). Omit it with --clear."`
 	Clear    bool   `name:"clear" help:"Remove the pin: the console generates with its newest release minor and says so on every run."`
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *Cmd) Run() error {

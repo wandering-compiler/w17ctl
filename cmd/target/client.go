@@ -38,7 +38,7 @@ type ClientGenerateCmd struct {
 	Lock        string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file (relative paths resolve from cwd)."`
 	ProtoRoot   string `name:"proto-root" placeholder:"DIR" help:"Directory to walk for .proto sources (relative to --project-root; default the lock's proto dir)."`
 	ProjectRoot string `name:"project-root" placeholder:"DIR" help:"Project root for resolving output_root in lock.clients[] (default cwd)."`
-	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console CodegenService. Optional — falls back to console_addr in w17/lock.yaml, then the binary's compile-time default."`
+	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console CodegenService. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *ClientGenerateCmd) Run() error {
@@ -88,7 +88,7 @@ func (c *ClientGenerateCmd) Run() error {
 // message).
 type ClientAddCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 
 	// Non-interactive overrides — when every flag is set the
 	// wizard skips prompting + runs straight to validation +
@@ -283,7 +283,7 @@ func runClientAddWizard(p prompter.Prompter, existing []*codegenpb.LockClientStu
 // surfaced in the friendly shape.
 type ClientListCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *ClientListCmd) Run() error {
@@ -322,7 +322,7 @@ type ClientSetCmd struct {
 	Language    *string `name:"language" placeholder:"NAME" help:"One of: typescript, javascript."`
 	Wire        *string `name:"wire" placeholder:"NAME" help:"One of: json, protobuf, unspecified."`
 	LockPath    string  `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console     string  `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console     string  `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *ClientSetCmd) Run() error {
@@ -371,7 +371,7 @@ func (c *ClientSetCmd) Run() error {
 type ClientRemoveCmd struct {
 	OutputRoot string `arg:"" name:"output-root" help:"The entry's output root, as 'target client list' prints it."`
 	LockPath   string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console    string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *ClientRemoveCmd) Run() error {

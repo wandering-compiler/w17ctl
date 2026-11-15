@@ -34,7 +34,7 @@ import (
 // manifest / placeholder logic client-side.
 type GenPbCmd struct {
 	Dir     string `arg:"" optional:"" name:"dir" default:"." help:"Plugin source directory (holds plugin.yaml + proto/ + src/). Default: current directory."`
-	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console CodegenService. Optional — falls back to the binary's compile-time default."`
+	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console CodegenService. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *GenPbCmd) Run() error {

@@ -52,7 +52,7 @@ func (c *BusinessRemoveCmd) Run() error {
 // env-var surface (parsed + validated server-side).
 type BusinessAddCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 
 	Domain   string   `name:"domain" required:"" help:"Domain whose business-tier facade services this bundle hosts (matches proto/domains/<domain>/.../business/)."`
 	Register string   `name:"register" required:"" placeholder:"PATH" help:"Go: module-relative import path of the package exposing RegisterBusiness(cfg, registry, clients) (e.g. domains/app/modules/<module>/business). Python: project-relative directory of the package whose w17.py defines register_business(cfg, registry, clients) (e.g. business/app). TypeScript: project-relative directory whose w17.ts exports registerBusiness(cfg, registry, clients) (e.g. business/app). Rust: project-relative directory of the crate whose src/main.rs hands register_business(cfg, registry, clients) to w17_business::main! (e.g. business/app); its last segment is the crate's package name."`
@@ -209,7 +209,7 @@ func (c *BusinessSetCmd) Run() error {
 // BusinessListCmd implements `w17ctl target business list`.
 type BusinessListCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *BusinessListCmd) Run() error {

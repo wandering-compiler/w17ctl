@@ -51,7 +51,7 @@ type Cmd struct {
 // name or a conflicting default.
 type AddCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock — re-maps + re-signs). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock — re-maps + re-signs). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 	Default  bool   `name:"default" help:"Mark the new connection as the project's default. Refused if another connection already holds the mark; use 'w17ctl connection set-default' to transfer."`
 	Name     string `name:"name" placeholder:"NAME" help:"Connection name (<domain>-<role>, e.g. app-postgres). Empty = ask. Supplying it makes the add non-interactive."`
 }
@@ -193,7 +193,7 @@ func resolveDefaultMark(p prompter.Prompter, existing []*codegenpb.LockConnectio
 type SetDefaultCmd struct {
 	Name     string `arg:"" name:"name" help:"Connection name to mark as the default."`
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *SetDefaultCmd) Run() error {
@@ -214,7 +214,7 @@ func (c *SetDefaultCmd) Run() error {
 // parse the lock).
 type ListCmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 func (c *ListCmd) Run() error {

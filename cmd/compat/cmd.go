@@ -28,7 +28,7 @@ type Cmd struct {
 type ReportCmd struct {
 	Base string `name:"base" placeholder:"SNAP" help:"Base snapshot id (empty = initial state)."`
 	Head string `name:"head" placeholder:"SNAP" required:"" help:"Head snapshot id."`
-	Mode string `name:"mode" placeholder:"dev|prod" default:"dev" help:"Environment mode for the gate (dev=warn, prod=block breaking)."`
+	Mode string `name:"mode" enum:"dev,prod" default:"dev" help:"Environment mode for the gate: dev (breaking warns) | prod (breaking blocks, non-zero exit)."`
 }
 
 func (c *ReportCmd) Run(parent *Cmd) error {
@@ -38,15 +38,22 @@ func (c *ReportCmd) Run(parent *Cmd) error {
 	}
 	defer sc.Close()
 
-	base, err := sc.LoadIRBytes(c.Base)
+	base, err := loadSnapshotIR(sc, c.Base)
 	if err != nil {
 		return err
 	}
-	head, err := sc.LoadIRBytes(c.Head)
+	head, err := loadSnapshotIR(sc, c.Head)
 	if err != nil {
 		return err
 	}
 	return classifyAndGate(base, head, c.Mode)
+}
+
+// loadSnapshotIR returns a snapshot's compiled IR; "" is the initial state
+// (nil). A NAMED snapshot without IR is refused by LoadIRBytes itself, so env
+// and review refuse it too.
+func loadSnapshotIR(sc *storageclient.StorageClients, id string) ([]byte, error) {
+	return sc.LoadIRBytes(id)
 }
 
 // classifyAndGate classifies base→head in mode, prints the report, and
@@ -69,7 +76,7 @@ func classifyAndGate(base, head []byte, mode string) error {
 type AgainstTrunkCmd struct {
 	Project string `name:"project" placeholder:"ID" help:"Project id. Empty = read from the current project's lock."`
 	Name    string `name:"name" placeholder:"NAME" help:"Initiative name. Empty = current git branch (main/master → trunk)."`
-	Mode    string `name:"mode" placeholder:"dev|prod" default:"dev" help:"Environment mode for the gate decision."`
+	Mode    string `name:"mode" enum:"dev,prod" default:"dev" help:"Environment mode for the gate decision: dev (breaking warns) | prod (breaking blocks, non-zero exit)."`
 }
 
 func (c *AgainstTrunkCmd) Run(parent *Cmd) error {
@@ -106,11 +113,11 @@ func (c *AgainstTrunkCmd) Run(parent *Cmd) error {
 		return fmt.Errorf("initiative %q has no snapshot yet (push first)", name)
 	}
 
-	base, err := sc.LoadIRBytes(trunkHead) // may be "" → nil (no trunk snapshot yet)
+	base, err := loadSnapshotIR(sc, trunkHead) // may be "" → nil (no trunk snapshot yet)
 	if err != nil {
 		return err
 	}
-	head, err := sc.LoadIRBytes(initHead)
+	head, err := loadSnapshotIR(sc, initHead)
 	if err != nil {
 		return err
 	}

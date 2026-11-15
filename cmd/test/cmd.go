@@ -34,7 +34,7 @@ type Cmd struct {
 	GomodVolume    string `name:"gomod-volume" default:"w17ctl-gomod" help:"Named Docker volume for the Go module cache (shared across runs)."`
 	Keep           bool   `name:"keep" help:"Leave the stack running after the suite (skip teardown) for debugging."`
 	Timeout        int    `name:"timeout" default:"300" help:"Seconds to wait for the stack to become healthy (docker compose up --wait-timeout)."`
-	Console        string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock — read for the e2e + services dirs). Optional — falls back to the binary's compile-time default."`
+	Console        string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock — read for the e2e + services dirs). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 // runConfig is the seam tests stub; production delegates to the real

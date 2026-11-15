@@ -22,7 +22,7 @@ type Cmd struct {
 	Verbose     bool   `name:"verbose" short:"v" help:"Per-preset framework output around the throughput/latency report."`
 	Image       string `name:"image" default:"golang:1.26-alpine" help:"Builder image used to cross-compile the runner."`
 	GomodVolume string `name:"gomod-volume" default:"w17ctl-gomod" help:"Named Docker volume for the Go module cache (shared across runs)."`
-	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock — read for the services dir). Optional — falls back to the binary's compile-time default."`
+	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock — read for the services dir). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 // runStress is the seam tests stub; production delegates to the real

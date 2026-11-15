@@ -28,7 +28,7 @@ import (
 // the reason `w17ctl` can be handed to plugin authors at all.
 type SignCmd struct {
 	Dir     string `arg:"" name:"dir" help:"Plugin tree to sign — the directory holding plugin.yaml."`
-	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the binary's compile-time default. Holds the signing key; it is never sent anywhere."`
+	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default. Holds the signing key; it is never sent anywhere."`
 	Print   bool   `name:"print" help:"Write the signature to stdout instead of to plugin.sig. For inspecting what a tree would be signed as, without changing it."`
 }
 

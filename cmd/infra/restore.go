@@ -22,7 +22,7 @@ type RestoreCmd struct {
 	DB           string `name:"db" required:"" help:"The database (its name on the server, as deploy/<env>/README.md lists it)."`
 	DropPrevious string `name:"drop-previous" placeholder:"TIMESTAMP" help:"Instead: drop the copy an earlier restore kept, <db>_before_restore_<TIMESTAMP>."`
 	LockPath     string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
-	Console      string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the binary's compile-time default."`
+	Console      string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
 
 var (
