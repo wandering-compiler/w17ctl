@@ -7,4 +7,4 @@
 
 package core
 
-func init() { SdkFloor = "v0.1.0-rc.82" }
+func init() { SdkFloor = "v0.1.0-rc.83" }
