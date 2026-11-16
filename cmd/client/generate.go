@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -23,12 +24,13 @@ import (
 
 // GenerateCmd is `w17ctl client generate`.
 type GenerateCmd struct {
-	Source    string   `arg:"" help:"The OpenAPI document: an http(s) URL, or a path to a JSON or YAML file."`
-	Name      string   `name:"name" help:"The client's name (snake_case). Default: derived from the source — the organisation in the host name, or the directory of the file."`
-	Endpoint  []string `name:"endpoint" help:"An operation to include, as its request line: \"GET /users/{id}\" (path as the document writes it; * for any method; a trailing /* for a subtree). Repeatable."`
-	Operation []string `name:"operation" help:"An operation to include, by its operationId. Repeatable."`
-	Console   string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
-	Force     bool     `name:"force" help:"Replace an existing client of the same name. Without it generate refuses one — 'client update' is how an existing client is regenerated."`
+	Source     string   `arg:"" help:"The OpenAPI document (JSON or YAML) or the WSDL of a SOAP service: an http(s) URL, or a path to a file."`
+	Name       string   `name:"name" help:"The client's name (snake_case). Default: derived from the source — the organisation in the host name, or the directory of the file."`
+	Endpoint   []string `name:"endpoint" help:"An operation to include, as its request line: \"GET /users/{id}\" (path as the document writes it; * for any method; a trailing /* for a subtree). Repeatable."`
+	Operation  []string `name:"operation" help:"An operation to include, by its operationId (a WSDL: by its operation name). Repeatable."`
+	Idempotent []string `name:"idempotent" help:"A SOAP operation that only reads and may be repeated: it is retried on a 429 or 5xx, as a GET is. A SOAP call is a POST, so none is retried unless named. Repeatable."`
+	Console    string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
+	Force      bool     `name:"force" help:"Replace an existing client of the same name. Without it generate refuses one — 'client update' is how an existing client is regenerated."`
 }
 
 func (c *GenerateCmd) Run() error {
@@ -59,7 +61,7 @@ func (c *GenerateCmd) Run() error {
 	}
 	defer func() { _ = conn.Close() }()
 	resp, err := generate(cl, p, &codegenpb.GenerateEgressClientRequest{
-		Lock: p.lock, Source: source, Name: c.Name, Endpoints: c.Endpoint, Operations: c.Operation,
+		Lock: p.lock, Source: source, Name: c.Name, Endpoints: c.Endpoint, Operations: c.Operation, Idempotent: c.Idempotent,
 	}, doc, c.Force)
 	if err != nil {
 		return fmt.Errorf("client generate: %w", err)
@@ -69,6 +71,10 @@ func (c *GenerateCmd) Run() error {
 }
 
 var nameRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+
+// documentNames are the names a client's document is kept under, after its
+// format.
+var documentNames = []string{"openapi.json", "openapi.yaml", "service.wsdl"}
 
 // egressConsole is the part of the console these commands call.
 type egressConsole interface {
@@ -222,11 +228,53 @@ func fetchURL(u *url.URL) ([]byte, error) {
 	return doc, nil
 }
 
-// generate streams the request to the console — the header and the first
-// chunk in one message, the rest of the document after it — and writes what
-// comes back: the files the console returned, verbatim, and the document,
-// byte for byte as it was sent (the signature covers its digest).
+// maxImportRounds bounds the rounds of a WSDL's imports: each round fetches
+// what the previous one's documents import.
+const maxImportRounds = 8
+
+// generate streams the request to the console and writes what comes back:
+// the files the console returned, verbatim, and the document, byte for byte
+// as it was sent (the signature covers its digest). A WSDL may import
+// schemas: the console names the ones it lacks, they are fetched — the
+// console never fetches — and the request goes again with them.
 func generate(cl egressConsole, p *project, head *codegenpb.GenerateEgressClientRequest, doc []byte, replace bool) (*codegenpb.GenerateEgressClientResponse, error) {
+	size := len(doc)
+	for round := 0; ; round++ {
+		resp, err := send(cl, head, doc)
+		if err != nil {
+			return nil, err
+		}
+		if len(resp.GetMissingImports()) == 0 {
+			if err := write(p, resp, doc, replace); err != nil {
+				return nil, err
+			}
+			return resp, nil
+		}
+		if round == maxImportRounds {
+			return nil, fmt.Errorf("the document still imports more after %d rounds: %s", maxImportRounds, strings.Join(resp.GetMissingImports(), ", "))
+		}
+		if head.Imports == nil {
+			head.Imports = map[string][]byte{}
+		}
+		for _, loc := range resp.GetMissingImports() {
+			if _, done := head.GetImports()[loc]; done {
+				return nil, fmt.Errorf("the console asked again for %s", loc)
+			}
+			b, _, err := fetch(loc, p.root, p.root)
+			if err != nil {
+				return nil, fmt.Errorf("import %s: %w", loc, err)
+			}
+			if size += len(b); size > maxDocument {
+				return nil, fmt.Errorf("the document and its imports exceed %d MiB", maxDocument>>20)
+			}
+			head.Imports[loc] = b
+		}
+	}
+}
+
+// send streams one request — the header and the first chunk in one message,
+// the rest of the document after it — and returns the answer.
+func send(cl egressConsole, head *codegenpb.GenerateEgressClientRequest, doc []byte) (*codegenpb.GenerateEgressClientResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), generateTimeout)
 	defer cancel()
 	stream, err := cl.GenerateEgressClient(ctx)
@@ -249,19 +297,12 @@ func generate(cl egressConsole, p *project, head *codegenpb.GenerateEgressClient
 	if err := stream.CloseSend(); err != nil {
 		return nil, err
 	}
-	resp, err := stream.Recv()
-	if err != nil {
-		return nil, err
-	}
-	if err := write(p, resp, doc, replace); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return stream.Recv()
 }
 
 // write lays the client down. The console names the files, and the client
 // accepts exactly the set a client is — `<name>.proto`, client.yaml, and
-// openapi.json or openapi.yaml — in exactly its directory; anything else is
+// openapi.json, openapi.yaml or service.wsdl — in exactly its directory; anything else is
 // refused before a byte is written (a path with `..` or a `\` that is a
 // separator on Windows included). An existing client is replaced only when
 // replace is set. A previous document in the other format is removed: it
@@ -272,10 +313,13 @@ func write(p *project, resp *codegenpb.GenerateEgressClientResponse, doc []byte,
 		return fmt.Errorf("the console named the client %q", name)
 	}
 	dir := filepath.ToSlash(filepath.Join(p.protoDir, "clients", name)) + "/"
-	allowed := map[string]bool{name + ".proto": true, configFile: true, "openapi.json": true, "openapi.yaml": true}
+	allowed := map[string]bool{name + ".proto": true, configFile: true}
+	for _, d := range documentNames {
+		allowed[d] = true
+	}
 	docBase := strings.TrimPrefix(resp.GetDocumentPath(), dir)
-	if docBase != "openapi.json" && docBase != "openapi.yaml" {
-		return fmt.Errorf("the console put the document at %q, not %sopenapi.json|yaml", resp.GetDocumentPath(), dir)
+	if !slices.Contains(documentNames, docBase) {
+		return fmt.Errorf("the console put the document at %q, not %s{%s}", resp.GetDocumentPath(), dir, strings.Join(documentNames, ","))
 	}
 	files := map[string][]byte{resp.GetDocumentPath(): doc}
 	for _, f := range resp.GetFiles() {
@@ -283,7 +327,7 @@ func write(p *project, resp *codegenpb.GenerateEgressClientResponse, doc []byte,
 	}
 	for rel := range files {
 		if !strings.HasPrefix(rel, dir) || !allowed[rel[len(dir):]] {
-			return fmt.Errorf("the console returned %q — a client is %s{%s.proto,%s,openapi.json|openapi.yaml} and nothing else", rel, dir, name, configFile)
+			return fmt.Errorf("the console returned %q — a client is %s{%s.proto,%s,%s} and nothing else", rel, dir, name, configFile, strings.Join(documentNames, "|"))
 		}
 	}
 	target := filepath.Join(p.root, filepath.FromSlash(dir))
@@ -293,7 +337,7 @@ func write(p *project, resp *codegenpb.GenerateEgressClientResponse, doc []byte,
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err
 	}
-	for _, stale := range []string{"openapi.json", "openapi.yaml"} {
+	for _, stale := range documentNames {
 		if _, keep := files[dir+stale]; !keep {
 			_ = os.Remove(filepath.Join(target, stale))
 		}

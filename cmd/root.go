@@ -144,7 +144,7 @@ var root struct {
 
 	// --- Plugins ---
 	Plugin plugincmd.Cmd `cmd:"" help:"Plugin catalog operations — list the console's catalogue, install one into this project (activating it is naming it in (w17.domain).plugins), update it; and for plugin authors dev / gen / sign / render."`
-	Client clientcmd.Cmd `cmd:"" help:"Clients of THIRD-PARTY REST APIs, from their OpenAPI documents: generate / update / list / remove. Each is a signed, generated gRPC client under proto/clients/<name>/. (The project's own frontend clients are 'target client'.)"`
+	Client clientcmd.Cmd `cmd:"" help:"Clients of THIRD-PARTY APIs (REST from OpenAPI, SOAP from WSDL): generate / update / list / remove. Each is a signed, generated gRPC client under proto/clients/<name>/. (The project's own frontend clients are 'target client'.)"`
 
 	// --- Secrets & TLS ---
 	Sdk            sdkcmd.Cmd            `cmd:"" help:"Public sdk/go operations — move this project onto a new SDK release (update). Needs no local Go toolchain: the require + go.sum hashes are resolved from the module proxy."`

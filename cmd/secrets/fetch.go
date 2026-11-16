@@ -9,6 +9,7 @@ package secrets
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -173,6 +174,7 @@ func buildDeployEnv(env string, expected map[string][]string, services []*secret
 	sort.Strings(names)
 	out := &DeployEnv{}
 	values := map[string]map[string]string{}
+	missing := false
 	for _, svc := range names {
 		have := map[string]bool{}
 		values[svc] = map[string]string{}
@@ -184,12 +186,13 @@ func buildDeployEnv(env string, expected map[string][]string, services []*secret
 		for _, k := range expected[svc] {
 			declared[k] = true
 			if !have[k] {
+				missing = true
 				problems = append(problems, fmt.Sprintf("%s: %s is not set (`w17ctl secrets set --env %s %s %s`)", svc, k, env, svc, k))
 			}
 		}
 		for _, v := range got[svc] {
 			if !declared[v.GetKey()] {
-				problems = append(problems, fmt.Sprintf("%s: %s is set on the console and %s's .env.example does not declare it", svc, v.GetKey(), svc))
+				problems = append(problems, fmt.Sprintf("%s: %s is set on the console and %s's .env.example does not declare it (`w17ctl secrets unset --env %s %s %s`)", svc, v.GetKey(), svc, env, svc, v.GetKey()))
 			}
 		}
 		out.Files = append(out.Files, DeployEnvFile{Service: svc, Body: EnvFile(got[svc]), Values: values[svc]})
@@ -197,7 +200,15 @@ func buildDeployEnv(env string, expected map[string][]string, services []*secret
 	problems = append(problems, valuesProblems(values)...)
 	if len(problems) > 0 {
 		sort.Strings(problems)
-		return nil, fmt.Errorf("the console's values for %s are not ready for a deploy:\n  %s", env, strings.Join(problems, "\n  "))
+		msg := fmt.Sprintf("the console's values for %s are not ready for a deploy:\n  %s", env, strings.Join(problems, "\n  "))
+		if missing {
+			// Every key a service's .env.example declares needs a value,
+			// an optional one included (a plugin's secret the deployment
+			// does not use, an egress client it does not call): empty is
+			// a value, and `secrets set` takes one only on purpose.
+			msg += "\n(a key this deployment leaves empty is set empty: `w17ctl secrets set --allow-empty --env " + env + " SERVICE KEY`, with an empty answer)"
+		}
+		return nil, errors.New(msg)
 	}
 	return out, nil
 }

@@ -129,7 +129,7 @@ func egressRequest(dir, name string, lock []byte) (*codegenpb.VerifyEgressClient
 	if err := yaml.Unmarshal(cfgBytes, &cfg); err != nil {
 		return nil, fmt.Errorf("client.yaml: %w", err)
 	}
-	if cfg.Document != "openapi.json" && cfg.Document != "openapi.yaml" {
+	if cfg.Document != "openapi.json" && cfg.Document != "openapi.yaml" && cfg.Document != "service.wsdl" {
 		return nil, fmt.Errorf("client.yaml names the document %q", cfg.Document)
 	}
 	doc, err := os.ReadFile(filepath.Join(dir, cfg.Document))

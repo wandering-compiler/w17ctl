@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
@@ -256,23 +257,37 @@ func refreshPlatformSpecs(cl core.CodegenConsole, root string) (int, error) {
 	return core.RecvGeneratedFiles(stream, generatedFileWriter(root, false))
 }
 
-// readGenGoFiles gathers the generated Go files under
-// `<root>/<genDir>/domains/` (excluding tests) as upload payload for the
-// project-map's grpc-client edge derivation. Best-effort: a missing tree
-// yields nil (the map degrades to proto-only edges). Filenames are
+// readGenGoFiles gathers the HAND-WRITTEN Go files of the module at
+// `<root>/<genDir>` (tests excluded) as upload payload: the console derives
+// the project map's grpc-client edges from them, harvests their user-facing
+// sentences, and refuses an import of another domain's tier client. That
+// last one is why the walk is the whole module and not `domains/` alone: a
+// helper elsewhere (`internal/x` importing another domain's storage client),
+// imported by a domain's handler, crossed the boundary unseen. The generated
+// tree (`<genDir>/gen`, and any file carrying the "Code generated … DO NOT
+// EDIT." header), vendor/, testdata/ and dot directories stay out.
+// Best-effort: a missing tree yields nil. Filenames are
 // project-root-relative (the server stages them at that path).
 func readGenGoFiles(root, genDir string) []*codegenpb.ProtoFile {
-	base := filepath.Join(root, genDir, "domains")
+	base := filepath.Join(root, genDir)
 	var out []*codegenpb.ProtoFile
 	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != base && (name == "vendor" || name == "testdata" || name == "node_modules" ||
+				strings.HasPrefix(name, ".") || path == filepath.Join(base, "gen")) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
 		body, rerr := os.ReadFile(path)
-		if rerr != nil {
+		if rerr != nil || generatedGo(body) {
 			return nil
 		}
 		rel, rerr := filepath.Rel(root, path)
@@ -283,4 +298,53 @@ func readGenGoFiles(root, genDir string) []*codegenpb.ProtoFile {
 		return nil
 	})
 	return out
+}
+
+// readDockerfiles lists the project's own Dockerfiles, project-root-relative
+// and sorted: every file named Dockerfile outside hidden, vendor and
+// node_modules directories, the generated services dir and <genDir>/gen.
+// The infra render cannot see the disk; it builds a hand-written business
+// tier only from a Dockerfile this list shows exists.
+func readDockerfiles(root, genDir, servicesDir string) []string {
+	skip := map[string]bool{
+		filepath.Join(root, filepath.FromSlash(servicesDir)):   servicesDir != "",
+		filepath.Join(root, filepath.FromSlash(genDir), "gen"): genDir != "",
+	}
+	var out []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != root && (name == "vendor" || name == "node_modules" || strings.HasPrefix(name, ".") || skip[path]) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "Dockerfile" {
+			return nil
+		}
+		if rel, rerr := filepath.Rel(root, path); rerr == nil {
+			out = append(out, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out
+}
+
+// generatedGo reports a Go file carrying the standard generated-code marker
+// (`// Code generated … DO NOT EDIT.`) on a line before its package clause.
+func generatedGo(body []byte) bool {
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "package ") {
+			return false
+		}
+		if strings.HasPrefix(line, "// Code generated ") && strings.HasSuffix(line, " DO NOT EDIT.") {
+			return true
+		}
+	}
+	return false
 }

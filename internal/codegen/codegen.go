@@ -452,6 +452,11 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 			// answer rather than inventing a number.
 			W17CtlVersion: core.Version,
 			Infra:         infraYAML,
+			// The project's Dockerfiles: the infra render builds a
+			// hand-written business tier only from one that exists, and
+			// cannot see the disk.
+			Dockerfiles:       readDockerfiles(root, genDir, servicesDir),
+			DockerfilesListed: true,
 		},
 		files:          files,
 		genFiles:       readGenGoFiles(root, genDir),

@@ -1,5 +1,6 @@
-// Package client is `w17ctl client`: egress clients — a third-party REST API,
-// from its OpenAPI document, as a signed generated gRPC client under
+// Package client is `w17ctl client`: egress clients — a third-party REST API
+// from its OpenAPI document, or a SOAP service from its WSDL, as a signed
+// generated gRPC client under
 // `<proto root>/clients/<name>/`.
 //
 // Not to be confused with `w17ctl target client`, which declares the
@@ -26,7 +27,7 @@ import (
 
 // Cmd is `w17ctl client`.
 type Cmd struct {
-	Generate GenerateCmd `cmd:"" help:"Generate a client of a third-party REST API from its OpenAPI document (a URL or a file): 'client generate <url|path> --endpoint \"GET /users/{id}\" --operation createUser'. Writes proto/clients/<name>/ — the proto, client.yaml and the document — signed by the console. No selector = every operation."`
+	Generate GenerateCmd `cmd:"" help:"Generate a client of a third-party REST API from its OpenAPI document, or of a SOAP service from its WSDL (a URL or a file): 'client generate <url|path> --endpoint \"GET /users/{id}\" --operation createUser'. Writes proto/clients/<name>/ — the proto, client.yaml and the document — signed by the console. No selector = every operation."`
 	Update   UpdateCmd   `cmd:"" help:"Regenerate a client from its source: re-fetch the document, regenerate with the recorded selection (or new --endpoint/--operation), and report what changed."`
 	List     ListCmd     `cmd:"" help:"List the project's clients: name, source, selection."`
 	Remove   RemoveCmd   `cmd:"" help:"Delete a client's directory (proto/clients/<name>/)."`
@@ -41,6 +42,7 @@ type config struct {
 	Document   string   `yaml:"document"`
 	Endpoints  []string `yaml:"endpoints"`
 	Operations []string `yaml:"operations"`
+	Idempotent []string `yaml:"idempotent"`
 }
 
 const configFile = "client.yaml"

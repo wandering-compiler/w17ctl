@@ -441,9 +441,12 @@ func (c *Config) discoverAdmin(files []string, project, root, gatewaySvc string)
 // scenarios is the worst outcome available here: it reads as "the admin
 // suite passes" when the admin was never contacted.
 //
-// Only an EXPLICIT --transport is guarded — each transport it lists. A full
-// run over a project with no MCP or no admin surface is the normal case, and
-// those scenarios skipping is exactly right.
+// Only an EXPLICIT --transport is guarded here, before anything starts —
+// each transport it lists. A full run over a project with no MCP or no admin
+// surface is the normal case: it bakes no scenario of that transport, so
+// there is nothing to run. A project that DOES bake them and whose endpoint
+// was not found fails in the suite itself, which runSuite starts full
+// (E2E_REQUIRE_ALL): each such scenario fails, naming its transport.
 func (c *Config) requireRequestedTransport(mcp, admin string) error {
 	for _, t := range strings.Split(c.Transport, ",") {
 		switch strings.TrimSpace(t) {
@@ -1455,9 +1458,13 @@ func (c *Config) runSuite(bin, target, mcp, admin string) error {
 	}
 
 	cmd := exec.Command(bin, args...)
-	if len(c.suiteEnv) > 0 {
-		cmd.Env = append(os.Environ(), c.suiteEnv...)
-	}
+	// The run is FULL: a scenario it selects whose transport has no endpoint
+	// fails instead of skipping. Without it, a project whose admin or MCP
+	// endpoint discovery found nothing ran its REST scenarios alone and
+	// passed — the suite it declares, untested. A transport is left out of
+	// the run by name, with --transport. An environment variable rather than
+	// a flag, so a runner generated before it knew the switch still starts.
+	cmd.Env = append(append(os.Environ(), c.suiteEnv...), "E2E_REQUIRE_ALL=1")
 	cmd.Stderr = os.Stderr
 	if c.Format != "json" {
 		cmd.Stdout = os.Stdout
