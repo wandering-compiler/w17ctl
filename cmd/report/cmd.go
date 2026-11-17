@@ -114,7 +114,15 @@ func (c *FileCmd) file(kind supportpb.IssueReport_Kind) error {
 		title = t
 	}
 	if c.Topic != "" {
-		title = strings.TrimSpace(c.Topic) + ": " + title
+		prefix := strings.TrimSpace(c.Topic) + ": "
+		// The topic is part of the title, so it counts toward the limit —
+		// said here, or a title under the limit on its own is refused with
+		// a message that names only the title.
+		if p, t := utf8.RuneCountInString(prefix), utf8.RuneCountInString(title); p+t > maxTitleRunes {
+			return fmt.Errorf("report: the title and its --topic are at most %d characters together: the topic %q "+
+				"takes %d (with its \": \"), so the title may be %d; yours is %d", maxTitleRunes, strings.TrimSpace(c.Topic), p, max(maxTitleRunes-p, 0), t)
+		}
+		title = prefix + title
 	}
 	if err := checkTitle(title); err != nil {
 		return fmt.Errorf("report: %w", err)
