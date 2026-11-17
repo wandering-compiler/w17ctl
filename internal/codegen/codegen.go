@@ -484,6 +484,12 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	// overwrites it).
 	writes := res.writes
 	writes = append(writes, &codegenpb.GeneratedFile{RelativePath: lockPath, Contents: res.signedLock})
+	// The workflows of a project in a directory of its repository go to the
+	// repository's root (repoworkflows.go), checked before anything is written.
+	writes, repoWF, err := splitRepoWorkflows(root, writes)
+	if err != nil {
+		return err
+	}
 	deletes := res.deletes
 	warnings := res.placementWarnings
 	warnings = append(warnings, res.warnings...)
@@ -517,6 +523,13 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 	// run's record (pruneStale).
 	hadRecord := writtenManifestExists(root)
 	if err := applyWriteOps(root, languagesDir, servicesDir, writes, force, unchanged); err != nil {
+		return err
+	}
+	if repoWF != nil {
+		if err := repoWF.write(core.Stdout); err != nil {
+			return err
+		}
+	} else if err := pruneOwnRepoWorkflows(root, core.Stdout); err != nil {
 		return err
 	}
 	// Recorded once more on the way out, whatever the outcome: a later step

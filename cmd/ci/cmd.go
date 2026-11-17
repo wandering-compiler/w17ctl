@@ -180,6 +180,8 @@ func printSetup(in *codegenpb.LockInfra) {
 		case "swarm":
 			fmt.Fprintln(w, "    secret    STACK_SSH_KEY   a private SSH key root@server accepts (deploy only)")
 			fmt.Fprintln(w, "    variable  STACK_HOST_KEY  the line `setup.sh` printed (pins the server's SSH host key)")
+			fmt.Fprintln(w, "    variable  STACK_HOST_KEY_<TARGET>  per plugin target (plugins[].target): the line setup.sh printed there —")
+			fmt.Fprintln(w, "                              the same STACK_SSH_KEY logs in to it")
 			if env.GetHost().GetSsh() == "" {
 				fmt.Fprintf(w, "    ⚠ no server declared — `w17ctl infra set targets.%s.ssh=root@<server>`; the deploy workflow targets it\n", firstNonEmpty(env.GetTarget(), env.GetName()))
 			}
