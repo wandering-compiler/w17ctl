@@ -47,10 +47,10 @@ const (
 // through.
 type Cmd struct {
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to write the lock file."`
-	W17URL   string `name:"w17-url" placeholder:"URL" env:"W17_URL" help:"URL of the console hosting this project. Required at init time so the lock pins it."`
+	W17URL   string `name:"w17-url" placeholder:"URL" env:"W17_URL" help:"URL of the console hosting this project; the lock pins it. Defaults to the console you are logged into (then the one compiled into w17ctl)."`
 	GoModule string `name:"go-module" placeholder:"PATH" help:"Go module path for the project's hand-written tier (<stubs-root-first-segment>/go.mod). Empty = example.com/<project>. Drives codegen's go_module + every generated bundle's import paths."`
 
-	Name      string `name:"name" placeholder:"NAME" help:"Project name. Empty = ask. For a fully non-interactive run supply this plus --w17-url, --go-module, --stubs-root, --language, --proto-dir, --languages-dir, --languages, --e2e, --ci, --org and --skip-connections; any flag left empty is still asked for."`
+	Name      string `name:"name" placeholder:"NAME" help:"Project name. Empty = ask. For a run with no prompts supply this plus --stubs-root, --language, --proto-dir, --languages-dir, --languages, --e2e, --ci and --skip-connections (--go-module, --w17-url and --org have defaults; --org is asked only when you belong to several organizations and set no default); any flag left empty is still asked for."`
 	StubsRoot string `name:"stubs-root" placeholder:"DIR" help:"Go stub tree root (pb + grpc clients). Empty = ask (default \"srcgo/gen\")."`
 	Language  string `name:"language" placeholder:"LANG" help:"Pb stubs language. Empty = ask (default \"go\"; only \"go\" supported today)."`
 
@@ -68,22 +68,10 @@ func (c *Cmd) Run() error {
 		return fmt.Errorf("init: %s already exists — refusing to overwrite (each project's lock is unique by design)", c.LockPath)
 	}
 
+	// Console + login + organization FIRST: they need no answer from the
+	// wizard, and checking them after a dozen prompts wasted every answer on a
+	// "not logged in" the caller could have heard up front.
 	prompter := prompter.NewStdinPrompter()
-	answers, err := runInitWizard(prompter, initFlags{
-		name:            c.Name,
-		stubsRoot:       c.StubsRoot,
-		language:        c.Language,
-		protoDir:        c.ProtoDir,
-		languagesDir:    c.LanguagesDir,
-		languagesCSV:    c.Languages,
-		e2e:             c.E2E,
-		ci:              c.CI,
-		skipConnections: c.SkipConnections,
-	})
-	if err != nil {
-		return err
-	}
-
 	addr := c.W17URL
 	if addr == "" {
 		// The variable that points one command at a console (see
@@ -116,6 +104,21 @@ func (c *Cmd) Run() error {
 	if err != nil {
 		return err
 	}
+	answers, err := runInitWizard(prompter, initFlags{
+		name:            c.Name,
+		stubsRoot:       c.StubsRoot,
+		language:        c.Language,
+		protoDir:        c.ProtoDir,
+		languagesDir:    c.LanguagesDir,
+		languagesCSV:    c.Languages,
+		e2e:             c.E2E,
+		ci:              c.CI,
+		skipConnections: c.SkipConnections,
+	})
+	if err != nil {
+		return err
+	}
+
 	// Remember the choice as the active org, so the org this project was
 	// created under is the one every LATER command targets. Without this the
 	// picker's answer lived for exactly one RPC: a multi-org operator picked
@@ -309,7 +312,7 @@ func chooseOrg(p prompter.Prompter, flagOrg, console string) (string, error) {
 	}
 	inst := core.LookupInstance(st, console)
 	if inst == nil {
-		return "", fmt.Errorf("init: not logged in to %s — run `w17ctl login %s` first", console, console)
+		return "", fmt.Errorf("init: not logged in to %s — the human runs `w17ctl login %s` first (an agent cannot complete a login)", console, console)
 	}
 
 	// An org the caller NAMED wins. Refusing to guess is the rule below; this
@@ -557,7 +560,7 @@ func runInitWizard(p prompter.Prompter, flags initFlags) (initAnswers, error) {
 		}
 	}
 	if name == "" {
-		return initAnswers{}, fmt.Errorf("project name is required")
+		return initAnswers{}, fmt.Errorf("project name is required — pass --name (see `w17ctl init --help` for a run with no prompts)")
 	}
 
 	// Note: the bundle services dir is a fixed convention

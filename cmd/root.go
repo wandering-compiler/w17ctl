@@ -73,7 +73,7 @@ import (
 // not the help output.
 var root struct {
 	// --- Getting started (read me first — no project state; safe before init) ---
-	Guide   guidecmd.Cmd   `cmd:"" help:"Write AGENTS.md — the AI-agent usage guide for driving w17ctl (golden rules + canonical workflow + task→command cheat-sheet). Coding agents read AGENTS.md into context automatically. Runs in an empty dir before 'init'; --stdout to print, --force to refresh."`
+	Guide   guidecmd.Cmd   `cmd:"" help:"Write AGENTS.md — the coding-agent guide (golden rules, work loop, how to navigate w17/specs) — plus a CLAUDE.md that imports it (@AGENTS.md; never overwrites an existing one), and fetch w17/specs/, the platform reference. Runs in an empty dir before 'init'; --stdout to print, --force to refresh AGENTS.md. 'guide topic <id>' prints one reference topic, 'guide topics [query]' searches w17/specs/INDEX.md (both offline)."`
 	Version versioncmd.Cmd `cmd:"" help:"Print this binary's version, commit and build date, plus the console address compiled into it. A released binary reports its release; a locally built one reports \"dev\" rather than inventing a number. --check also asks which release is newest."`
 	Update  updatecmd.Cmd  `cmd:"" help:"Upgrade this binary in place. Invokes the canonical installer rather than resolving the release itself — one place knows which release is newest, and it verifies the download against the release's SHA256SUMS. Prereleases are included while this binary is itself one; --stable opts out, --dry-run only reports. --check reports the project's sdk/go and plugins too; --all updates all of them."`
 
@@ -93,7 +93,7 @@ var root struct {
 	Console consolecmd.Cmd `cmd:"" help:"Consoles you are logged into — list them and pick the active one (use <url>). Two are normal: a local console for development, and the one holding the signing key for publishing. 'login' makes whatever it authenticated against active, so this is how it moves back."`
 
 	// --- Project setup ---
-	Init       initcmd.Cmd       `cmd:"" help:"Wizard — bootstrap a new w17 project. Prompts for project name + generated-code paths, registers the project with the console, writes a signed w17/lock.yaml. Refuses on existing lock."`
+	Init       initcmd.Cmd       `cmd:"" help:"Wizard — bootstrap a new w17 project. Prompts for project name + generated-code paths (every prompt has a flag; see 'init --help' for a non-interactive run), registers the project with the console you are logged into, writes a signed w17/lock.yaml. Refuses on existing lock."`
 	Connection connectioncmd.Cmd `cmd:"" help:"Connection-level operations — wizard adds a new connection to the project's lock."`
 	Domain     domaincmd.Cmd     `cmd:"" help:"Domain-level scaffolding — creates the proto/domains/<NAME>/w17.proto cascade sentinel; --with-example also seeds a four-layer example module."`
 	Module     modulecmd.Cmd     `cmd:"" help:"Module-level scaffolding — creates proto/domains/<DOMAIN>/<MODULE>/w17.proto under an existing domain; --with-example also populates the four-layer (queries/mutations/business/types) shape."`

@@ -8,6 +8,30 @@ migrations, running the local stack — goes through it.
 w17ctl <command> --help     # context-sensitive help for any command
 ```
 
+**Status: alpha (v0).** Any release may carry a breaking fix; stay current
+with `w17ctl update` (the binary) and `w17ctl update --all` (the project's
+sdk/go, codegen version and plugins too).
+
+## Get access
+
+w17 is invitation-only. A w17 operator sends you a personal invitation, which
+creates **your own organization** with you as its owner. Open the invitation
+link (`https://w17.app/invite?token=…`), register at the console, then sign in
+from the terminal with `w17ctl login` (below). After that you can create as
+many projects as you like and invite other people into your organization. There
+is no password reset — only a password change while signed in — so keep your
+password and second factor safe. No invitation yet? Ask the person who gave you
+access.
+
+## Prerequisites
+
+- **Docker** (with `docker compose`) — the local stack, `stack build` and
+  `test` run in it.
+- A shell on linux or macOS (amd64 or arm64).
+- Not root, or installing from a shell with no terminal (a coding agent's, a CI
+  step)? Install into a directory you can write — `--dir ~/.local/bin` — because
+  the installer can only fall back to `sudo` where it can ask for a password.
+
 ## Install
 
 ```sh
@@ -21,7 +45,8 @@ Installs into `/usr/local/bin`, verifying the download against the release's
 newest STABLE release, and there is not one yet. Drop it once v0.1.0 ships.
 
 ```sh
-curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version v0.1.0-rc.1 --dir ~/bin
+curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre --dir ~/.local/bin      # no root needed
+curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version <tag> --dir ~/.local/bin
 ```
 
 Or take a `.tar.gz` straight from [Releases](https://github.com/wandering-compiler/w17ctl/releases)
@@ -30,9 +55,10 @@ unpacking: `w17ctl` is a single static binary and keeps its state in `~/.w17/`.
 
 ```sh
 w17ctl version           # what you have, and which console it defaults to
-w17ctl version --check   # …and whether a newer release exists
+w17ctl version --check   # …and whether a newer w17ctl release exists
 w17ctl update            # upgrade in place, no install command to paste
-w17ctl login             # point it at a console
+w17ctl update --check    # inside a project: is w17ctl, sdk/go or any plugin behind?
+w17ctl login             # sign in to the console (a person's step — see below)
 ```
 
 ### Upgrading
@@ -48,9 +74,12 @@ release is newest, and that place already verifies the download against
 itself a prerelease — which is every binary today, since `latest` means the
 newest stable release and there is not one yet. `--stable` opts out,
 `--version <tag>` pins, `--dry-run` only reports what would be installed.
+`--check` reports what is behind — this binary, and inside a project its sdk/go
+and plugins — and `--all` updates all of it. After an update, run
+`w17ctl guide --force` in each project: `AGENTS.md` ships inside w17ctl.
 
-`w17ctl version --check` asks the same question without changing anything. It
-is a flag rather than part of `version` because it costs a network call, and
+`w17ctl version --check` asks only about the binary, without changing anything.
+It is a flag rather than part of `version` because it costs a network call, and
 `version` has to keep working with no network — it is what you run when
 something is already wrong.
 
@@ -63,14 +92,21 @@ commands go.
 
 w17 is built to be driven by a **coding agent** (Claude Code, …). Two steps:
 
-**1. Log in once:**
+**1. Log in once — yourself, not the agent.** Login is a person's act (a
+browser or code sign-in plus a second factor); an agent cannot complete it.
 
 ```
-w17ctl login
+w17ctl login                    # a browser on this machine
+w17ctl login --method code      # over ssh / in a remote workspace: open the URL anywhere, paste the code back
+w17ctl whoami                   # who you are, and your organizations
 ```
+
+The password sign-in (`--method password`, or `--email` + `W17_PASSWORD`) asks
+for the second-factor code when the console wants one; `--code` or
+`W17_MFA_CODE` supplies it up front.
 
 **2. Paste this to your coding agent ONCE to onboard it** (it's context, not a
-task — the point is that the agent learns w17 and records it, so every later
+task — the point is that the agent learns how to find things, so every later
 session already knows the drill and you can just ask for features):
 
 ```text
@@ -79,29 +115,26 @@ you declare schemas, DB models, queries, mutations, events, and APIs as proto +
 annotations, and it generates the gRPC binaries, DB layer, SQL migrations,
 gateways, and clients — the only hand-written code is the business-handler bodies.
 
-Do this now to learn how it works:
-1. Run `w17ctl guide`. It writes AGENTS.md (how to drive the w17ctl CLI) and
-   w17/specs/ (the platform reference: the annotation catalog, the generation
-   model, the event system, the directory structure).
-2. Read AGENTS.md and ALL of w17/specs/.
-3. If it isn't already recorded there, note the essentials in the instruction
-   file your agent reads that w17ctl does not write (AGENTS.md is regenerated by
-   `w17ctl guide --force`, so not there) and in your long-term memory, so future sessions start
-   from it: this is a w17 project driven via w17ctl; you change behaviour by
-   editing proto/ and running `w17ctl codegen`, NEVER by hand-editing generated
-   files; only business-handler bodies are hand-written; the full platform
-   reference is w17/specs/ (every `w17ctl codegen` refreshes it).
+Do this now:
+1. Run `w17ctl guide`. It writes AGENTS.md (+ a CLAUDE.md importing it) and
+   w17/specs/, the platform reference. Read AGENTS.md — it is short.
+2. Do NOT read w17/specs/ whole (it is large). Navigate it by topic:
+     grep -i '<keyword>' w17/specs/INDEX.md          # find topics
+     w17ctl guide topic <id>                         # print one topic
+     sed -n '<first>,<last>p' w17/specs/<file>       # same, without w17ctl
+     grep -n -A12 '<annotation>' w17/specs/annotations.md   # annotation lookup
+   In a new project, read w17/specs/start-choosing.md and start-layout.md once.
+3. Never run `w17ctl login` — ask me when a command says you are not logged in.
 
 From now on I'll just ask you to implement features. Always follow the w17 way:
-declare then generate, hand-write only handler bodies, and re-read w17/specs/ when
-unsure about an annotation or the architecture. Do not invent DB or gRPC plumbing
-by hand.
+declare then generate, hand-write only handler bodies, look the annotation or
+topic up in w17/specs/ when unsure, and report w17 bugs or doc gaps with
+`w17ctl report`. Do not invent DB or gRPC plumbing by hand.
 ```
 
-That's it — the agent learns w17 once, records it, and from then on you just
-describe features. The platform reference is regenerated by the compiler, so it
-always matches your w17 version. **Everything below is reference detail you'll
-rarely need to read.**
+That's it — from then on you just describe features. The platform reference is
+regenerated by the compiler, so it always matches your w17 version.
+**Everything below is reference detail you'll rarely need to read.**
 
 ## Mental model — what w17ctl is (and isn't)
 
@@ -124,7 +157,9 @@ backend), reached over a gRPC API. w17ctl's whole job is three things:
 
 So when a command "generates code" or "plans a migration", w17ctl is **uploading
 your inputs and applying what the console sends back** — it never compiles
-anything itself. This is why the client is small, publishable, and safe to run in
+anything itself. Your `.proto` files are therefore uploaded to the console, and
+the console keeps them: they are the schema history migrations are planned
+from. This is why the client is small, publishable, and safe to run in
 CI: it can't produce a broken or forged artifact, only apply a console-signed one.
 
 w17ctl finds your project by walking parent directories to the nearest one
@@ -158,10 +193,12 @@ client.
 
 | Command | What it does · under the hood |
 |---|---|
-| `guide` | Write `AGENTS.md` (how to DRIVE w17ctl — golden rules + workflow + task→command cheat-sheet; client-embedded, works offline) **and** fetch `w17/specs/` (how the w17 TECHNOLOGY works — the annotation catalog + architecture primer, generated server-side so it always matches the compiler). This is how a coding agent is onboarded: it reads `AGENTS.md` automatically, which points it at `w17/specs/`. `--stdout` prints the usage guide; `--force` refreshes `AGENTS.md`; `--no-specs` skips the server fetch. The `w17/specs/` fetch needs a reachable console and a logged-in identity; it is NOT scoped to an organization, so it works before you pick one (and before `init`). |
+| `guide` | Write `AGENTS.md` — the short guide a coding agent keeps in context (golden rules, the work loop, how to navigate the reference; client-embedded, works offline) — plus a `CLAUDE.md` containing `@AGENTS.md` (Claude Code reads `CLAUDE.md`; an existing one is never overwritten, only hinted at), **and** fetch `w17/specs/` (the platform reference, generated server-side so it always matches the compiler). `--stdout` prints the guide; `--force` refreshes `AGENTS.md`; `--no-specs` skips the server fetch, which needs a reachable console and a login but no organization. |
+| `guide topic <id>` / `guide topics [query]` | Print one topic of `w17/specs/` by its id, or list the `w17/specs/INDEX.md` lines matching a substring (all when empty). Offline; an unknown id exits non-zero with the closest ids. |
 
 | `version [--check]` | Print this binary's version, commit, build date and compiled-in console address. `--check` also asks the installer which release is newest and says whether you are behind — one network call, and it reports rather than fails when there is none. |
-| `update` | Upgrade this binary in place, into the directory it runs from. Invokes `install.sh` rather than resolving the release itself, so the download is verified against `SHA256SUMS` and there is only one implementation of "which release is newest". `--stable` refuses prereleases, `--version <tag>` pins, `--dir` targets elsewhere, `--dry-run` reports without installing. |
+| `update` | Upgrade this binary in place, into the directory it runs from. Invokes `install.sh` rather than resolving the release itself, so the download is verified against `SHA256SUMS` and there is only one implementation of "which release is newest". `--stable` refuses prereleases, `--version <tag>` pins, `--dir` targets elsewhere, `--dry-run` reports without installing. `--check` reports what is behind (inside a project also sdk/go and plugins); `--all` updates all of it. |
+| `report <kind>` | Tell w17 what is wrong, missing or unclear: `report bug\|docs\|feature\|security --title … -F body.md` (`--critical` for a blocking bug, `--topic` for docs); `report list` / `show <id>` / `withdraw <id>` follow it. Kept and triaged by the console; you are mailed when it ships. |
 
 ### Auth & organizations
 Talk to a console and pick your org scope. Login offers three sign-ins and
@@ -174,7 +211,8 @@ to the console — email + password in, bearer out.
 
 | Command | What it does · under the hood |
 |---|---|
-| `login [<host>]` | Sign in and store the bearer + org memberships in `~/.w17/auth.yaml`. In a terminal it asks how; `--method browser\|code\|password` answers, and without a terminal (a script) it is `browser`. **`browser` — a browser on this computer:** fetches the console's OAuth metadata (`/.well-known/oauth-authorization-server`), registers w17ctl once per console (the `client_id` is kept under `oauth_clients` in `auth.yaml`), prints and opens the sign-in URL, waits up to 5 minutes for the redirect to `http://127.0.0.1:<random port>/callback`, and exchanges the code with a DPoP proof of this machine's device key. **`code` — a browser on any device:** the same, except that nothing listens here and nothing is opened: the redirect is the console's code page (`https://<issuer>/oauth/code`), which after the approval shows `code#state` to paste into w17ctl (its state is checked as the redirect's would be; the code lasts 5 minutes). In a terminal the pasted code shows as `*`, and `c` pressed before anything is typed copies the sign-in URL to the clipboard (OSC 52, so over ssh too; inside tmux it needs `set -g allow-passthrough on` or `set -g set-clipboard on`); a paste is never taken for the key, even one starting with `c`. The console offers it when its auth plugin sets `oauth_code_redirect`. The issuer is `https://<console host>` (the gRPC port dropped: `grpcs://api.w17.app:50051` → `https://api.w17.app`); `--issuer` or `W17_CONSOLE_OAUTH_ISSUER` names another. **`password` (or `--no-browser`) — the terminal:** `AuthService.SignIn` over gRPC, prompting for anything not given (email → password (hidden) → host); `--email`, `--password` or `W17_PASSWORD` select it as well, and `--email` + `W17_PASSWORD` keep it non-interactive. |
+| `login [<host>]` | Sign in and store the bearer + org memberships in `~/.w17/auth.yaml`. In a terminal it asks how; `--method browser\|code\|password` answers, and without a terminal (a script) it is `browser`. **`browser` — a browser on this computer:** fetches the console's OAuth metadata (`/.well-known/oauth-authorization-server`), registers w17ctl once per console (the `client_id` is kept under `oauth_clients` in `auth.yaml`), prints and opens the sign-in URL, waits up to 5 minutes for the redirect to `http://127.0.0.1:<random port>/callback`, and exchanges the code with a DPoP proof of this machine's device key. **`code` — a browser on any device:** the same, except that nothing listens here and nothing is opened: the redirect is the console's code page (`https://<issuer>/oauth/code`), which after the approval shows `code#state` to paste into w17ctl (its state is checked as the redirect's would be; the code lasts 5 minutes). In a terminal the pasted code shows as `*`, and `c` pressed before anything is typed copies the sign-in URL to the clipboard (OSC 52, so over ssh too; inside tmux it needs `set -g allow-passthrough on` or `set -g set-clipboard on`); a paste is never taken for the key, even one starting with `c`. The console offers it when its auth plugin sets `oauth_code_redirect`. The issuer is `https://<console host>` (the gRPC port dropped: `grpcs://api.w17.app:50051` → `https://api.w17.app`); `--issuer` or `W17_CONSOLE_OAUTH_ISSUER` names another. **`password` (or `--no-browser`) — the terminal:** `AuthService.SignIn` over gRPC, prompting for anything not given (email → password (hidden) → host); `--email`, `--password` or `W17_PASSWORD` select it as well, and `--email` + `W17_PASSWORD` keep it non-interactive. A second factor is asked for when the console wants one; `--code` or `W17_MFA_CODE` supplies it (an authenticator code, a recovery code, or the one the console e-mails). |
+| `console list` / `console use <url>` | The consoles you are logged into, and which one is active. `login` makes the console it authenticated against active; `use` moves it back. |
 | `logout [<url>]` | Drops a console's stored credential from `~/.w17/auth.yaml`. |
 | `key public [<console>]` | Prints a device key's public half as a JWK on stdout (making the key first if there is none): the file `W17_DPOP_KEY` names, else this machine's key for the console (default: the active one). It is what the console needs to issue a machine account's token. Stderr names the file and its thumbprint (the device id the console shows). |
 | `whoami` | Prints the stored identity + orgs for the active console (`--all` = every logged-in console), and the session expiry when one is known (with a warning once it has passed). A local read; `--verify` asks the console whether it still accepts the credential, and a `W17_TOKEN` run always asks. |
@@ -276,7 +314,7 @@ prepare inputs.
 
 | Command | What it does · under the hood |
 |---|---|
-| `init` | Wizard: prompts for project name + generated-code paths, **registers the project with the console**, writes a fresh signed `w17/lock.yaml`, and auto-registers it in `~/.w17/config.yaml`. Refuses if a lock exists. |
+| `init` | Wizard: prompts for project name + generated-code paths, **registers the project with the console you are logged into**, writes a fresh signed `w17/lock.yaml`, and auto-registers it in `~/.w17/config.yaml`. Refuses if a lock exists. Every prompt has a flag; with no terminal, `w17ctl init --name <p> --stubs-root srcgo/gen --language go --proto-dir proto --languages-dir w17/languages --languages en --e2e yes --ci github --skip-connections` asks nothing (`--org` when you belong to several organizations). |
 | `connection <cmd>` | Wizard to add a DB/store connection to the lock (identity = connection name). Edits the signed lock. |
 | `domain <cmd>` / `module <cmd>` | Scaffold the `proto/domains/<domain>[/<module>]/w17.proto` cascade sentinel; `--with-example` seeds the four-layer (queries / mutations / business / types) shape. Pure local file writes. |
 | `template [<surface>]` | Prints a commented example `.proto` for one surface (domain, module, types, queries, mutations, business, rest, admin, events, subscribers, rpc, mcp, cli). A "how do I annotate X" reference; `--list` to enumerate. |
@@ -286,6 +324,9 @@ prepare inputs.
 | `secrets set\|unset\|list\|pull\|open\|exec\|fetch` | An infrastructure environment's values, held by the console (no files in git): `set --env <env> SERVICE KEY…` seals each value to a write code from the project's page; `list` shows keys only; `pull` reads one service's values back after a read code (`--seal-to` keeps them age-encrypted, `open` / `exec` use such a file); `fetch --env <env> --out DIR` is the deploy's read — as a `deploy-fetch` machine account (`W17_TOKEN`) with Deploy access to the environment, checked against every `.env.example`. |
 | `ci init\|update\|show\|remove` | The GitHub automation of the declared infrastructure: codegen then writes `.github/workflows/w17-ci.yaml`, `w17-build.yaml` and `w17-deploy-<env>.yaml` (prunes only its own). `show` prints what to set up in GitHub. |
 | `deploy --env <env> [--with-tests]` | One person's MVP/PoC shortcut: mint + pin migrations, codegen, fetch the environment's values from the console, build the images, then — for a swarm environment — ship them over SSH (no registry) and deploy blue/green on its server, or — for aws-ecs / gcp-cloudrun — apply its Terraform (`--state-bucket`). Always warns that it is not the recommended way. |
+| `infra <cmd>` | Where and how the project is deployed — swarm (your own servers), aws-ecs or gcp-cloudrun: environments, edge, TLS, backups, server setup. `init` / `update` prompt and write `w17/infra.yaml`; `show` / `remove`; the next codegen renders `deploy/<env>/`. |
+| `client <cmd>` | Generated gRPC clients of THIRD-PARTY APIs (REST from OpenAPI, SOAP from WSDL): `generate` / `update` / `list` / `remove`, under `proto/clients/<name>/`. |
+| `sdk update` / `codegen-version [<v>]` | Move the project onto a new sdk/go release (no local Go toolchain needed) / pin the codegen engine it generates with (a minor, or an exact release candidate). `update --all` does both. |
 | `certs` | Fill a directory with a local dev PKI (self-signed CA + CA-signed leaf) for the internal-mesh TLS switch (`W17_INTERNAL_TLS=on`). Idempotent — never overwrites. |
 
 ### Codegen & schema
@@ -299,6 +340,7 @@ writes back what it returns.
 | `push` | Push everything (schema + fixtures + future artifact types) to the console in one call; the server diffs + stores. Every changed input MINTS a new stored migration — a CI step, not a dev loop (see the migrations guide). Builds the whole project; `--proto <file>` narrows it to those files and their imports, and a table that build leaves out is planned as a DROP the console refuses until `--decide <table>:table_drop=needs_confirm` confirms it. A directory is not accepted as `--proto`. |
 | `migrate generate` | Compile + push the schema; **the console plans the SQL migrations** (initial create vs. revision diff, auto-detected) and pins the lock target. `migrate list` shows history; `migrate push-raw` is the hand-authored-body escape hatch. To APPLY it, your generated server binary owns the fetch + apply step — w17ctl plans migrations, the binary that owns the database applies them. |
 | `fixtures <cmd>` | Apply console-rendered fixture seeds (parameterized upserts) to a connection's target store (DSN via `W17_TARGET_<CONN>` env). |
+| `admission` | Read the console's codegen admission-gate counters (queue depth, decisions, wait times, cost-model drift). A console read; takes no project. |
 | `clean` | Remove codegen output (pb stubs / FE clients / languages / generated bundle files) while **preserving hand-written packages**. |
 
 ### Schema lifecycle — the review flow (PR analog)
@@ -319,8 +361,9 @@ Docker + local project ergonomics. This is where w17ctl drives compose.
 |---|---|
 | `stack <cmd>` | Local docker-compose lifecycle: `build` / `up` / `down` / `logs` / `ps` / `restart`. `build` SYNCS the stores to your protos — it reads what each database holds, the console plans the difference, the client applies it; `--no-build` does only that. `up` runs the same sync after starting the containers (`--no-sync` to skip). A sync that would DROP a table or column, or RETYPE one, is refused with the list: `--lossy=apply` does it, `--lossy=snapshot` keeps a copy first (dumped inside the store's container when this machine has no `pg_dump`). Injects the project's unique host ports from `~/.w17/config.yaml`. |
 | `project <cmd>` | Dev-machine project registry: `list` / `import` / `remove` / `ports` / `ps` + run presets. Keeps **unique host ports across all installed projects** (no env-file juggling) in `~/.w17/config.yaml`. |
-| `db <cmd>` | Local dev DB snapshots scoped to the current initiative: `save` / `list` / `activate` / `delete`. Branch-scoped checkpoints for fast switching. |
+| `db snapshot <cmd>` | Local dev DB snapshots scoped to the current initiative: `db snapshot save` / `list` / `activate` / `delete`. Branch-scoped checkpoints for fast switching. |
 | `test` | Run the generated e2e suite against a throwaway stack of its own: brings the project's compose up under a unique project name with dynamic host ports, syncs the stores, runs the suite as an external HTTP/MCP client, and tears the stack down (`--keep` leaves it running for debugging). |
+| `stress <target>` | Load-test a deployed gateway with the generated stress presets (each preset's `stress.yaml` plan); prints throughput/latency and fails on a breached threshold — usable as a CI load gate. |
 | `ui <cmd>` | Serve the local web app — a human-facing view + controller over the project registry, presets, and Docker stacks (the GUI counterpart to `project` / `stack`). `127.0.0.1` only, no image; `ui start` runs it in the background and `ui stop` stops it. |
 
 ---
@@ -345,6 +388,6 @@ release if it does not compile with zero private compiler code in its import
 graph.
 
 So nothing here is untested, but nothing here is testable by you either.
-If you hit a bug, a description that reproduces it is worth as much to us as a
-patch would be: we turn it into a regression test in the tree where the test
+If you hit a bug, report it with `w17ctl report bug` — a description that
+reproduces it is worth as much to us as a patch would be: we turn it into a regression test in the tree where the test
 actually runs.

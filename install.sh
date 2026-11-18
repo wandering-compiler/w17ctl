@@ -2,12 +2,12 @@
 # Install w17ctl.
 #
 #   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre
-#   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version v0.1.0-rc.1 --dir ~/bin
+#   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version <tag> --dir ~/.local/bin
 #
 # The URL carries a path: get.w17.dev is GitHub Pages, which serves files
-# rather than a root handler, so the bare domain 404s. `61569aa3a` fixed that
-# in the README and not here — and this file is what a reader sees when the
-# README's command has already failed them.
+# rather than a root handler, so the bare domain 404s. Keep it in step with the
+# README — this file is what a reader sees when the README's command has
+# already failed them.
 #
 # `--pre` during the rc phase: `latest` means the newest STABLE release and
 # excludes prereleases by design, so without it the resolve correctly finds
@@ -52,12 +52,13 @@ while [ $# -gt 0 ]; do
 Install w17ctl.
 
   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre
-  curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version v0.1.0-rc.1 --dir ~/bin
+  curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version <tag> --dir ~/.local/bin
 
   --version <tag>   install this release (default: newest stable)
   --pre             allow prereleases (needed while the project is in rc)
   --dir <path>      install into this directory (default: /usr/local/bin,
-                    or $W17CTL_INSTALL_DIR)
+                    or $W17CTL_INSTALL_DIR). Not root, or a shell with no
+                    terminal (a coding agent's)? Use --dir ~/.local/bin.
   --print-version   resolve the release and print its tag on stdout, then
                     exit without installing anything
 
@@ -196,9 +197,16 @@ tar -xzf "$tmp/$asset" -C "$tmp" w17ctl
 
 if [ -w "$DIR" ] || mkdir -p "$DIR" 2>/dev/null && [ -w "$DIR" ]; then
 	install -m 0755 "$tmp/w17ctl" "$DIR/w17ctl"
-else
+elif sudo -n true 2>/dev/null || ( : </dev/tty ) 2>/dev/null; then
+	# sudo either needs no password or has a terminal to ask on. Without
+	# either (a coding agent's shell, a CI step) it would hang or fail on a
+	# password prompt nobody can answer, so that case stops with the fix.
 	echo "install.sh: $DIR is not writable — retrying with sudo" >&2
 	sudo install -m 0755 "$tmp/w17ctl" "$DIR/w17ctl"
+else
+	echo "install.sh: $DIR is not writable and sudo has no terminal to ask for a password —" >&2
+	echo "            rerun with --dir ~/.local/bin (or any directory you can write)" >&2
+	exit 1
 fi
 
 echo "install.sh: installed $DIR/w17ctl" >&2
