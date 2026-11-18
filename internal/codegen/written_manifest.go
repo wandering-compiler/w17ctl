@@ -45,6 +45,14 @@ type writtenManifest struct {
 	// Files maps a project-root-relative slash path to the sha256 (hex) of
 	// the bytes codegen left there.
 	Files map[string]string `json:"files"`
+	// Scaffolds is the same for the generate-once files (a CLI command's
+	// body, a bundle's .env): each one that still holds exactly what codegen
+	// created there. Once edited it is the author's and drops out. It is what
+	// lets the prune remove the scaffold of something no longer generated (a
+	// removed CLI command's body, which names request types that no longer
+	// exist and so breaks the bundle's build) without ever deleting an edit
+	// (pruneScaffolds). Absent in a record an older client wrote.
+	Scaffolds map[string]string `json:"scaffolds,omitempty"`
 }
 
 // loadWrittenManifest reads the record, or returns nil when there is none.
@@ -102,8 +110,13 @@ func fileDigest(p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return contentDigest(b), nil
+}
+
+// contentDigest is fileDigest of bytes in memory.
+func contentDigest(b []byte) string {
 	sum := sha256.Sum256(bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")))
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
 }
 
 // headerlessOutput reports whether a write op's body is one the header
@@ -123,7 +136,10 @@ func headerlessOutput(contents []byte) bool {
 // prune deletes by (pruneStale). Called when the write pass ends
 // (however it ends) and again at the end of the run, so a later step that
 // rewrites an output it owns is recorded as codegen's too. A generate-if-
-// missing scaffold is not recorded: once written it is the author's.
+// missing scaffold is not one of Files: once written it is the author's. It
+// goes to Scaffolds while it still holds codegen's bytes — what this run
+// would create there, or what an earlier run recorded — so the prune can tell
+// an untouched one from an edited one.
 //
 // An entry for a path this run did not write is KEPT while the file is still
 // on disk. The orphan prune removes only files that carry a banner, so a
@@ -137,37 +153,49 @@ func headerlessOutput(contents []byte) bool {
 // one would refuse codegen's own output next run, while none at all is the
 // first-run case — and the run says so.
 func recordWrittenManifest(root string, writes []*codegenpb.GeneratedFile) {
-	m := writtenManifest{Version: writtenManifestVersion, Files: map[string]string{}}
+	m := writtenManifest{Version: writtenManifestVersion, Files: map[string]string{}, Scaffolds: map[string]string{}}
+	prior, err := loadWrittenManifest(root)
+	if err != nil {
+		prior = nil
+	}
 	inRun := make(map[string]bool, len(writes))
 	for _, f := range writes {
 		rel := filepath.ToSlash(f.GetRelativePath())
 		inRun[rel] = true
-		if f.GetIfMissing() {
-			continue
-		}
 		target, err := containedJoin(root, rel)
 		if err != nil {
 			continue
 		}
-		if d, err := fileDigest(target); err == nil {
-			m.Files[rel] = d
+		d, err := fileDigest(target)
+		if err != nil {
+			continue
 		}
-	}
-	if prior, err := loadWrittenManifest(root); err == nil && prior != nil {
-		for rel, d := range prior.Files {
-			if inRun[rel] {
-				continue
+		if f.GetIfMissing() {
+			if d == contentDigest(f.GetContents()) || (prior != nil && prior.Scaffolds[rel] == d) {
+				m.Scaffolds[rel] = d
 			}
-			if target, err := containedJoin(root, rel); err == nil {
-				if _, err := os.Stat(target); err == nil {
-					m.Files[rel] = d
+			continue
+		}
+		m.Files[rel] = d
+	}
+	if prior != nil {
+		keep := func(from, to map[string]string) {
+			for rel, d := range from {
+				if inRun[rel] {
+					continue
+				}
+				if target, err := containedJoin(root, rel); err == nil {
+					if _, err := os.Stat(target); err == nil {
+						to[rel] = d
+					}
 				}
 			}
 		}
+		keep(prior.Files, m.Files)
+		keep(prior.Scaffolds, m.Scaffolds)
 	}
 	p := filepath.Join(root, filepath.FromSlash(writtenManifestRel))
-	err := writeManifestFile(p, m)
-	if err != nil {
+	if err := writeManifestFile(p, m); err != nil {
 		_ = os.Remove(p)
 		fmt.Fprintf(core.Stdout, "warning: could not record what codegen wrote (%v); the next run treats the "+
 			"existing header-less outputs as its own once\n", err)

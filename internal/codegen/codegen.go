@@ -2113,15 +2113,25 @@ func hasGeneratedMarker(path string) bool {
 // files people own, so they also require the infra target's OWN banner, not
 // the general one: a w17 file a person copied into .github/workflows (the
 // w17/ci/ templates say to) carries the general banner and is theirs.
+//
+// The generate-once scaffolds of something no longer generated are pruned
+// by pruneScaffolds, which runs with or without a record.
 func pruneStale(root string, cleanPaths, prunePaths []string, kept map[string]bool, servicesDir string, hadRecord bool, stdout io.Writer) error {
-	if !hadRecord {
-		return nil
+	var record *writtenManifest
+	if hadRecord {
+		var err error
+		if record, err = loadWrittenManifest(root); err != nil {
+			return fmt.Errorf("prune orphans: %w", err)
+		}
 	}
-	record, err := loadWrittenManifest(root)
+	s, err := pruneScaffolds(root, cleanPaths, kept, record, stdout)
 	if err != nil {
 		return fmt.Errorf("prune orphans: %w", err)
 	}
 	if record == nil {
+		if s > 0 {
+			fmt.Fprintf(stdout, "codegen: pruned %d stale generated file(s)\n", s)
+		}
 		return nil
 	}
 	n, err := pruneOrphansRecorded(root, cleanPaths, kept, func(p string) bool {
@@ -2134,10 +2144,93 @@ func pruneStale(root string, cleanPaths, prunePaths []string, kept map[string]bo
 	if err != nil {
 		return fmt.Errorf("prune orphans: %w", err)
 	}
-	if n+m > 0 {
-		fmt.Fprintf(stdout, "codegen: pruned %d stale generated file(s)\n", n+m)
+	if n+m+s > 0 {
+		fmt.Fprintf(stdout, "codegen: pruned %d stale generated file(s)\n", n+m+s)
 	}
 	return nil
+}
+
+// scaffoldMarkerRe is the banner of a generate-once Go body (a CLI
+// command's, gateway/generator/cli_gen.go): codegen's at birth, the
+// author's from then on.
+var scaffoldMarkerRe = regexp.MustCompile(`(?m)^// Generated once by w17 codegen, then OWNED BY YOU`)
+
+// pruneScaffolds handles the generate-once files of something this run no
+// longer generates — a removed CLI command's body is the common one. Such a
+// body calls the command's client and names its request type, so once the
+// RPC is gone it no longer compiles, and the bundle's build fails in a file
+// that is in neither the protos nor git (the services tree is ignored).
+//
+// It is the author's file, so it is deleted only when codegen's record says
+// it still holds exactly the bytes codegen created (writtenManifest.Scaffolds):
+// there is no edit to lose. One that was edited, or that predates the record,
+// is left in place and named when it carries the scaffold banner, so the
+// build error that follows points somewhere.
+func pruneScaffolds(root string, cleanPaths []string, kept map[string]bool, record *writtenManifest, stdout io.Writer) (int, error) {
+	removed := 0
+	for _, r := range cleanPaths {
+		if err := pathguard.ValidateRel(r); err != nil {
+			return removed, fmt.Errorf("server clean-root %q escapes the project root: %w", r, err)
+		}
+		base := filepath.Join(root, filepath.FromSlash(r))
+		if info, err := os.Stat(base); err != nil || !info.IsDir() {
+			continue
+		}
+		var emptied []string
+		walkErr := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if n := d.Name(); n == "node_modules" || n == "vendor" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			rel, relErr := filepath.Rel(root, p)
+			if relErr != nil {
+				return nil
+			}
+			relSlash := filepath.ToSlash(rel)
+			if kept[relSlash] {
+				return nil
+			}
+			if record != nil {
+				if want, ok := record.Scaffolds[relSlash]; ok {
+					if got, err := fileDigest(p); err == nil && got == want {
+						if rmErr := os.Remove(p); rmErr != nil {
+							return fmt.Errorf("prune orphan %s: %w", relSlash, rmErr)
+						}
+						removed++
+						emptied = append(emptied, filepath.Dir(p))
+						fmt.Fprintf(stdout, "pruned stale %s\n", relSlash)
+						return nil
+					}
+				}
+			}
+			if hasScaffoldMarker(p) {
+				fmt.Fprintf(stdout, "left in place: %s (generated once for something this run no longer generates, "+
+					"and yours since; delete it if that is gone — it may no longer compile)\n", relSlash)
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return removed, walkErr
+		}
+		removeEmptiedDirs(base, emptied)
+	}
+	return removed, nil
+}
+
+func hasScaffoldMarker(path string) bool {
+	f, err := os.Open(path) // #nosec G304 -- a path under a ValidateRel-guarded clean root
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	head := make([]byte, 4096)
+	n, _ := f.Read(head)
+	return scaffoldMarkerRe.Match(head[:n])
 }
 
 // pruneOrphans deletes stale w17-generated files left behind when a surface

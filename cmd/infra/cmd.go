@@ -40,7 +40,7 @@ type flags struct {
 	Target         string            `name:"target" help:"swarm | aws-ecs | gcp-cloudrun."`
 	Env            []string          `name:"env" help:"Environment names (repeatable or comma-separated), e.g. prod,staging."`
 	Domain         map[string]string `name:"domain" help:"Per environment: --domain prod=example.com."`
-	Host           map[string]string `name:"host" help:"Override one surface's host: --host prod:app-api=api.example.com (the surface keys are <domain>-<api|rpc|mcp|admin>, listed in deploy/<env>/README.md); swarm also takes a port: --host prod:app-rpc=api.example.com:50051."`
+	Host           map[string]string `name:"host" help:"Override one surface's host: --host prod:app-api=api.example.com (the surface keys are <domain>-<api|rpc|mcp|admin>, listed in deploy/<env>/README.md); swarm also takes a port: --host prod:app-rpc=api.example.com:50051. none keeps a surface unpublished (--host prod:app-rpc=none); swarm puts an MCP surface on another surface's host with /mcp (--host prod:app-mcp=api.example.com/mcp)."`
 	Edge           string            `name:"edge" help:"swarm: caddy | nginx."`
 	TLS            string            `name:"tls" help:"swarm: acme | custom (custom = caddy only)."`
 	AcmeEmail      string            `name:"acme-email" help:"swarm + acme: Let's Encrypt account e-mail."`
