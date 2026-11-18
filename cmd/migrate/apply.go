@@ -7,6 +7,8 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	migratesdk "github.com/wandering-compiler/sdk/go/tooling/migrate"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate/factory"
+	// The SQLite migrator registers itself; w17ctl migrates whatever the project declares, SQLite included.
+	_ "github.com/wandering-compiler/sdk/go/tooling/migrate/sqlitedriver"
 )
 
 // The apply / fetch / rollback machinery that used to live here is gone: it

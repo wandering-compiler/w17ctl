@@ -29,6 +29,8 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/localtarget"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate/factory"
+	// The SQLite migrator registers itself; w17ctl migrates whatever the project declares, SQLite included.
+	_ "github.com/wandering-compiler/sdk/go/tooling/migrate/sqlitedriver"
 )
 
 // Config drives a run of the project's generated e2e suite against an

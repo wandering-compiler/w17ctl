@@ -14,6 +14,8 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/localtarget"
 	"github.com/wandering-compiler/w17ctl/internal/snapstore"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate/factory"
+	// The SQLite migrator registers itself; w17ctl migrates whatever the project declares, SQLite included.
+	_ "github.com/wandering-compiler/sdk/go/tooling/migrate/sqlitedriver"
 )
 
 // SnapshotConns turns resolved dev-diff-apply targets into the

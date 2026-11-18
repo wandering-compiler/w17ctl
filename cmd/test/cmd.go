@@ -6,6 +6,8 @@ package test
 import (
 	stackcmd "github.com/wandering-compiler/w17ctl/cmd/stack"
 	"github.com/wandering-compiler/sdk/go/tooling/migrate/factory"
+	// The SQLite migrator registers itself; w17ctl migrates whatever the project declares, SQLite included.
+	_ "github.com/wandering-compiler/sdk/go/tooling/migrate/sqlitedriver"
 
 	"github.com/wandering-compiler/w17ctl/internal/testsuite"
 )
