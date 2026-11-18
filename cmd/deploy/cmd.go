@@ -467,7 +467,7 @@ func gitState(root string) (dirty bool, sha string, err error) {
 
 // image is one line of images.txt / images.custom.txt: <image> <context>
 // <Dockerfile> [+target=<stage>] [+lock] [KEY=VALUE …] — the trailing pairs
-// are build arguments; +lock (a cloud bundle) layers the lock and the
+// are build arguments (a value of exactly ${VAR} is that variable); +lock (a cloud bundle) layers the lock and the
 // fixtures on top.
 type image struct {
 	name, context, dockerfile string
@@ -477,6 +477,9 @@ type image struct {
 }
 
 var buildArg = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=\S*$`)
+
+// envRefArg is a build argument's value naming a variable: exactly `${VAR}`.
+var envRefArg = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
 
 func readImages(path string) ([]image, error) {
 	f, err := os.Open(path) // #nosec G304 -- the project's own generated file
@@ -503,6 +506,16 @@ func readImages(path string) ([]image, error) {
 			case a == "+lock":
 				im.lock = true
 			case buildArg.MatchString(a):
+				k, v, _ := strings.Cut(a, "=")
+				if m := envRefArg.FindStringSubmatch(v); m != nil {
+					// ${VAR}: this shell's variable, as the build workflow takes
+					// the job's — never an empty one baked in.
+					val := os.Getenv(m[1])
+					if val == "" {
+						return nil, fmt.Errorf("%s: %q — $%s is not set (the build workflow takes it from w17/infra.yaml ci.setup; set it here to deploy by hand)", path, line, m[1])
+					}
+					a = k + "=" + val
+				}
 				im.buildArgs = append(im.buildArgs, a)
 			default:
 				return nil, fmt.Errorf("%s: %q — %q is not a KEY=VALUE build argument", path, line, a)

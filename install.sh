@@ -107,10 +107,21 @@ if [ "$VERSION" = "latest" ] && [ "$PRE" = 0 ]; then
 	esac
 elif [ "$VERSION" = "latest" ]; then
 	# --pre: newest release of any kind. Needs the API (the redirect only ever
-	# points at a stable one), which is unauthenticated and rate-limited — fine
-	# for an installer, and the failure is legible when it is not.
+	# points at a stable one). Unauthenticated it is rate-limited per address,
+	# and a CI runner shares its address with everyone else's jobs: the 60
+	# calls an hour run out and the install fails with a 403. GITHUB_TOKEN, when
+	# the environment has one (a GitHub Actions step that passes it), lifts the
+	# limit; it goes to api.github.com only.
 	need sed
 	need awk
+	api="https://api.github.com/repos/$REPO/releases?per_page=100"
+	releases=""
+	# A token the API refuses (a stale one left in a shell) falls back to the
+	# unauthenticated call rather than failing the install.
+	if [ -n "${GITHUB_TOKEN:-}" ]; then
+		releases=$($CURL -H "Authorization: Bearer $GITHUB_TOKEN" "$api" 2>/dev/null) || releases=""
+	fi
+	[ -n "$releases" ] || releases=$($CURL "$api")
 	# ⚠️ Do NOT take the API's first row. It is not ordered the way a reader
 	# assumes: on 2026-09-08 `?per_page=1` returned v0.1.0-rc.9 while
 	# v0.1.0-rc.10 existed and was newer, so `--pre` installed the OLDER
@@ -129,7 +140,7 @@ elif [ "$VERSION" = "latest" ]; then
 	# string comparison puts it below. A prerelease carrying several numbers
 	# (rc.1.2) collapses to 12; our tags do not, and the alternative is a
 	# full semver parser in POSIX sh.
-	VERSION=$($CURL "https://api.github.com/repos/$REPO/releases?per_page=100" \
+	VERSION=$(printf '%s\n' "$releases" \
 		| sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
 		| awk '
 			{
