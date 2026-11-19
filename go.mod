@@ -1,6 +1,6 @@
 module github.com/wandering-compiler/w17ctl
 
-go 1.26.0
+go 1.27.0
 
 require (
 	filippo.io/age v1.3.1
@@ -8,7 +8,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/wandering-compiler/sdk/go v0.1.0-rc.88
+	github.com/wandering-compiler/sdk/go v0.1.0-rc.89
 	golang.org/x/mod v0.41.0
 	golang.org/x/term v0.46.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d

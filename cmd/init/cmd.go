@@ -20,6 +20,7 @@ import (
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	w17registrypb "github.com/wandering-compiler/sdk/go/pb/w17registry"
 	"github.com/wandering-compiler/sdk/go/tooling/certgen"
+	"github.com/wandering-compiler/sdk/go/tooling/goversion"
 )
 
 // Wizard prompt defaults. These are UX defaults the operator Enters through;
@@ -414,7 +415,7 @@ func scaffoldGoModule(projectRoot, goModule, stubsRoot string) error {
 		// in the inert co-dev replace below — never a require.
 		srcgoMod := core.SrcgoModuleBase + "/srcgo"
 		sdkMod := core.SdkModuleBase + "/sdk/go"
-		fmt.Fprintf(&b, "module %s\n\ngo 1.26.1\n\n", goModule)
+		fmt.Fprintf(&b, "module %s\n\ngo %s\n\n", goModule, goversion.Directive)
 		if w17Path != "" {
 			// go.mod replace paths are relative to the go.mod's dir
 			// (<root>/<modDir>), so prepend one ".." for modDir.
@@ -467,7 +468,7 @@ func scaffoldGoModule(projectRoot, goModule, stubsRoot string) error {
 	goWorkPath := filepath.Join(projectRoot, "go.work")
 	if _, err := os.Stat(goWorkPath); err != nil {
 		var b strings.Builder
-		fmt.Fprint(&b, "go 1.26.1\n\nuse (\n")
+		fmt.Fprint(&b, "go "+goversion.Directive+"\n\nuse (\n")
 		if w17Path != "" {
 			fmt.Fprintf(&b, "\t%s\n", filepath.ToSlash(filepath.Join(w17Path, "sdk/go")))
 			fmt.Fprintf(&b, "\t%s\n", filepath.ToSlash(filepath.Join(w17Path, "srcgo")))

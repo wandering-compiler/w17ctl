@@ -33,6 +33,9 @@ import (
 // DeployEnv is an environment's values, one file per service of the stack.
 type DeployEnv struct {
 	Files []DeployEnvFile
+	// Warnings are what the console holds and the deploy does not use, said
+	// but not refused: a value for a key the stack's compose sets itself.
+	Warnings []string
 }
 
 // DeployEnvFile is one service's values: Body is its <service>.env as the
@@ -85,7 +88,11 @@ func FetchDeployEnv(lockPath, console, env, servicesDir, ref string) (*DeployEnv
 	if err != nil {
 		return nil, fmt.Errorf("fetching %s's values from the console: %w", env, err)
 	}
-	return buildDeployEnv(env, expected, resp.GetServices())
+	set, err := deploySetKeys(servicesDir)
+	if err != nil {
+		return nil, err
+	}
+	return buildDeployEnvWith(env, expected, set, resp.GetServices())
 }
 
 // ReadDeployEnv is FetchDeployEnv for a person: the values are read under a
@@ -121,7 +128,11 @@ func ReadDeployEnv(lockPath, console, env, servicesDir, _ string) (*DeployEnv, e
 	if err != nil {
 		return nil, fmt.Errorf("reading %s's values from the console: %w", env, err)
 	}
-	return buildDeployEnv(env, expected, services)
+	set, err := deploySetKeys(servicesDir)
+	if err != nil {
+		return nil, err
+	}
+	return buildDeployEnvWith(env, expected, set, services)
 }
 
 // expectedKeys reads the keys each service of the stack declares in its
@@ -152,9 +163,49 @@ func expectedKeys(servicesDir string) (map[string][]string, error) {
 	return out, nil
 }
 
-// buildDeployEnv checks the fetched values against the declared keys and the
-// value checks, and renders one file per declared service.
+// reDeploySet is the note the stack writes in place of a key its compose sets
+// itself (`# KEY: set by the deploy, not the console`, or a note of the same
+// opening the stack had already written above it).
+var reDeploySet = regexp.MustCompile(`^#\s*([A-Za-z_][A-Za-z0-9_]*):\s*set by the deploy\b`)
+
+// deploySetKeys reads, per service, the keys its rendered .env.example says
+// the deploy sets itself. The console may still hold a value for one — set
+// before the stack took the key over — and that value is not used: the
+// compose's `environment:` wins over the env file.
+func deploySetKeys(servicesDir string) (map[string]map[string]bool, error) {
+	examples, _ := filepath.Glob(filepath.Join(servicesDir, "*", ".env.example"))
+	out := map[string]map[string]bool{}
+	for _, ex := range examples {
+		b, err := os.ReadFile(ex) // #nosec G304 -- the project's own rendered file
+		if err != nil {
+			return nil, err
+		}
+		svc := filepath.Base(filepath.Dir(ex))
+		for _, line := range strings.Split(string(b), "\n") {
+			if m := reDeploySet.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+				if out[svc] == nil {
+					out[svc] = map[string]bool{}
+				}
+				out[svc][m[1]] = true
+			}
+		}
+	}
+	return out, nil
+}
+
+// buildDeployEnv is buildDeployEnvWith for a stack whose compose sets no key
+// of its own.
 func buildDeployEnv(env string, expected map[string][]string, services []*secretspb.ServiceSecrets) (*DeployEnv, error) {
+	return buildDeployEnvWith(env, expected, nil, services)
+}
+
+// buildDeployEnvWith checks the fetched values against the declared keys and
+// the value checks, and renders one file per declared service. A value for a
+// key the deploy sets itself (deploySet) is left out and named in Warnings:
+// it never reached the service, so a deploy is no reason to stop over it —
+// which is what it was when a release of the stack took a key over that the
+// console already held.
+func buildDeployEnvWith(env string, expected map[string][]string, deploySet map[string]map[string]bool, services []*secretspb.ServiceSecrets) (*DeployEnv, error) {
 	got := map[string][]*secretspb.SecretValue{}
 	var problems []string
 	for _, s := range services {
@@ -176,6 +227,15 @@ func buildDeployEnv(env string, expected map[string][]string, services []*secret
 	values := map[string]map[string]string{}
 	missing := false
 	for _, svc := range names {
+		var kept []*secretspb.SecretValue
+		for _, v := range got[svc] {
+			if deploySet[svc][v.GetKey()] {
+				out.Warnings = append(out.Warnings, fmt.Sprintf("%s: %s is set on the console, and the deploy sets it itself — the console's value is not used (`w17ctl secrets unset --env %s %s %s`)", svc, v.GetKey(), env, svc, v.GetKey()))
+				continue
+			}
+			kept = append(kept, v)
+		}
+		got[svc] = kept
 		have := map[string]bool{}
 		values[svc] = map[string]string{}
 		for _, v := range got[svc] {
@@ -267,7 +327,8 @@ func (e *DeployEnv) WriteDir(dir string, asJSON bool) (err error) {
 type FetchCmd struct {
 	Env      string `name:"env" required:"" help:"Environment (environments.<env> in w17/infra.yaml)."`
 	Read     bool   `name:"read" help:"Read the values as yourself, with a read code (the project's page → Create read code, or $W17_SECRETS_CODE), instead of as a deploy bot — a deploy from your own machine with no bot."`
-	Out      string `name:"out" short:"o" required:"" placeholder:"DIR" help:"Directory to write <service>.env (mode 0600) into."`
+	Out      string `name:"out" short:"o" placeholder:"DIR" help:"Directory to write <service>.env (mode 0600) into."`
+	Check    bool   `name:"check" help:"Check the console's values against the stack and write nothing: what a deploy would refuse, refused now. Prints no value."`
 	JSON     bool   `name:"json" help:"Write <service>.json (one flat object of the values) instead — the cloud deploy scripts' form."`
 	Ref      string `name:"ref" env:"GITHUB_SHA" help:"The commit being deployed, recorded with the fetch."`
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file (the project the values belong to)."`
@@ -284,9 +345,19 @@ func (c *FetchCmd) Run() error {
 	if c.Read {
 		fetch = ReadDeployEnv
 	}
+	if c.Out == "" && !c.Check {
+		return fmt.Errorf("secrets fetch: name a directory to write the values into (--out DIR), or --check to only check them")
+	}
 	env, err := fetch(c.LockPath, c.Console, c.Env, servicesDir, c.Ref)
 	if err != nil {
 		return fmt.Errorf("secrets fetch: %w", err)
+	}
+	for _, w := range env.Warnings {
+		fmt.Fprintf(core.Stderr, "secrets fetch: warning: %s\n", w)
+	}
+	if c.Check {
+		fmt.Fprintf(core.Stdout, "secrets fetch: %d service(s) of %s ready for a deploy\n", len(env.Files), c.Env)
+		return nil
 	}
 	if err := env.WriteDir(c.Out, c.JSON); err != nil {
 		return fmt.Errorf("secrets fetch: %w", err)
