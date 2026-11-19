@@ -20,7 +20,7 @@ type Cmd struct {
 	Duration    string `name:"duration" short:"d" placeholder:"DUR" help:"Override every preset's run window, e.g. 30s (empty = use each plan's value)."`
 	Total       int    `name:"total" short:"n" help:"Override every preset's total_requests (0 = use each plan's value)."`
 	Verbose     bool   `name:"verbose" short:"v" help:"Per-preset framework output around the throughput/latency report."`
-	Image       string `name:"image" default:"golang:1.26-alpine" help:"Builder image used to cross-compile the runner."`
+	Image       string `name:"image" default:"golang:1.27-alpine" help:"Builder image used to cross-compile the runner."`
 	GomodVolume string `name:"gomod-volume" default:"w17ctl-gomod" help:"Named Docker volume for the Go module cache (shared across runs)."`
 	Console     string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock — read for the services dir). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }

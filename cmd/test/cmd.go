@@ -32,7 +32,7 @@ type Cmd struct {
 	Domain         string `name:"domain" help:"Run only this domain (empty = all)."`
 	Transport      string `name:"transport" env:"W17_TEST_TRANSPORT" help:"Run only these transports: rest, mcp, admin, or a comma-separated list of them (empty = all). A run that leaves one out on purpose names the rest — e.g. rest,admin. The env var reaches a w17ctl test that a script runs."`
 	Verbose        bool   `name:"verbose" help:"Per-step progress output (passes -test.v to the suite)."`
-	Image          string `name:"image" default:"golang:1.26-alpine" help:"Builder image used to cross-compile the suite."`
+	Image          string `name:"image" default:"golang:1.27-alpine" help:"Builder image used to cross-compile the suite."`
 	GomodVolume    string `name:"gomod-volume" default:"w17ctl-gomod" help:"Named Docker volume for the Go module cache (shared across runs)."`
 	Keep           bool   `name:"keep" help:"Leave the stack running after the suite (skip teardown) for debugging."`
 	Timeout        int    `name:"timeout" default:"300" help:"Seconds to wait for the stack to become healthy (docker compose up --wait-timeout)."`

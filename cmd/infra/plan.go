@@ -107,9 +107,16 @@ func planSwarm(t remote.Target, env, envDir, root string) error {
 		switch {
 		case strings.HasPrefix(line, "*deleting "):
 			removed = append(removed, strings.TrimSpace(strings.TrimPrefix(line, "*deleting ")))
-		case len(line) > 12 && line[0] == '<' && line[1] == 'f':
-			p := strings.TrimSpace(line[12:])
-			if strings.HasPrefix(line[2:11], "+++++++") {
+		case strings.HasPrefix(line, "<f"):
+			// The change flags end at the first space; their width is the
+			// rsync's (11 in 3.x, 9 in older ones and openrsync), so the
+			// path is cut there, not at a fixed column.
+			flags, p, ok := strings.Cut(line, " ")
+			if !ok {
+				continue
+			}
+			p = strings.TrimSpace(p)
+			if strings.Trim(flags[2:], "+") == "" {
 				added = append(added, p)
 			} else {
 				changed = append(changed, p)
