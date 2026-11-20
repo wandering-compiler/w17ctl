@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/wandering-compiler/w17ctl/internal/core"
 )
 
 // ErrNoReleases is returned when a registry ANSWERED and publishes no release
@@ -58,8 +60,44 @@ func LatestVersion(ctx context.Context, repo, plugin string) (string, error) {
 				"  why: a plugin version is a git tag named `<plugin>/v<version>`, so a repository\n"+
 				"       with none has nothing this project could pin", repo, plugin, ErrNoReleases)
 	}
+	versions = onClientLine(versions, clientLine())
 	sort.Slice(versions, func(i, j int) bool { return CompareVersions(versions[i], versions[j]) < 0 })
 	return versions[len(versions)-1], nil
+}
+
+// clientLine is this w17ctl's minor line ("v0.1"), or "" for a build that
+// carries no release version. A seam for the tests.
+var clientLine = func() string { return lineOf(core.Version) }
+
+// lineOf is a version's minor line: v0.1.0-rc.3 and v0.1.2 are both "v0.1".
+func lineOf(v string) string {
+	n, _ := splitVersion(v)
+	if n[0] < 0 || n[1] < 0 {
+		return ""
+	}
+	return fmt.Sprintf("v%d.%d", n[0], n[1])
+}
+
+// onClientLine keeps the versions on the client's minor line, when there are
+// any: one minor line of the platform works together (a w17ctl 0.1.y with
+// plugins 0.1.x), so a 0.1 client never resolves a plugin to 0.2 — nor to
+// cluster's 0.2.0-rc.N, tagged by mistake before that rule and immutable.
+// A plugin with no version on the line (a third party's, numbered its own
+// way) keeps all of them, and so does a development build.
+func onClientLine(versions []string, line string) []string {
+	if line == "" {
+		return versions
+	}
+	var kept []string
+	for _, v := range versions {
+		if lineOf(v) == line {
+			kept = append(kept, v)
+		}
+	}
+	if len(kept) == 0 {
+		return versions
+	}
+	return kept
 }
 
 // parseRefLines pulls the version halves out of `git ls-remote --tags` output.
