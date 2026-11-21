@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Install w17ctl.
 #
-#   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre
+#   curl -fsSL https://get.w17.dev/install.sh | sh
 #   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version <tag> --dir ~/.local/bin
 #
 # The URL carries a path: get.w17.dev is GitHub Pages, which serves files
@@ -9,9 +9,8 @@
 # README — this file is what a reader sees when the README's command has
 # already failed them.
 #
-# `--pre` during the rc phase: `latest` means the newest STABLE release and
-# excludes prereleases by design, so without it the resolve correctly finds
-# nothing.
+# `latest` means the newest STABLE release and excludes prereleases by
+# design; `--pre` takes the newest release of any kind.
 #
 # POSIX sh, not bash: this runs on whatever the user has, including a minimal
 # container where bash is not installed.
@@ -51,11 +50,11 @@ while [ $# -gt 0 ]; do
 			cat <<'USAGE'
 Install w17ctl.
 
-  curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre
+  curl -fsSL https://get.w17.dev/install.sh | sh
   curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version <tag> --dir ~/.local/bin
 
   --version <tag>   install this release (default: newest stable)
-  --pre             allow prereleases (needed while the project is in rc)
+  --pre             allow prereleases (the newest release of any kind)
   --dir <path>      install into this directory (default: /usr/local/bin,
                     or $W17CTL_INSTALL_DIR). Not root, or a shell with no
                     terminal (a coding agent's)? Use --dir ~/.local/bin.

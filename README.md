@@ -8,16 +8,19 @@ migrations, running the local stack — goes through it.
 w17ctl <command> --help     # context-sensitive help for any command
 ```
 
-**Status: alpha (v0).** Any release may carry a breaking fix; stay current
-with `w17ctl update` (the binary) and `w17ctl update --all` (the project's
-sdk/go, codegen version and plugins too).
+**Status: closed beta (v0.1).** Patch releases (0.1.x) carry fixes only; new
+features arrive in the next minor (0.2). Stay current with `w17ctl update` (the
+binary) and `w17ctl update --all` (the project's sdk/go, codegen version and
+plugins too).
 
 ## Get access
 
 w17 is invitation-only. A w17 operator sends you a personal invitation, which
 creates **your own organization** with you as its owner. Open the invitation
-link (`https://w17.app/invite?token=…`), register at the console, then sign in
-from the terminal with `w17ctl login` (below). After that you can create as
+link (`https://w17.app/invite?token=…`) and register at the console **with the
+email address the invitation was sent to**: the invitation is bound to that
+address (letter case does not matter), and the console refuses it for any
+other. Then sign in from the terminal with `w17ctl login` (below). After that you can create as
 many projects as you like and invite other people into your organization. There
 is no password reset — only a password change while signed in — so keep your
 password and second factor safe. No invitation yet? Ask the person who gave you
@@ -35,17 +38,14 @@ access.
 ## Install
 
 ```sh
-curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre
+curl -fsSL https://get.w17.dev/install.sh | sh
 ```
 
 Installs into `/usr/local/bin`, verifying the download against the release's
 `SHA256SUMS` first — always, with no flag to skip it.
 
-`--pre` is needed **while w17ctl is in release candidates**: `latest` means the
-newest STABLE release, and there is not one yet. Drop it once v0.1.0 ships.
-
 ```sh
-curl -fsSL https://get.w17.dev/install.sh | sh -s -- --pre --dir ~/.local/bin      # no root needed
+curl -fsSL https://get.w17.dev/install.sh | sh -s -- --dir ~/.local/bin      # no root needed
 curl -fsSL https://get.w17.dev/install.sh | sh -s -- --version <tag> --dir ~/.local/bin
 ```
 
@@ -70,9 +70,9 @@ line, and you do not have to know which tag is newest.
 It **invokes the installer above** rather than resolving the release itself,
 which is the point rather than an implementation detail: one place knows which
 release is newest, and that place already verifies the download against
-`SHA256SUMS`. Prereleases are included automatically while your binary is
-itself a prerelease — which is every binary today, since `latest` means the
-newest stable release and there is not one yet. `--stable` opts out,
+`SHA256SUMS`. It installs the newest stable release; prereleases are included
+only while your binary is itself a prerelease (an old `v0.1.0-rc.N`), and
+`--stable` opts out of them,
 `--version <tag>` pins, `--dry-run` only reports what would be installed.
 `--check` reports what is behind — this binary, and inside a project its sdk/go
 and plugins — and `--all` updates all of it. After an update, run
