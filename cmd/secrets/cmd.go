@@ -20,9 +20,9 @@ type Cmd struct {
 	Backend BackendCmd `cmd:"" help:"Set the deploy-boundary materialiser the generated deploy artefacts target: plain (in-process / env_file) | eso (ExternalSecret) | vault | cloud-csi. Re-signs the lock."`
 
 	// An environment's values, held by the console — the only place they live.
-	Set   SetCmd   `cmd:"" help:"Write values of an environment to the console: --env E SERVICE KEY…, each asked for without echo (or dotenv lines on stdin), or --dir DIR for every DIR/<service>.env in one write. Sealed here to a write grant (a code from the project's page, five minutes, one command); read them back with secrets pull."`
+	Set   SetCmd   `cmd:"" help:"Write values of an environment to the console: --env E SERVICE KEY…, each asked for without echo (or dotenv lines on stdin), or --dir DIR for every DIR/<service>.env in one write. Every form merges: the keys written are set, every other key of the environment stays as it was (remove one with secrets unset). Sealed here to a write grant (a code from the project's page, five minutes, one command); read them back with secrets pull."`
 	Unset UnsetCmd `cmd:"" help:"Remove one value of an environment from the console (it is kept, marked removed, and no longer deployed)."`
-	List  ListCmd  `cmd:"" help:"The keys set in an environment on the console — never the values."`
+	List  ListCmd  `cmd:"" help:"The keys of an environment on the console, with no read code: an environment variable with its value, a secret as set or empty — never a secret's value. --check compares them with the stack's declared keys. To learn whether a value is set, use this, not a read code."`
 	Pull  PullCmd  `cmd:"" help:"Read one service's values of an environment back, as dotenv: --env E SERVICE, after a read code from the project's page (your password). They arrive sealed to a key made for this read; --seal-to RECIPIENT keeps what is written encrypted (age)."`
 	Open  OpenCmd  `cmd:"" help:"Decrypt a secrets pull --seal-to file to stdout (the age identity file: --key or $W17_AGE_KEY_FILE)."`
 	Exec  ExecCmd  `cmd:"" help:"Run a command with a secrets pull --seal-to file's values in its environment, writing nothing readable: secrets exec FILE -- CMD…"`

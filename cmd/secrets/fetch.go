@@ -53,14 +53,16 @@ var reServiceName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 // FetchDeployEnv asks the console for the environment's values and checks
 // them against the stack about to run (servicesDir, the rendered
 // deploy/<env>/services): every key a service's .env.example names must be
-// set, and nothing else; and every value passes valuesProblems. Every service
+// set, and every value passes valuesProblems. A value nothing in the stack
+// declares (a key or a service set ahead of the release that brings it) is
+// left out and named in Warnings, or refused when strict. Every service
 // gets a file, so a value unset on the console leaves the target with it too.
 //
 // The fetch is a machine account's (the console refuses a person): W17_TOKEN
 // names the environment's deploy bot, given Deploy access to the environment
 // on the project's page. ref, the commit being deployed, is recorded with the
 // fetch.
-func FetchDeployEnv(lockPath, console, env, servicesDir, ref string) (*DeployEnv, error) {
+func FetchDeployEnv(lockPath, console, env, servicesDir, ref string, strict bool) (*DeployEnv, error) {
 	lk, err := lockfile.Load(lockPath)
 	if err != nil {
 		return nil, err
@@ -92,7 +94,7 @@ func FetchDeployEnv(lockPath, console, env, servicesDir, ref string) (*DeployEnv
 	if err != nil {
 		return nil, err
 	}
-	return buildDeployEnvWith(env, expected, set, resp.GetServices())
+	return buildDeployEnvWith(env, expected, set, resp.GetServices(), strict)
 }
 
 // ReadDeployEnv is FetchDeployEnv for a person: the values are read under a
@@ -100,7 +102,7 @@ func FetchDeployEnv(lockPath, console, env, servicesDir, ref string) (*DeployEnv
 // code, every service), each sealed to a key pair made for this one read, and
 // checked against the stack the same way. ref is not recorded: a read is the
 // reader's, not a deploy's.
-func ReadDeployEnv(lockPath, console, env, servicesDir, _ string) (*DeployEnv, error) {
+func ReadDeployEnv(lockPath, console, env, servicesDir, _ string, strict bool) (*DeployEnv, error) {
 	lk, err := lockfile.Load(lockPath)
 	if err != nil {
 		return nil, err
@@ -132,7 +134,7 @@ func ReadDeployEnv(lockPath, console, env, servicesDir, _ string) (*DeployEnv, e
 	if err != nil {
 		return nil, err
 	}
-	return buildDeployEnvWith(env, expected, set, services)
+	return buildDeployEnvWith(env, expected, set, services, strict)
 }
 
 // expectedKeys reads the keys each service of the stack declares in its
@@ -196,7 +198,7 @@ func deploySetKeys(servicesDir string) (map[string]map[string]bool, error) {
 // buildDeployEnv is buildDeployEnvWith for a stack whose compose sets no key
 // of its own.
 func buildDeployEnv(env string, expected map[string][]string, services []*secretspb.ServiceSecrets) (*DeployEnv, error) {
-	return buildDeployEnvWith(env, expected, nil, services)
+	return buildDeployEnvWith(env, expected, nil, services, true)
 }
 
 // buildDeployEnvWith checks the fetched values against the declared keys and
@@ -205,7 +207,22 @@ func buildDeployEnv(env string, expected map[string][]string, services []*secret
 // it never reached the service, so a deploy is no reason to stop over it —
 // which is what it was when a release of the stack took a key over that the
 // console already held.
-func buildDeployEnvWith(env string, expected map[string][]string, deploySet map[string]map[string]bool, services []*secretspb.ServiceSecrets) (*DeployEnv, error) {
+//
+// A value the stack does not declare at all — a key no .env.example names, or
+// a whole service the stack has none of — is left out the same way, and named
+// in Warnings: it is what a value set AHEAD of the release that declares it
+// looks like, and one environment serves every branch, so refusing it broke
+// the deploy of the release before. A key too many reaches
+// no service; a key missing is what a deploy must stop on. strict (`--strict`)
+// refuses it as before.
+func buildDeployEnvWith(env string, expected map[string][]string, deploySet map[string]map[string]bool, services []*secretspb.ServiceSecrets, strict bool) (*DeployEnv, error) {
+	undeclared := func(msg string) []string {
+		if strict {
+			return []string{msg}
+		}
+		return nil
+	}
+	var out = &DeployEnv{}
 	got := map[string][]*secretspb.SecretValue{}
 	var problems []string
 	for _, s := range services {
@@ -213,7 +230,11 @@ func buildDeployEnvWith(env string, expected map[string][]string, deploySet map[
 			return nil, fmt.Errorf("the console answered a service named %q, which is no service name", s.GetService())
 		}
 		if _, ok := expected[s.GetService()]; !ok {
-			problems = append(problems, fmt.Sprintf("%s: the console holds values for it, and the stack has no such service (`w17ctl secrets unset --env %s %s KEY`)", s.GetService(), env, s.GetService()))
+			msg := fmt.Sprintf("%s: the console holds values for it, and the stack has no such service (`w17ctl secrets unset --env %s %s KEY`)", s.GetService(), env, s.GetService())
+			problems = append(problems, undeclared(msg)...)
+			if !strict {
+				out.Warnings = append(out.Warnings, msg+" — not delivered")
+			}
 			continue
 		}
 		got[s.GetService()] = s.GetValues()
@@ -223,12 +244,23 @@ func buildDeployEnvWith(env string, expected map[string][]string, deploySet map[
 		names = append(names, svc)
 	}
 	sort.Strings(names)
-	out := &DeployEnv{}
 	values := map[string]map[string]string{}
 	missing := false
 	for _, svc := range names {
+		declared := map[string]bool{}
+		for _, k := range expected[svc] {
+			declared[k] = true
+		}
 		var kept []*secretspb.SecretValue
 		for _, v := range got[svc] {
+			if !declared[v.GetKey()] && !deploySet[svc][v.GetKey()] {
+				msg := fmt.Sprintf("%s: %s is set on the console and %s's .env.example does not declare it (`w17ctl secrets unset --env %s %s %s`)", svc, v.GetKey(), svc, env, svc, v.GetKey())
+				problems = append(problems, undeclared(msg)...)
+				if !strict {
+					out.Warnings = append(out.Warnings, msg+" — not delivered")
+				}
+				continue
+			}
 			if deploySet[svc][v.GetKey()] {
 				out.Warnings = append(out.Warnings, fmt.Sprintf("%s: %s is set on the console, and the deploy sets it itself — the console's value is not used (`w17ctl secrets unset --env %s %s %s`)", svc, v.GetKey(), env, svc, v.GetKey()))
 				continue
@@ -242,17 +274,10 @@ func buildDeployEnvWith(env string, expected map[string][]string, deploySet map[
 			have[v.GetKey()] = true
 			values[svc][v.GetKey()] = v.GetValue()
 		}
-		declared := map[string]bool{}
 		for _, k := range expected[svc] {
-			declared[k] = true
 			if !have[k] {
 				missing = true
 				problems = append(problems, fmt.Sprintf("%s: %s is not set (`w17ctl secrets set --env %s %s %s`)", svc, k, env, svc, k))
-			}
-		}
-		for _, v := range got[svc] {
-			if !declared[v.GetKey()] {
-				problems = append(problems, fmt.Sprintf("%s: %s is set on the console and %s's .env.example does not declare it (`w17ctl secrets unset --env %s %s %s`)", svc, v.GetKey(), svc, env, svc, v.GetKey()))
 			}
 		}
 		out.Files = append(out.Files, DeployEnvFile{Service: svc, Body: EnvFile(got[svc]), Values: values[svc]})
@@ -329,6 +354,7 @@ type FetchCmd struct {
 	Read     bool   `name:"read" help:"Read the values as yourself, with a read code (the project's page → Create read code, or $W17_SECRETS_CODE), instead of as a deploy bot — a deploy from your own machine with no bot."`
 	Out      string `name:"out" short:"o" placeholder:"DIR" help:"Directory to write <service>.env (mode 0600) into."`
 	Check    bool   `name:"check" help:"Check the console's values against the stack and write nothing: what a deploy would refuse, refused now. Prints no value."`
+	Strict   bool   `name:"strict" help:"Refuse a value the stack does not declare (a key no .env.example names, a service the stack has none of) instead of leaving it out with a warning. A value set ahead of the release that declares it is then refused until that release."`
 	JSON     bool   `name:"json" help:"Write <service>.json (one flat object of the values) instead — the cloud deploy scripts' form."`
 	Ref      string `name:"ref" env:"GITHUB_SHA" help:"The commit being deployed, recorded with the fetch."`
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file (the project the values belong to)."`
@@ -348,7 +374,7 @@ func (c *FetchCmd) Run() error {
 	if c.Out == "" && !c.Check {
 		return fmt.Errorf("secrets fetch: name a directory to write the values into (--out DIR), or --check to only check them")
 	}
-	env, err := fetch(c.LockPath, c.Console, c.Env, servicesDir, c.Ref)
+	env, err := fetch(c.LockPath, c.Console, c.Env, servicesDir, c.Ref, c.Strict)
 	if err != nil {
 		return fmt.Errorf("secrets fetch: %w", err)
 	}

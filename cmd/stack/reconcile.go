@@ -2,6 +2,7 @@ package stack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -430,8 +431,27 @@ const declaredRolesFixture = "acl-roles.json"
 // the behaviour they have: their seeds are upserts, and re-applying them on
 // every build would reset rows a developer had edited between builds. Roles
 // carry no such expectation — they are regenerated from the proto anyway.
+//
+// It says what it applied and what it did not. It used to log "reconcile:
+// seeded 9 fixture row(s)" — the roles' statements — after a build whose data
+// fixtures it never applies, so a project whose `fixtures apply` was failing
+// read a green build that claimed its fixtures were seeded.
 func seedDeclaredRoles(ctx context.Context, root string, schemaBytes []byte, specs []factory.TargetSpec, console string, logf func(string, ...any)) error {
-	return seedFixturesFiltered(ctx, root, schemaBytes, specs, console, logf, isDeclaredRolesSeed)
+	n, err := seedFixturesFiltered(ctx, root, schemaBytes, specs, console, logf, isDeclaredRolesSeed)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		logf("%s", declaredRolesLine(n))
+	}
+	return nil
+}
+
+// declaredRolesLine is what a build says after applying the declared roles:
+// which file, how many statements, and that the data fixtures were NOT
+// applied — with the command that applies them.
+func declaredRolesLine(statements int) string {
+	return fmt.Sprintf("stack build: applied the declared roles (%s, %d statement(s)); data fixtures are seeded only by a fresh build — apply them with `w17ctl fixtures apply`", declaredRolesFixture, statements)
 }
 
 // isDeclaredRolesSeed is THE predicate — named so the test can call it rather
@@ -443,10 +463,19 @@ func isDeclaredRolesSeed(s fixtureSeed) bool {
 }
 
 func seedFixtures(ctx context.Context, root string, schemaBytes []byte, specs []factory.TargetSpec, console string, logf func(string, ...any)) error {
-	return seedFixturesFiltered(ctx, root, schemaBytes, specs, console, logf, nil)
+	n, err := seedFixturesFiltered(ctx, root, schemaBytes, specs, console, logf, nil)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		logf("reconcile: seeded %d fixture statement(s)", n)
+	}
+	return nil
 }
 
-func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, specs []factory.TargetSpec, console string, logf func(string, ...any), keep func(fixtureSeed) bool) error {
+// seedFixturesFiltered applies the seeds keep admits and returns how many
+// statements it applied; the caller says what they were.
+func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, specs []factory.TargetSpec, console string, logf func(string, ...any), keep func(fixtureSeed) bool) (int, error) {
 	fixturesDir := filepath.Join(root, "fixtures")
 	seeds, err := collectFixtureSeeds(fixturesDir)
 	if keep != nil && err == nil {
@@ -459,15 +488,15 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 		seeds = filtered
 	}
 	if err != nil {
-		return fmt.Errorf("seed fixtures: %w", err)
+		return 0, fmt.Errorf("seed fixtures: %w", err)
 	}
 	if len(seeds) == 0 {
-		return nil // no fixtures to seed (incl. a missing fixtures/ dir)
+		return 0, nil // no fixtures to seed (incl. a missing fixtures/ dir)
 	}
 	pgDSN := firstPostgresDSN(specs)
 	if pgDSN == "" {
 		logf("reconcile: no postgres store among targets — skipping fixtures (PG-only)")
-		return nil
+		return 0, nil
 	}
 
 	// Connect the FIRST local store first (the dev-side thing most likely
@@ -476,7 +505,7 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 	// with no fixtures should not need it reachable.
 	conn, err := connectPrintingWarnings(ctx, pgDSN)
 	if err != nil {
-		return fmt.Errorf("seed fixtures: dial postgres: %w", err)
+		return 0, fmt.Errorf("seed fixtures: dial postgres: %w", err)
 	}
 	defer func() { _ = conn.Close(ctx) }()
 
@@ -509,15 +538,20 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 
 	addr, err := core.ResolveConsoleAddr(console)
 	if err != nil {
-		return fmt.Errorf("seed fixtures: %w", err)
+		return 0, fmt.Errorf("seed fixtures: %w", err)
 	}
 	cl, fconn, err := core.DialFixtureFetch(addr)
 	if err != nil {
-		return fmt.Errorf("seed fixtures: connect %s: %w", addr, err)
+		return 0, fmt.Errorf("seed fixtures: connect %s: %w", addr, err)
 	}
 	defer func() { _ = fconn.Close() }()
 
-	rows := 0
+	// Rendered per fixture, applied per STORE: each store's statements in one
+	// transaction, a fixture at a time, retrying one whose rows reference a
+	// fixture that sorts after it (migrate.ExecSeedFiles). Applied file by
+	// file, `org-hosts` failed on the organization `situm-org` creates.
+	byDSN := map[string][]migrate.SeedStmt{}
+	var dsnOrder []string
 	for _, s := range seeds {
 		if !localSeedGroups[s.group] {
 			// On-demand group (e.g. `demo`) — not auto-seeded by `stack up`.
@@ -530,7 +564,7 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 		}
 		body, err := os.ReadFile(s.path)
 		if err != nil {
-			return fmt.Errorf("seed fixtures %s/%s: %w", s.domain, disp, err)
+			return 0, fmt.Errorf("seed fixtures %s/%s: %w", s.domain, disp, err)
 		}
 		// Render server-side: the console filters the schema to the domain
 		// (empty → no statements, so a domain not in the current schema is
@@ -541,7 +575,7 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 			Json:   body,
 		})
 		if err != nil {
-			return fmt.Errorf("seed fixtures %s/%s: render: %w", s.domain, disp, err)
+			return 0, fmt.Errorf("seed fixtures %s/%s: render: %w", s.domain, disp, err)
 		}
 		stmts := resp.GetStatements()
 		if len(stmts) == 0 {
@@ -563,27 +597,44 @@ func seedFixturesFiltered(ctx context.Context, root string, schemaBytes []byte, 
 		default:
 			d, rerr := seedTargetDSN(target, dsnByConn)
 			if rerr != nil {
-				return fmt.Errorf("seed fixtures %s/%s: %w", s.domain, disp, rerr)
+				return 0, fmt.Errorf("seed fixtures %s/%s: %w", s.domain, disp, rerr)
 			}
 			dsn = d
 		}
-		c, ok := open[dsn]
-		if !ok {
-			c, err = connectPrintingWarnings(ctx, dsn)
+		if _, ok := open[dsn]; !ok {
+			c, err := connectPrintingWarnings(ctx, dsn)
 			if err != nil {
-				return fmt.Errorf("seed fixtures %s/%s: dial %s: %w", s.domain, disp, target, err)
+				return 0, fmt.Errorf("seed fixtures %s/%s: dial %s: %w", s.domain, disp, target, err)
 			}
 			open[dsn] = c
 		}
-		if err := applySeedStmts(ctx, c, stmts); err != nil {
-			return fmt.Errorf("seed fixtures %s/%s: apply: %w", s.domain, disp, err)
+		if _, seen := byDSN[dsn]; !seen {
+			dsnOrder = append(dsnOrder, dsn)
 		}
-		rows += len(stmts)
+		byDSN[dsn] = append(byDSN[dsn], seedStmts(s.domain+"/"+disp, stmts)...)
 	}
-	if rows > 0 {
-		logf("reconcile: seeded %d fixture row(s)", rows)
+	rows := 0
+	for _, dsn := range dsnOrder {
+		if err := applySeedStmts(ctx, open[dsn], byDSN[dsn]); err != nil {
+			return 0, fmt.Errorf("seed fixtures: apply: %w", err)
+		}
+		rows += len(byDSN[dsn])
 	}
-	return nil
+	return rows, nil
+}
+
+// seedStmts turns one rendered fixture's statements into the seed's, marked
+// with the fixture they came from.
+func seedStmts(file string, stmts []*applyfetchpb.SeedStmt) []migrate.SeedStmt {
+	out := make([]migrate.SeedStmt, 0, len(stmts))
+	for _, st := range stmts {
+		args := make([]any, len(st.GetArgs()))
+		for j, a := range st.GetArgs() {
+			args[j] = a.AsInterface()
+		}
+		out = append(out, migrate.SeedStmt{SQL: st.GetSql(), Args: args, File: file})
+	}
+	return out
 }
 
 // localSeedGroups are the fixture groups `stack up` seeds into the local dev
@@ -650,22 +701,31 @@ func collectFixtureSeeds(fixturesDir string) ([]fixtureSeed, error) {
 
 // applySeedStmts runs every rendered SeedStmt in ONE transaction, args bound as
 // PARAMETERS ($1..$N the server already wrote) — never interpolated into SQL.
-func applySeedStmts(ctx context.Context, conn *pgx.Conn, stmts []*applyfetchpb.SeedStmt) error {
+func applySeedStmts(ctx context.Context, conn *pgx.Conn, stmts []migrate.SeedStmt) error {
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
-	for _, st := range stmts {
-		args := make([]any, len(st.GetArgs()))
-		for j, a := range st.GetArgs() {
-			args[j] = a.AsInterface()
-		}
-		if _, err := tx.Exec(ctx, st.GetSql(), args...); err != nil {
-			_ = tx.Rollback(ctx)
-			return err
-		}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := migrate.ExecSeedFiles(ctx, seedTx{tx}, stmts, isForeignKeyViolation); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// seedTx adapts a pgx transaction to migrate.SeedTx.
+type seedTx struct{ tx pgx.Tx }
+
+func (t seedTx) Exec(ctx context.Context, sql string, args ...any) error {
+	_, err := t.tx.Exec(ctx, sql, args...)
+	return err
+}
+
+// isForeignKeyViolation reports SQLSTATE 23503: a row pointing at one not
+// there yet, which the seed retries after its other fixtures.
+func isForeignKeyViolation(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "23503"
 }
 
 // firstPostgresDSN returns the DSN of the first postgres target (the

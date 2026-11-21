@@ -164,6 +164,12 @@ func RunOpts(stdout io.Writer, root, version string, opts Options) (string, erro
 	fmt.Fprintf(stdout, "  go.sum hashes computed from the module proxy.\n")
 	if opts.Tidy {
 		tidyModules(stdout, root, mods)
+		// The modules that reach the SDK only through a vendored plugin tree
+		// (a worker importing the cluster plugin's library): the new SDK can
+		// change what that tree needs, and nothing above touched their go.sum.
+		if deps := without(pluginDependents(root, pluginTrees(root)), mods); len(deps) > 0 {
+			tidyModules(stdout, root, deps)
+		}
 	}
 	return version, nil
 }

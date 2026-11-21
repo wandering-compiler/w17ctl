@@ -74,9 +74,9 @@ type SetCmd struct {
 	consoleFlags
 	Plain      bool     `name:"plain" help:"Write environment VARIABLES (shown back in the console: a domain, a port), not secrets. Only these may be given as KEY=value."`
 	AllowEmpty bool     `name:"allow-empty" help:"Accept an empty value (refused otherwise: it is how a mistyped pipe blanks a production value)."`
-	Dir        string   `name:"dir" placeholder:"DIR" help:"Write every DIR/<service>.env (dotenv lines) in one write, under one code — what secrets fetch writes, or a whole environment moved from elsewhere. Takes no SERVICE or KEY."`
+	Dir        string   `name:"dir" placeholder:"DIR" help:"Write every DIR/<service>.env (dotenv lines) in one write, under one code — what secrets fetch writes, or a whole environment moved from elsewhere. Merges: a key the files leave out keeps its value. Takes no SERVICE or KEY."`
 	Service    string   `arg:"" optional:"" help:"The stack service the values are for (its <service>.env on the target)."`
-	Keys       []string `arg:"" optional:"" help:"The env var names, each asked for without echo (or KEY=value with --plain). None: dotenv lines KEY=value from stdin."`
+	Keys       []string `arg:"" optional:"" help:"The env var names, each asked for without echo (or KEY=value with --plain). None: dotenv lines KEY=value from stdin, which set only those keys (the service's other keys stay)."`
 }
 
 // maxSecretValue is the console's bound on a value (SetSecretReq.value).
@@ -218,7 +218,7 @@ func gatherValues(service string, keys []string, plain, allowEmpty bool, stdin i
 			continue
 		}
 		if !stdinTTY {
-			return nil, fmt.Errorf("%s has no value: with no terminal, give the values as dotenv lines on stdin and name no keys", k)
+			return nil, fmt.Errorf("%s has no value: with no terminal, pipe the values as dotenv lines on stdin and name no keys (`printf '%s=…\\n' | w17ctl secrets set --env <env> %s`) — that sets only the keys on stdin, the service's other keys stay", k, k, service)
 		}
 		v, err := ask(service + "/" + k)
 		if err != nil {
@@ -346,8 +346,14 @@ func (c *UnsetCmd) Run() error {
 // ListCmd is `w17ctl secrets list --env E`: the keys set, never the values.
 type ListCmd struct {
 	consoleFlags
+	Check bool `name:"check" help:"Compare the keys with the stack this commit renders (deploy/<env>/services/*/.env.example), reading no value: a declared key not set fails the command; empty values and keys the stack does not declare are named. Needs no read code — what a deploy fetch would also check about the values themselves (placeholders, passwords that must agree) stays with secrets fetch --check."`
 }
 
+// Run lists the environment's keys with no read code: an environment
+// variable with its value, a secret as `set` or `empty` — whether a value is
+// empty is stored with it, so nothing is decrypted for it. What an agent asks
+// a read code for ("is it set yet?") is answered here, and no secret value
+// passes through its context.
 func (c *ListCmd) Run() error {
 	project, err := c.project()
 	if err != nil {
@@ -364,6 +370,9 @@ func (c *ListCmd) Run() error {
 	if err != nil {
 		return fmt.Errorf("secrets list: %w", err)
 	}
+	if c.Check {
+		return c.check(resp.GetKeys())
+	}
 	if len(resp.GetKeys()) == 0 {
 		fmt.Fprintf(core.Stdout, "no values set in %s\n", c.Env)
 		return nil
@@ -373,9 +382,102 @@ func (c *ListCmd) Run() error {
 		if t := k.GetUpdatedAt(); t != nil {
 			at = t.AsTime().UTC().Format("2006-01-02 15:04 UTC")
 		}
-		fmt.Fprintf(core.Stdout, "%s/%s\t%s\n", k.GetService(), k.GetKey(), at)
+		fmt.Fprintf(core.Stdout, "%s/%s\t%s\t%s\n", k.GetService(), k.GetKey(), listedState(k), at)
 	}
 	return nil
+}
+
+// listedState is what a listing says of one value: a secret is `secret set`
+// or `secret empty`, never its value; an environment variable shows its value
+// (it is not secret — that is what --plain declared).
+func listedState(k *secretspb.SecretKey) string {
+	switch {
+	case k.GetPlain() && k.GetEmpty():
+		return "variable empty"
+	case k.GetPlain():
+		return "variable =" + k.GetValue()
+	case k.GetEmpty():
+		return "secret empty"
+	default:
+		return "secret set"
+	}
+}
+
+func (c *ListCmd) check(keys []*secretspb.SecretKey) error {
+	abs, err := filepath.Abs(c.LockPath)
+	if err != nil {
+		return err
+	}
+	servicesDir := filepath.Join(filepath.Dir(filepath.Dir(abs)), "deploy", c.Env, "services")
+	expected, err := expectedKeys(servicesDir)
+	if err != nil {
+		return fmt.Errorf("secrets list: %w", err)
+	}
+	set, err := deploySetKeys(servicesDir)
+	if err != nil {
+		return fmt.Errorf("secrets list: %w", err)
+	}
+	r := checkKeys(c.Env, expected, set, keys)
+	for _, n := range r.notes {
+		fmt.Fprintf(core.Stdout, "%s\n", n)
+	}
+	if len(r.missing) > 0 {
+		return fmt.Errorf("secrets list: %d declared key(s) of %s not set:\n  %s", len(r.missing), c.Env, strings.Join(r.missing, "\n  "))
+	}
+	fmt.Fprintf(core.Stdout, "secrets list: every key the stack declares is set in %s (%d empty)\n", c.Env, r.empty)
+	return nil
+}
+
+// keyCheck is checkKeys' answer: the declared keys not set (what fails a
+// deploy), and lines that name the rest — empty values, keys the stack does
+// not declare, keys the deploy sets itself.
+type keyCheck struct {
+	missing []string
+	notes   []string
+	empty   int
+}
+
+// checkKeys compares the console's keys with the stack's declared ones the
+// way buildDeployEnvWith does, from keys alone.
+func checkKeys(env string, expected map[string][]string, deploySet map[string]map[string]bool, keys []*secretspb.SecretKey) keyCheck {
+	have := map[string]*secretspb.SecretKey{}
+	for _, k := range keys {
+		have[k.GetService()+"/"+k.GetKey()] = k
+	}
+	var r keyCheck
+	services := make([]string, 0, len(expected))
+	for svc := range expected {
+		services = append(services, svc)
+	}
+	sort.Strings(services)
+	for _, svc := range services {
+		for _, k := range expected[svc] {
+			got := have[svc+"/"+k]
+			switch {
+			case got == nil:
+				r.missing = append(r.missing, fmt.Sprintf("%s/%s (`w17ctl secrets set --env %s %s %s`)", svc, k, env, svc, k))
+			case got.GetEmpty():
+				r.empty++
+				r.notes = append(r.notes, fmt.Sprintf("%s/%s is empty", svc, k))
+			}
+		}
+	}
+	declared := map[string]bool{}
+	for svc, ks := range expected {
+		for _, k := range ks {
+			declared[svc+"/"+k] = true
+		}
+	}
+	for _, k := range keys {
+		addr := k.GetService() + "/" + k.GetKey()
+		switch {
+		case deploySet[k.GetService()][k.GetKey()]:
+			r.notes = append(r.notes, addr+" is set on the console, and the deploy sets it itself — the console's value is not used")
+		case !declared[addr]:
+			r.notes = append(r.notes, addr+" is set on the console and the stack does not declare it — a deploy leaves it out")
+		}
+	}
+	return r
 }
 
 // envUnquote is a dotenv line's value as the server's bash reads it: one pair

@@ -83,8 +83,8 @@ func tidyModules(stdout io.Writer, root string, mods []string) {
 	}
 	if len(unrun) > 0 {
 		fmt.Fprintf(stdout,
-			"sdk update: no Go toolchain of the module's version and no docker here, so these were not tidied: %s\n"+
-				"  why: a module the new SDK needs that the project does not list yet is added by `go mod tidy`, which reads the imports\n"+
+			"no Go toolchain of the module's version and no docker here, so these were not tidied: %s\n"+
+				"  why: a module the new SDK or plugin tree needs that the project does not list yet is added by `go mod tidy`, which reads the imports\n"+
 				"  fix: run `go mod tidy` in each, with the Go version its go.mod declares\n",
 			strings.Join(unrun, ", "))
 	}

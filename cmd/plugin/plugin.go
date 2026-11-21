@@ -16,6 +16,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	"github.com/wandering-compiler/w17ctl/internal/pluginfetch"
+	"github.com/wandering-compiler/w17ctl/internal/sdkupdate"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 )
 
@@ -735,6 +736,7 @@ type UpdateCmd struct {
 	To      string `name:"to" placeholder:"vX.Y.Z" help:"For a git-sourced plugin: the release to move to. Omitted, the highest published one is used (release candidates included). Refused with --all, which spans plugins whose version lines are independent."`
 	From    string `name:"from" placeholder:"DIR" help:"Take the plugin again from a plugin tree on disk (the directory holding plugin.yaml) instead of a release — the loop for testing a tree before it is tagged. Records source: local. One plugin at a time; refused with --all and --to."`
 	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default. Serves the plugin catalogue + validates the manifest."`
+	NoTidy  bool   `name:"no-tidy" help:"Skip the closing go mod tidy of the project's modules that build against a plugin tree through a replace (a local go of the module's version, or docker)."`
 }
 
 func (c *UpdateCmd) Run() error {
@@ -960,6 +962,13 @@ func (c *UpdateCmd) Run() error {
 		}
 	}
 	fmt.Fprintln(core.Stdout, "plugin update: lock re-signed")
+	// A module of the project that builds against a plugin's library through
+	// a `replace` into the tree (a worker using the cluster plugin) has not
+	// seen the new tree's imports yet: tidy it, or its standalone build fails
+	// on a go.sum entry the new tree needs.
+	if !c.NoTidy {
+		sdkupdate.TidyPluginDependents(core.Stdout, root)
+	}
 	return nil
 }
 
