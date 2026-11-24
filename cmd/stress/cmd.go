@@ -14,6 +14,7 @@ import (
 // preset's stress.yaml plan); for a series, loop in the shell over targets.
 type Cmd struct {
 	Target      string `arg:"" name:"target" placeholder:"URL" help:"REST base URL of the deployed gateway to load, e.g. http://localhost:8080 (or a staging URL) — required."`
+	RPC         string `name:"rpc" placeholder:"HOST:PORT" help:"The gateway's RPC (gRPC) listener, for presets whose stress.yaml says transport: rpc."`
 	Preset      string `name:"preset" short:"p" help:"Run only this stress preset (empty = every preset). Combine with --domain if the same preset name exists in more than one domain."`
 	Domain      string `name:"domain" help:"Scope --preset to this domain; alone, run every preset in the domain (empty = any/all)."`
 	Concurrency int    `name:"concurrency" short:"c" help:"Override every preset's worker count (0 = use each plan's value)."`
@@ -32,6 +33,7 @@ var runStress = func(s *testsuite.Stress) error { return s.Run() }
 func (c *Cmd) Run() error {
 	return runStress(&testsuite.Stress{
 		Target:      c.Target,
+		RPC:         c.RPC,
 		Preset:      c.Preset,
 		Domain:      c.Domain,
 		Concurrency: c.Concurrency,

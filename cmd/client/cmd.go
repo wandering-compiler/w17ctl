@@ -27,7 +27,7 @@ import (
 
 // Cmd is `w17ctl client`.
 type Cmd struct {
-	Generate GenerateCmd `cmd:"" help:"Generate a client of a third-party REST API from its OpenAPI document, or of a SOAP service from its WSDL (a URL or a file): 'client generate <url|path> --endpoint \"GET /users/{id}\" --operation createUser'. Writes proto/clients/<name>/ — the proto, client.yaml and the document — signed by the console. No selector = every operation."`
+	Generate GenerateCmd `cmd:"" help:"Generate a client of a third-party REST API from its OpenAPI document, or of a SOAP service from its WSDL (a URL or a file): 'client generate <url|path> --endpoint \"GET /users/{id}\" --operation createUser'. Writes proto/clients/<name>/ — the proto, client.yaml and the document — signed by the console. No selector = every operation. 'client generate --mail' declares a mail client instead (SMTP or a mail API, no document)."`
 	Update   UpdateCmd   `cmd:"" help:"Regenerate a client from its source: re-fetch the document, regenerate with the recorded selection (or new --endpoint/--operation), and report what changed."`
 	List     ListCmd     `cmd:"" help:"List the project's clients: name, source, selection."`
 	Remove   RemoveCmd   `cmd:"" help:"Delete a client's directory (proto/clients/<name>/)."`
@@ -43,6 +43,11 @@ type config struct {
 	Endpoints  []string `yaml:"endpoints"`
 	Operations []string `yaml:"operations"`
 	Idempotent []string `yaml:"idempotent"`
+	// PerCallCredential / PerCallDestination: the client takes its
+	// credential / destination with each call.
+	PerCallCredential  bool `yaml:"per_call_credential"`
+	PerCallDestination bool `yaml:"per_call_destination"`
+	Mail               bool `yaml:"mail"`
 }
 
 const configFile = "client.yaml"
@@ -130,6 +135,10 @@ func (c *ListCmd) Run() error {
 		cfg, err := p.readConfig(n)
 		if err != nil {
 			return err
+		}
+		if cfg.Mail {
+			fmt.Fprintf(core.Stdout, "%-20s mail (Send)\n", n)
+			continue
 		}
 		sel := "every operation"
 		if k := len(cfg.Endpoints) + len(cfg.Operations); k > 0 {

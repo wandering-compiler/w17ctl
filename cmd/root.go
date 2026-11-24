@@ -30,6 +30,7 @@ import (
 	envcmd "github.com/wandering-compiler/w17ctl/cmd/env"
 	fixturescmd "github.com/wandering-compiler/w17ctl/cmd/fixtures"
 	guidecmd "github.com/wandering-compiler/w17ctl/cmd/guide"
+	i18ncmd "github.com/wandering-compiler/w17ctl/cmd/i18n"
 	infracmd "github.com/wandering-compiler/w17ctl/cmd/infra"
 	initcmd "github.com/wandering-compiler/w17ctl/cmd/init"
 	initiativecmd "github.com/wandering-compiler/w17ctl/cmd/initiative"
@@ -39,11 +40,13 @@ import (
 	migratecmd "github.com/wandering-compiler/w17ctl/cmd/migrate"
 	modulecmd "github.com/wandering-compiler/w17ctl/cmd/module"
 	orgcmd "github.com/wandering-compiler/w17ctl/cmd/org"
+	pentestcmd "github.com/wandering-compiler/w17ctl/cmd/pentest"
 	plugincmd "github.com/wandering-compiler/w17ctl/cmd/plugin"
 	projectcmd "github.com/wandering-compiler/w17ctl/cmd/project"
 	pushcmd "github.com/wandering-compiler/w17ctl/cmd/push"
 	reportcmd "github.com/wandering-compiler/w17ctl/cmd/report"
 	reviewcmd "github.com/wandering-compiler/w17ctl/cmd/review"
+	roadmapcmd "github.com/wandering-compiler/w17ctl/cmd/roadmap"
 	sdkcmd "github.com/wandering-compiler/w17ctl/cmd/sdk"
 	secrets "github.com/wandering-compiler/w17ctl/cmd/secrets"
 	stackcmd "github.com/wandering-compiler/w17ctl/cmd/stack"
@@ -153,7 +156,10 @@ var root struct {
 	Certs          certs.Cmd             `cmd:"" help:"Fill a directory with a local dev PKI (self-signed CA + CA-signed server leaf) for the internal-mesh TLS switch (W17_INTERNAL_TLS=on). Idempotent — never overwrites existing files. init seeds w17/certs/dev.local/ automatically; use this to refill or to scaffold a prod cert dir's missing material."`
 
 	// --- Issue reports ---
-	Report reportcmd.Cmd `cmd:"" help:"Tell w17 what is wrong, missing or unclear — a security issue, a bug, a docs gap, a feature request — and follow what happens to it. Kept and triaged by the console; you are mailed when it ships, or when triage makes it later than you expect."`
+	I18n    i18ncmd.Cmd    `cmd:"" name:"i18n" help:"The translation catalogs: what is translated, what waits for review (fuzzy), what is left."`
+	Pentest pentestcmd.Cmd `cmd:"" help:"Probe a deployed, non-production gateway for the security properties the project's model promises (authentication, link credentials, error bodies, security headers). Exits non-zero on a violated control."`
+	Roadmap roadmapcmd.Cmd `cmd:"" help:"w17's roadmap: the features each release is to bring — planned, in progress, shipped. --release narrows it to one."`
+	Report  reportcmd.Cmd  `cmd:"" help:"Tell w17 what is wrong, missing or unclear — a security issue, a bug, a docs gap, a feature request — and follow what happens to it. Kept and triaged by the console; you are mailed when it ships, or when triage makes it later than you expect."`
 
 	// --- Testing ---
 	Test   testcmd.Cmd   `cmd:"" help:"Run the generated e2e suite against a throwaway stack of its own: brings the project's compose up (unique project name, dynamic host ports), syncs the stores, runs the suite as an external HTTP/MCP client, then removes it (--keep leaves it running)."`

@@ -57,6 +57,7 @@ type BuildCmd struct {
 	NoSnapshot      bool     `name:"no-snapshot" help:"On a branch switch, do NOT snapshot the outgoing branch. ⛔ DESTRUCTIVE: with no snapshot to restore, the stores are WIPED and rebuilt from empty, so what is in them RIGHT NOW is lost too — not just the outgoing branch's history. Use it when the stores are empty or you do not want their contents."`
 	CacheCap        string   `name:"cache-cap" placeholder:"SIZE" env:"W17_CACHE_CAP" help:"Ceiling for THIS project's build cache (default 1GB). Set W17_CACHE_CAP on the machine to change it for EVERY project at once — the only level that bounds a DISK rather than a project, since twenty workspaces times any per-project number is a product and not a limit. The default is deliberately BELOW one build's worth (measured: 1.6GB of records per build on a clean checkout), so expect a cold Go compile; raise it when one project needs a warm loop and the disk can afford it. The project builds on its own buildx builder, so the cap touches no other project's cache. ⚠️ A builder that ALREADY exists keeps the GC policy it was created with — the explicit prune after each build uses this value, but the baked ceiling only changes when the builder is removed (docker buildx rm w17-<project>)."`
 	NoReclaim       bool     `name:"no-reclaim" help:"Keep the untagged images this build orphans. By default a local build removes them — scoped to THIS compose project by label, never the daemon's other projects — because a rebuild replaces each image's tag and the layers the old tag pointed at are otherwise kept forever. Volumes and the build cache are never touched either way."`
+	CompileOnly     bool     `name:"compile-only" help:"Only check that every generated bundle compiles: each through its own Dockerfile, up to its Go build stage (on the SDK build image the deploy builds on), with nothing exported — no image, no push, no store touched, no schema sync. Every bundle is compiled and the failures are reported together with the compiler's lines. The generated CI runs it before the e2e suite."`
 	NoBuild         bool     `name:"no-build" help:"Skip building images and sync the local database only. The schema sync and the image build are independent steps that happen to share this command; with this flag the sync needs no Docker daemon, no build context and no compose file at all. Use it when you changed a proto and want the database to match."`
 	modeFlags
 
@@ -100,6 +101,10 @@ func (c *BuildCmd) Run() error {
 		if err := runCodegenFn(); err != nil {
 			return fmt.Errorf("stack build: codegen: %w", err)
 		}
+	}
+
+	if c.CompileOnly {
+		return c.compileOnly(root)
 	}
 
 	// Resolve the mode. Remote build pushes the freshly-generated tree to
@@ -246,7 +251,59 @@ func (c *BuildCmd) diffApplyTail(root string, applyWrap func(func() error) error
 		fmt.Fprintln(core.Stdout, "stack build: images built; dev diff-apply skipped (no resolvable local store targets — run 'stack up' first, or pass --target)")
 		return nil
 	}
+	if err := c.refuseStoppedStores(root); err != nil {
+		return err
+	}
 	return applyWrap(func() error { return c.devDiffApply(root, specs, protos, imports) })
+}
+
+// refuseStoppedStores stops a local build whose stores are not running,
+// before anything is quiesced, dumped or wiped.
+//
+// `stack build` never starts a store; `stack up` does (the stores first, with
+// --wait, then this same sync). A build over a stack that was taken down — or
+// deleted, volumes and all — used to reach the branch-switch reconcile anyway.
+// There the snapshot failed for want of a container to dump in, and the
+// refusal said the stores "still hold" the outgoing branch's data, which for a
+// deleted stack is not true; its other way on, --no-snapshot, then failed to
+// wipe a database that was not there to connect to. Neither named the command
+// that works. Without a switch the diff-apply failed on the same connection.
+//
+// Local stacks only, and only the stores the lock names that the compose file
+// declares (UpCmd.storesFirst): a --target build names stores that are not
+// this compose project's, a throwaway stack's stores are its caller's, and a
+// remote stack is not on this daemon. A daemon that cannot answer leaves the
+// build to report what it meets, as before.
+func (c *BuildCmd) refuseStoppedStores(root string) error {
+	if c.cc.listServices != nil || c.ephemeralStores || len(c.Targets) > 0 {
+		return nil
+	}
+	stores := (&UpCmd{}).storesFirst(root, nil)
+	if len(stores) == 0 {
+		return nil
+	}
+	running, err := composeRunningFn(root)
+	if err != nil {
+		return nil
+	}
+	live := make(map[string]bool, len(running))
+	for _, r := range running {
+		live[r] = true
+	}
+	var down []string
+	for _, s := range stores {
+		if !live[s] {
+			down = append(down, s)
+		}
+	}
+	if len(down) == 0 {
+		return nil
+	}
+	return fmt.Errorf("stack build: the store(s) %s are not running, so there is nothing to sync, snapshot or wipe — nothing was changed\n"+
+		"  why: `stack build` builds images and syncs the stores that run; it does not start them\n"+
+		"  fix: `w17ctl stack up` — it starts the stores first and runs this same sync against them (a branch switch is "+
+		"reconciled there; a store whose volume was removed starts empty), then the rest of the stack",
+		strings.Join(down, ", "))
 }
 
 // resolveProtos returns the model protos + import paths for the IR

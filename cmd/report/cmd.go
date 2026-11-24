@@ -75,9 +75,15 @@ type (
 )
 
 func (c *SecurityCmd) Run() error { return c.file(supportpb.IssueReport_SECURITY) }
-func (c *BugCmd) Run() error      { return c.file(supportpb.IssueReport_BUG) }
-func (c *DocsCmd) Run() error     { return c.file(supportpb.IssueReport_DOCS) }
-func (c *FeatureCmd) Run() error  { return c.file(supportpb.IssueReport_FEATURE) }
+
+// FileSecurity files a security report whose body is the file at bodyPath —
+// for a command that has found one (w17ctl pentest --report-to-w17).
+func FileSecurity(title, bodyPath, console string) error {
+	return (&FileCmd{Title: title, BodyFile: bodyPath, Console: console}).file(supportpb.IssueReport_SECURITY)
+}
+func (c *BugCmd) Run() error     { return c.file(supportpb.IssueReport_BUG) }
+func (c *DocsCmd) Run() error    { return c.file(supportpb.IssueReport_DOCS) }
+func (c *FeatureCmd) Run() error { return c.file(supportpb.IssueReport_FEATURE) }
 
 // FileCmd is what filing a report takes, whatever its kind.
 type FileCmd struct {

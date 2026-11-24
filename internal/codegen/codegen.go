@@ -1864,7 +1864,7 @@ func readDepVersions(root, genDir string) (*codegenpb.DepVersions, error) {
 // unset from its OWN embedded manifest (compiler_versions_embed.go), so
 // a standalone w17ctl with no W17_WANDERING_COMPILER_PATH can send empty
 // pins for libraries the project hasn't adopted yet (e.g. a fresh
-// Postgres project with no lib/pq pin) and codegen still succeeds. This
+// Postgres project with no pgx pin) and codegen still succeeds. This
 // client read only lets a project OVERRIDE a tool version it genuinely
 // wants to pin itself; the server's `pick(client, compiler)` merge keeps
 // that override winning.
@@ -1889,7 +1889,7 @@ func realReadDepVersions(root, genDir string) (*codegenpb.DepVersions, error) {
 	return &codegenpb.DepVersions{
 		Grpc:           pick("google.golang.org/grpc"),
 		Protobuf:       pick("google.golang.org/protobuf"),
-		LibPq:          pick("github.com/lib/pq"),
+		Pgx:            pick("github.com/jackc/pgx/v5"),
 		GoMysql:        pick("github.com/go-sql-driver/mysql"),
 		ModerncSqlite:  pick("modernc.org/sqlite"),
 		GoRedis:        pick("github.com/redis/go-redis/v9"),

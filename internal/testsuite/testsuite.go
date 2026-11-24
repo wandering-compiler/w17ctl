@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -60,15 +62,17 @@ type Config struct {
 	GatewayPort    int
 	Format         string
 	Mcp            string
-	Admin          string
-	Domain         string
-	Transport      string
-	Verbose        bool
-	Image          string
-	GomodVolume    string
-	Keep           bool
-	Timeout        int
-	Console        string
+	// RPC is the gateway's RPC listener, host:port (default: discovered).
+	RPC         string
+	Admin       string
+	Domain      string
+	Transport   string
+	Verbose     bool
+	Image       string
+	GomodVolume string
+	Keep        bool
+	Timeout     int
+	Console     string
 
 	// suiteEnv is what the suite's environment gains for this run: the
 	// public origins device proofs name (dpop.go), when the stack declares
@@ -281,6 +285,19 @@ func (c *Config) Run() (err error) {
 		}
 	}
 
+	// The gateway's RPC listener, the same way: a project with no
+	// (w17.rpc_api) publishes no :8082, and its RPC scenarios (none) stay
+	// off. An explicit --rpc always wins.
+	rpc := c.RPC
+	if rpc == "" {
+		if rp, perr := c.servicePort(files, project, root, gatewaySvc, rpcContainerPort); perr == nil {
+			rpc = fmt.Sprintf("%slocalhost:%d", rpcScheme, rp)
+			discovered["rpc"] = discoveredEndpoint{svc: gatewaySvc, containerPort: rpcContainerPort}
+		}
+	} else if !strings.HasPrefix(rpc, rpcScheme) {
+		rpc = rpcScheme + rpc
+	}
+
 	// Auto-discover the admin's listener — see discoverAdmin for the two
 	// topologies it has to cover. A project with no admin surface resolves
 	// nothing, leaving the admin scenarios to skip cleanly. An explicit
@@ -310,7 +327,7 @@ func (c *Config) Run() (err error) {
 	// reporting a green run of nothing, but failing here is better still:
 	// it happens before the suite is driven, and it can name the discovery
 	// that came up empty, which the suite cannot.
-	if err = c.requireRequestedTransport(mcp, admin); err != nil {
+	if err = c.requireRequestedTransport(mcp, admin, rpc); err != nil {
 		return err
 	}
 
@@ -329,7 +346,7 @@ func (c *Config) Run() (err error) {
 	// says the stack is the problem. Same slot and same reasoning as
 	// requireRequestedTransport above — before the suite is driven, and
 	// naming what the suite itself cannot see.
-	endpoints := map[string]string{"gateway": target, "mcp": mcp, "admin": admin}
+	endpoints := map[string]string{"gateway": target, "mcp": mcp, "admin": admin, "rpc": rpc}
 	for _, d := range domains {
 		endpoints[d.name] = d.url
 	}
@@ -338,7 +355,7 @@ func (c *Config) Run() (err error) {
 	}
 	// awaitReachable follows an endpoint whose container restarted to its new
 	// port, so the suite is driven at where the stack IS, not where it was.
-	target, mcp, admin = endpoints["gateway"], endpoints["mcp"], endpoints["admin"]
+	target, mcp, admin, rpc = endpoints["gateway"], endpoints["mcp"], endpoints["admin"], endpoints["rpc"]
 	// The other domains' surfaces, at where they are now, for the runner.
 	entries, domainURLs := endpointEntries(domains, endpoints)
 	if v := endpointsEnvVar(entries); v != "" {
@@ -361,6 +378,11 @@ func (c *Config) Run() (err error) {
 		msg += fmt.Sprintf(", %s → %s", name, domainURLs[name])
 	}
 	c.status("running", msg+" — running the suite", running)
+	if rpc != "" {
+		// An environment variable, not -rpc: a runner generated before it
+		// knew the RPC surface still starts.
+		c.suiteEnv = append(c.suiteEnv, "E2E_RPC="+rpcAddress(rpc))
+	}
 	err = c.runSuite(bin, target, mcp, admin)
 	if err != nil {
 		// A suite that failed because the stack moved under it must say so:
@@ -449,7 +471,7 @@ func (c *Config) discoverAdmin(files []string, project, root, gatewaySvc string)
 // there is nothing to run. A project that DOES bake them and whose endpoint
 // was not found fails in the suite itself, which runSuite starts full
 // (E2E_REQUIRE_ALL): each such scenario fails, naming its transport.
-func (c *Config) requireRequestedTransport(mcp, admin string) error {
+func (c *Config) requireRequestedTransport(mcp, admin, rpc string) error {
 	for _, t := range strings.Split(c.Transport, ",") {
 		switch strings.TrimSpace(t) {
 		case "mcp":
@@ -465,6 +487,12 @@ func (c *Config) requireRequestedTransport(mcp, admin string) error {
 					"so every admin scenario would skip and the run would pass without testing them; "+
 					"pass --admin http://localhost:<port> (or leave admin out of --transport)",
 					c.Transport, adminContainerPort, composedAdminContainerPort)
+			}
+		case "rpc":
+			if rpc == "" {
+				return fmt.Errorf("--transport=%s: no RPC endpoint — the gateway service publishes no :%d, "+
+					"so every RPC scenario would skip and the run would pass without testing them; "+
+					"pass --rpc localhost:<port> (or leave rpc out of --transport)", c.Transport, rpcContainerPort)
 			}
 		}
 	}
@@ -717,6 +745,9 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 				Target   int    `json:"target"`
 				Protocol string `json:"protocol"`
 			} `json:"ports"`
+			Volumes []struct {
+				Target string `json:"target"`
+			} `json:"volumes"`
 		} `json:"services"`
 		Networks map[string]struct {
 			Name     string `json:"name"`
@@ -737,6 +768,10 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 	}
 
 	hostPorts, err := testHostPorts()
+	if err != nil {
+		return "", false, err
+	}
+	pgTmpfs, err := postgresTmpfs(os.Getenv)
 	if err != nil {
 		return "", false, err
 	}
@@ -773,6 +808,18 @@ func (c *Config) analyzeCompose(composeFile, root string) (override string, hasB
 				// `$` doubled: compose interpolates this file too, and the
 				// overlay's value is meant literally, as written there.
 				fmt.Fprintf(&b, "      %s: %q\n", k, strings.ReplaceAll(env[k], "$", "$$"))
+			}
+		}
+		// On CI the suite's Postgres keeps its data in memory: a run's
+		// database lives as long as the run, and a disk-backed volume is the
+		// slowest part of a CI machine. Mounted over the data volume's own
+		// target (compose merges volumes by target), so init scripts stay.
+		if pgTmpfs != "" {
+			for _, v := range svc.Volumes {
+				if strings.HasPrefix(v.Target, "/var/lib/postgresql") {
+					fmt.Fprintf(&b, "    volumes:\n      - type: tmpfs\n        target: %s\n        tmpfs:\n          size: %s\n", v.Target, pgTmpfs)
+					break
+				}
 			}
 		}
 		if len(svc.Ports) == 0 {
@@ -1123,6 +1170,19 @@ const mcpEndpointPath = "/mcp"
 // endpoint so MCP scenarios run without a manual --mcp.
 const mcpContainerPort = 8081
 
+// rpcContainerPort is the gateway's RPC (native gRPC) listener container
+// port, `<PREFIX>_RPC_LISTEN_ADDR` (default :8082), published as
+// `${..._RPC_HOST_PORT:-8082}:8082`. Mirrored, like the ports above.
+const rpcContainerPort = 8082
+
+// rpcScheme marks an RPC endpoint among the URLs this package awaits and
+// follows: a gRPC listener is host:port, and grpc:// keeps it parseable
+// beside the HTTP ones. The runner is given host:port (rpcAddress).
+const rpcScheme = "grpc://"
+
+// rpcAddress is an RPC endpoint as the runner dials it: host:port.
+func rpcAddress(u string) string { return strings.TrimPrefix(u, rpcScheme) }
+
 // adminContainerPort is the admin bundle's HTTP listener container port in
 // the SPLIT topology, where the admin is its OWN compose service (unlike
 // MCP, which shares the gateway service) — so discovery matches a service
@@ -1285,6 +1345,11 @@ func (c *Config) awaitOne(name, raw string) (string, error) {
 	host := u.Host
 	if host == "" {
 		return raw, nil
+	}
+	if strings.HasPrefix(raw, rpcScheme) {
+		// A gRPC listener speaks HTTP/2 alone: an HTTP/1 GET never gets an
+		// answer from it. Accepting a connection is the readiness here.
+		return raw, awaitTCP(name, host)
 	}
 	deadline := time.Now().Add(endpointReachWait)
 	announced := false
@@ -1644,4 +1709,53 @@ func moduleProxyEnv() []string {
 		}
 	}
 	return out
+}
+
+// PostgresTmpfsEnv sets where `w17ctl test` keeps the stack's Postgres data:
+// unset = in memory on CI (CI=true, as GitHub Actions and GitLab set it), on
+// the volume elsewhere; `off` = always the volume; `on` or a size (`512m`,
+// `1g`) = in memory, that large.
+const PostgresTmpfsEnv = "W17_TEST_PG_TMPFS"
+
+// defaultPostgresTmpfs bounds the in-memory data of one run: a suite's
+// database is small, and the bound keeps a runaway test from taking the
+// machine's memory.
+const defaultPostgresTmpfs = "256m"
+
+var tmpfsSize = regexp.MustCompile(`^[1-9][0-9]*[kmg]$`)
+
+// postgresTmpfs is the tmpfs size for the stack's Postgres data, or "" to
+// keep the volume.
+func postgresTmpfs(getenv func(string) string) (string, error) {
+	switch v := strings.ToLower(strings.TrimSpace(getenv(PostgresTmpfsEnv))); {
+	case v == "":
+		if getenv("CI") == "true" {
+			return defaultPostgresTmpfs, nil
+		}
+		return "", nil
+	case v == "off":
+		return "", nil
+	case v == "on":
+		return defaultPostgresTmpfs, nil
+	case tmpfsSize.MatchString(v):
+		return v, nil
+	default:
+		return "", fmt.Errorf("%s=%q: want off, on, or a size like 512m", PostgresTmpfsEnv, v)
+	}
+}
+
+// awaitTCP waits until host accepts a connection, within endpointReachWait.
+func awaitTCP(name, host string) error {
+	deadline := time.Now().Add(endpointReachWait)
+	for {
+		conn, err := net.DialTimeout("tcp", host, endpointReachDelay*4)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the stack came up, but %s (%s) never accepted a connection within %s: %w", name, host, endpointReachWait, err)
+		}
+		time.Sleep(endpointReachDelay)
+	}
 }

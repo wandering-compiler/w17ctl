@@ -46,7 +46,7 @@ func init() { core.OpenBrowserFn = ui.OpenBrowser }
 
 // Cmd is `w17ctl login [host]`.
 type Cmd struct {
-	Host string `arg:"" optional:"" help:"Console host to log in to (e.g. grpcs://api.w17.app:50051). Prompted if omitted; defaults to the current console."`
+	Host string `arg:"" optional:"" help:"Console to log in to — only for your own (self-hosted) console, e.g. grpcs://console.example.com:50051. Omitted: the console you use now, else w17's."`
 	// Method picks the sign-in; empty asks in a terminal and is the browser
 	// on this machine elsewhere (a script), as before the choice existed.
 	Method string `name:"method" help:"How to sign in: browser (a browser on this machine), code (a browser on any device; you paste the code it shows — for w17ctl over ssh or in a remote workspace; in a terminal the code is masked and c copies the URL), password (email + password here). Asked when omitted in a terminal; browser otherwise."`
@@ -258,19 +258,19 @@ func (c *Cmd) gather(p prompter.Prompter) (host, email, password string, err err
 	return host, email, password, nil
 }
 
-// gatherHost is the console to log in to: the argument, else prompted with
-// the current console as the default.
-func (c *Cmd) gatherHost(p prompter.Prompter) (string, error) {
+// gatherHost is the console to log in to: the argument, else the current
+// console, else w17's. Never asked for: almost everyone signs in to w17's
+// console, and a prompt for an address read as a step to get right (the
+// beta adopters stopped at it). A self-hosted console is the argument.
+func (c *Cmd) gatherHost(_ prompter.Prompter) (string, error) {
 	if c.Host != "" {
 		return c.Host, nil
 	}
-	host, err := p.Text("Console host", defaultHost())
-	if err != nil {
-		return "", err
-	}
+	host := defaultHost()
 	if host == "" {
-		return "", fmt.Errorf("login: no console host — pass it as an argument or at the prompt")
+		return "", fmt.Errorf("login: no console — pass it as an argument: w17ctl login <host>")
 	}
+	fmt.Fprintf(core.Stdout, "Signing in to %s (your own console: w17ctl login <host>)\n", host)
 	return host, nil
 }
 

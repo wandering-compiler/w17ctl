@@ -108,6 +108,9 @@ type StorageClients struct {
 	// IR is the organization's issue reports (`w17ctl report`).
 	IR consolerpcpb.IssueReportsClient
 
+	// Roadmap is w17's public roadmap (`w17ctl roadmap`).
+	Roadmap consolerpcpb.RoadmapClient
+
 	Close func()
 }
 
@@ -133,21 +136,22 @@ func DialStorage(addr string) (*StorageClients, error) {
 		return nil, fmt.Errorf("dial console %s: %w", a, err)
 	}
 	return &StorageClients{
-		IQ:    consolerpcpb.NewInitiativeQueryClient(conn),
-		IM:    consolerpcpb.NewInitiativeMutationClient(conn),
-		SQ:    consolerpcpb.NewSnapshotQueryClient(conn),
-		SM:    consolerpcpb.NewSnapshotMutationClient(conn),
-		RQ:    consolerpcpb.NewReviewQueryClient(conn),
-		RM:    consolerpcpb.NewReviewMutationClient(conn),
-		AQ:    consolerpcpb.NewApprovalQueryClient(conn),
-		AM:    consolerpcpb.NewApprovalMutationClient(conn),
-		EQ:    consolerpcpb.NewEnvironmentQueryClient(conn),
-		EM:    consolerpcpb.NewEnvironmentMutationClient(conn),
-		CQ:    consolerpcpb.NewCheckpointQueryClient(conn),
-		CM:    consolerpcpb.NewCheckpointMutationClient(conn),
-		ES:    consolerpcpb.NewEnvironmentSecretsClient(conn),
-		IR:    consolerpcpb.NewIssueReportsClient(conn),
-		Close: func() { _ = conn.Close() },
+		IQ:      consolerpcpb.NewInitiativeQueryClient(conn),
+		IM:      consolerpcpb.NewInitiativeMutationClient(conn),
+		SQ:      consolerpcpb.NewSnapshotQueryClient(conn),
+		SM:      consolerpcpb.NewSnapshotMutationClient(conn),
+		RQ:      consolerpcpb.NewReviewQueryClient(conn),
+		RM:      consolerpcpb.NewReviewMutationClient(conn),
+		AQ:      consolerpcpb.NewApprovalQueryClient(conn),
+		AM:      consolerpcpb.NewApprovalMutationClient(conn),
+		EQ:      consolerpcpb.NewEnvironmentQueryClient(conn),
+		EM:      consolerpcpb.NewEnvironmentMutationClient(conn),
+		CQ:      consolerpcpb.NewCheckpointQueryClient(conn),
+		CM:      consolerpcpb.NewCheckpointMutationClient(conn),
+		ES:      consolerpcpb.NewEnvironmentSecretsClient(conn),
+		IR:      consolerpcpb.NewIssueReportsClient(conn),
+		Roadmap: consolerpcpb.NewRoadmapClient(conn),
+		Close:   func() { _ = conn.Close() },
 	}, nil
 }
 

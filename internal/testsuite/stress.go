@@ -26,6 +26,7 @@ import (
 // distinct targets, not a flag here.
 type Stress struct {
 	Target      string // REST base URL of the gateway under load (required)
+	RPC         string // the gateway's RPC listener, host:port (presets with transport: rpc)
 	Preset      string // run only this preset (empty = every preset)
 	Domain      string // scope Preset to this domain (empty = any domain; disambiguates a preset name shared across domains)
 	Concurrency int    // override every preset's worker count (0 = use the plan)
@@ -117,6 +118,10 @@ func (s *Stress) run(bin string) error {
 		args = append(args, "-stress.total", fmt.Sprint(s.Total))
 	}
 	cmd := exec.Command(bin, args...)
+	if s.RPC != "" {
+		// An environment variable, as w17ctl test passes it.
+		cmd.Env = append(os.Environ(), "E2E_RPC="+rpcAddress(s.RPC))
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := runCmd(cmd); err != nil {

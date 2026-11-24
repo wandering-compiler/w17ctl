@@ -28,9 +28,10 @@ type Cmd struct {
 	GatewayPort    int    `name:"gateway-port" default:"8080" help:"Container port the gateway listens on (the host port is assigned dynamically + discovered)."`
 	Format         string `name:"format" enum:"text,json" default:"text" help:"Output: text (human ✓/✗ checklist + progress) or json (NDJSON — lifecycle status records + one result record per step, for machine consumption)."`
 	Mcp            string `name:"mcp" help:"MCP endpoint URL (set when running MCP scenarios)."`
+	RPC            string `name:"rpc" placeholder:"HOST:PORT" help:"The gateway's RPC (gRPC) listener (default: auto-discovered — the gateway service's published :8082)."`
 	Admin          string `name:"admin" help:"Admin endpoint URL (default: auto-discovered from the running stack — the -admin compose service, or the admin listener inside the composed binary)."`
 	Domain         string `name:"domain" help:"Run only this domain (empty = all)."`
-	Transport      string `name:"transport" env:"W17_TEST_TRANSPORT" help:"Run only these transports: rest, mcp, admin, or a comma-separated list of them (empty = all). A run that leaves one out on purpose names the rest — e.g. rest,admin. The env var reaches a w17ctl test that a script runs."`
+	Transport      string `name:"transport" env:"W17_TEST_TRANSPORT" help:"Run only these transports: rest, mcp, admin, rpc, or a comma-separated list of them (empty = all). A run that leaves one out on purpose names the rest — e.g. rest,admin. The env var reaches a w17ctl test that a script runs."`
 	Verbose        bool   `name:"verbose" help:"Per-step progress output (passes -test.v to the suite)."`
 	Image          string `name:"image" default:"golang:1.27-alpine" help:"Builder image used to cross-compile the suite."`
 	GomodVolume    string `name:"gomod-volume" default:"w17ctl-gomod" help:"Named Docker volume for the Go module cache (shared across runs)."`
@@ -52,6 +53,7 @@ func (c *Cmd) Run() error {
 		Format:         c.Format,
 		Mcp:            c.Mcp,
 		Admin:          c.Admin,
+		RPC:            c.RPC,
 		Domain:         c.Domain,
 		Transport:      c.Transport,
 		Verbose:        c.Verbose,

@@ -4,9 +4,10 @@ You are a coding agent in a **w17 (wandering-compiler)** project. w17 is a decla
 compiler: you declare models, queries, mutations, events and APIs as `.proto` +
 `(w17.*)` annotations, and `w17ctl` (a thin client of the w17 console, which does the
 compiling) generates the gRPC services, DB layer, SQL migrations, gateways
-(REST/SSE/WS/MCP), clients and deploy config. **You hand-write only business handler bodies.**
+(REST/SSE/WS/MCP), clients and deploy config. **You hand-write only business handler bodies**
+(and the project's frontend, when it has one — which ships like everything else, rule 7).
 
-**Status: alpha (v0).** Any release may carry a breaking fix, so stay current:
+**Status: closed beta (v0.1).** Patch releases (0.1.x) carry fixes only, features come in 0.2. Stay current:
 `w17ctl update --check`, `w17ctl update --all`, then `w17ctl guide --force` (this file
 ships inside w17ctl; `head -1 AGENTS.md` shows the version that wrote it).
 
@@ -26,6 +27,11 @@ ships inside w17ctl; `head -1 AGENTS.md` shows the version that wrote it).
    `w17ctl stack build`, which mints nothing.
 6. **Call another business method through the registered server**
    (`s.self.Method(ctx, req)`), never as a direct Go call — that skips its events.
+7. **A frontend is a container, like every other part of the project.** A web app on the
+   generated client goes in `web/` with a Dockerfile (build, then serve static files; never
+   a dev server), is registered with `w17ctl infra workload add`, and runs locally as a
+   service in your `compose.yaml` — not as a process on the host. The same holds for any
+   service w17 does not generate. `w17ctl guide topic start-first-deploy.frontend`.
 
 ## Step 0 — access and login are the human's job
 
@@ -51,6 +57,7 @@ w17ctl codegen                             # generated code + w17/specs + w17/AG
 # write handler bodies
 w17ctl stack build && w17ctl stack up      # local stores; no migration minted
 w17ctl test                                # generated e2e suite, throwaway stack
+# a frontend: web/ + web/Dockerfile, `w17ctl infra workload add web …`, a service in compose.yaml
 # commit → CI mints the migration (push) and deploys
 ```
 

@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/wandering-compiler/w17ctl/internal/codegen"
 )
 
 // pluginDependents returns the project's own modules (repo-relative) that
@@ -116,6 +118,25 @@ func TidyPluginDependents(stdout io.Writer, root string) {
 		return
 	}
 	if deps := pluginDependents(root, pluginTrees(root)); len(deps) > 0 {
-		tidyModules(stdout, root, deps)
+		retakeAndTidy(stdout, root, deps)
 	}
+}
+
+// retakeAndTidy tidies mods and keeps codegen's claim on the generated ones
+// among them (codegen.Retake): the tidy is w17ctl's change, so the next
+// codegen rewrites those go.mod files instead of refusing them as edited.
+func retakeAndTidy(stdout io.Writer, root string, mods []string) {
+	commit := codegen.Retake(root, modFilePaths(mods))
+	defer commit()
+	tidyModules(stdout, root, mods)
+}
+
+// modFilePaths is each module directory's go.mod and go.sum, relative to the
+// project root as the module directories are.
+func modFilePaths(mods []string) []string {
+	out := make([]string, 0, 2*len(mods))
+	for _, d := range mods {
+		out = append(out, filepath.Join(d, "go.mod"), filepath.Join(d, "go.sum"))
+	}
+	return out
 }

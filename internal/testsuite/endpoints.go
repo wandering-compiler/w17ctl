@@ -88,6 +88,10 @@ func domainSurfaces(services map[string]composeService, gatewaySvc, adminSvc str
 						out = append(out, s)
 					}
 				}
+				// Its RPC listener, where the domain serves one.
+				if svc.env(d+"_GATEWAY_RPC_LISTEN_ADDR") != "" && svc.publishes(rpcContainerPort) {
+					out = append(out, domainSurface{domain: strings.ToLower(d), surface: "rpc", svc: name, port: rpcContainerPort})
+				}
 				// A composed binary serves its domain's admin on a port of
 				// its own; a split admin is a service of its own (below).
 				if svc.env(d+"_ADMIN_LISTEN_ADDR") != "" && svc.publishes(composedAdminContainerPort) {
@@ -164,8 +168,11 @@ func (c *Config) resolveEndpoints(files []string, project, root string, surfaces
 			continue
 		}
 		u := fmt.Sprintf("http://localhost:%d", port)
-		if s.surface == "mcp" {
+		switch s.surface {
+		case "mcp":
 			u += mcpEndpointPath
+		case "rpc":
+			u = fmt.Sprintf("%slocalhost:%d", rpcScheme, port)
 		}
 		out = append(out, resolvedSurface{domainSurface: s, name: s.domain + " " + s.surface, url: u})
 	}
@@ -183,8 +190,12 @@ func endpointEntries(surfaces []resolvedSurface, at map[string]string) (entries 
 		if v, ok := at[s.name]; ok && v != "" {
 			u = v
 		}
-		entries = append(entries, s.key()+"="+u)
-		if s.origin != "" && s.surface != "mcp" {
+		value := u
+		if s.surface == "rpc" {
+			value = rpcAddress(u)
+		}
+		entries = append(entries, s.key()+"="+value)
+		if s.origin != "" && s.surface != "mcp" && s.surface != "rpc" {
 			entries = append(entries, s.key()+"-origin="+s.origin)
 		}
 		urls[s.name] = u

@@ -74,8 +74,15 @@ var filePresentFn = func(file string) bool {
 // there) with `dockerfile: sandboxes/relay/Dockerfile`, which is missing from
 // a plugin vendored by a w17ctl that did not ship sandbox source.
 func (s composeService) buildDockerfile(root string) string {
+	_, df := s.buildSpec(root)
+	return df
+}
+
+// buildSpec is the build's context directory and Dockerfile, both "" when the
+// service has no build; resolved as buildDockerfile describes.
+func (s composeService) buildSpec(root string) (context, dockerfile string) {
 	if len(s.Build) == 0 {
-		return ""
+		return "", ""
 	}
 	var b struct {
 		Context    string `json:"context"`
@@ -84,7 +91,7 @@ func (s composeService) buildDockerfile(root string) string {
 	if json.Unmarshal(s.Build, &b) != nil {
 		var short string
 		if json.Unmarshal(s.Build, &short) != nil {
-			return ""
+			return "", ""
 		}
 		b.Context = short
 	}
@@ -103,9 +110,9 @@ func (s composeService) buildDockerfile(root string) string {
 		b.Dockerfile = "Dockerfile"
 	}
 	if filepath.IsAbs(b.Dockerfile) {
-		return b.Dockerfile
+		return b.Context, b.Dockerfile
 	}
-	return filepath.Join(b.Context, b.Dockerfile)
+	return b.Context, filepath.Join(b.Context, b.Dockerfile)
 }
 
 // dependsOn lists the services s depends on (short or long form).

@@ -4,13 +4,17 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/remote"
 )
 
 // RestoreCmd is `w17ctl infra restore` — one database of a healthy server
-// back from the server's latest backup, the rest of the stack running. The
+// back from the server's latest backup (or, with --to, as it was at a point
+// in time: continuous backups replay the archived WAL up to it), the rest of
+// the stack running and the services that use the database stopped for the
+// duration. The
 // work is the server's install/restore-db.sh: a side instance from the
 // backup, a dump of the database from it, the current database closed and
 // kept as <db>_before_restore_<ts>, the dump restored under the database's
@@ -20,6 +24,8 @@ import (
 type RestoreCmd struct {
 	Env          string `name:"env" required:"" help:"The environment whose database to restore."`
 	DB           string `name:"db" required:"" help:"The database (its name on the server, as deploy/<env>/README.md lists it)."`
+	To           string `name:"to" placeholder:"TIME" help:"Restore the database as it was at TIME (UTC: 2026-11-22T14:05:00Z, or 2026-11-22 14:05) instead of its latest backup: the last base backup finished before it, then the archived WAL replayed up to it. Needs continuous backups."`
+	NoDrain      bool   `name:"no-drain" help:"Keep the services that use the database running during the restore (they fail their queries until it is back) instead of stopping them."`
 	DropPrevious string `name:"drop-previous" placeholder:"TIMESTAMP" help:"Instead: drop the copy an earlier restore kept, <db>_before_restore_<TIMESTAMP>."`
 	LockPath     string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
 	Console      string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
@@ -36,6 +42,13 @@ func (c *RestoreCmd) Run() error {
 	}
 	if c.DropPrevious != "" && !keptStamp.MatchString(c.DropPrevious) {
 		return fmt.Errorf("infra restore: --drop-previous takes the timestamp of the kept copy (%s_before_restore_<14 digits>)", c.DB)
+	}
+	to, err := restoreTime(c.To, time.Now())
+	if err != nil {
+		return fmt.Errorf("infra restore: %w", err)
+	}
+	if c.DropPrevious != "" && (to != "" || c.NoDrain) {
+		return fmt.Errorf("infra restore: --drop-previous takes neither --to nor --no-drain")
 	}
 	view, err := core.DescribeInfraAt("infra restore", c.Console, c.LockPath, false, "")
 	if err != nil {
@@ -61,6 +74,12 @@ func (c *RestoreCmd) Run() error {
 	if c.DropPrevious != "" {
 		args += " --drop-previous " + c.DropPrevious
 	}
+	if to != "" {
+		args += " --to " + to
+	}
+	if c.NoDrain {
+		args += " --no-drain"
+	}
 
 	var has strings.Builder
 	if err := target.Run(nil, &has, target.Sudo("sh -c "+remote.ShellQuote("test -x "+script+" && echo yes || echo no"))); err != nil {
@@ -79,13 +98,20 @@ func (c *RestoreCmd) Run() error {
 	if c.DropPrevious != "" {
 		text = fmt.Sprintf("\nThis drops %s_before_restore_%s from environment %s's server for good.\n\n", c.DB, c.DropPrevious, c.Env)
 	} else {
+		state, during := "its state in the latest backup", "the services using it are stopped (above)"
+		if to != "" {
+			state = "its state at " + to
+		}
+		if c.NoDrain {
+			during = "the services using it fail their queries"
+		}
 		text = fmt.Sprintf(`
-This replaces database %[1]s of environment %[2]s with its state in the latest backup.
+This replaces database %[1]s of environment %[2]s with %[3]s.
 
   What it holds now is kept as %[1]s_before_restore_<timestamp> (closed), never dropped
-  without --drop-previous. Until the restore ends, the services using %[1]s fail their queries.
+  without --drop-previous. Until the restore ends, %[4]s.
 
-`, c.DB, c.Env)
+`, c.DB, c.Env, state, during)
 	}
 	if err := confirm("infra restore", text, "nothing was changed",
 		typed{"the environment's name", c.Env}, typed{"the database's name", c.DB}); err != nil {
@@ -97,4 +123,27 @@ This replaces database %[1]s of environment %[2]s with its state in the latest b
 		return fmt.Errorf("infra restore: restore-db.sh on %s: %w", ssh, err)
 	}
 	return nil
+}
+
+// restoreTime is --to as the server's restore-db.sh takes it: RFC 3339 in
+// UTC. A time without a zone is read as UTC (the backups' clock); one in the
+// future is refused — no WAL is archived for it.
+func restoreTime(s string, now time.Time) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	var t time.Time
+	var err error
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02T15:04", "2006-01-02 15:04"} {
+		if t, err = time.Parse(layout, s); err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("--to %q is not a time (2026-11-22T14:05:00Z, or 2026-11-22 14:05 read as UTC)", s)
+	}
+	if !t.Before(now) {
+		return "", fmt.Errorf("--to %s is not in the past", t.UTC().Format(time.RFC3339))
+	}
+	return t.UTC().Format(time.RFC3339), nil
 }

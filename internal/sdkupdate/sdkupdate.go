@@ -48,6 +48,7 @@ import (
 	"golang.org/x/mod/semver"
 	"golang.org/x/mod/sumdb/dirhash"
 
+	"github.com/wandering-compiler/w17ctl/internal/codegen"
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 )
@@ -125,6 +126,11 @@ func RunOpts(stdout io.Writer, root, version string, opts Options) (string, erro
 		return "", fmt.Errorf("sdk update: %w", err)
 	}
 	hashes := map[string]bump{SdkModule + "@" + version: {SdkModule, version, zipHash, modHash}}
+	// A generated module's go.mod and go.sum are codegen's outputs; this
+	// update edits and tidies them, and that is w17ctl's own change, not an
+	// edit the next codegen must refuse (codegen.Retake). Deferred, so a run
+	// that stops halfway still records what it did write.
+	defer codegen.Retake(root, modFilePaths(mods))()
 	for _, d := range mods {
 		dir := filepath.Join(root, d)
 		bumps, err := raisesFor(dir, sdkReqs)
@@ -168,7 +174,7 @@ func RunOpts(stdout io.Writer, root, version string, opts Options) (string, erro
 		// (a worker importing the cluster plugin's library): the new SDK can
 		// change what that tree needs, and nothing above touched their go.sum.
 		if deps := without(pluginDependents(root, pluginTrees(root)), mods); len(deps) > 0 {
-			tidyModules(stdout, root, deps)
+			retakeAndTidy(stdout, root, deps)
 		}
 	}
 	return version, nil

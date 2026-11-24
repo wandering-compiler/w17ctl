@@ -125,9 +125,17 @@ func egressRequest(dir, name string, lock []byte) (*codegenpb.VerifyEgressClient
 	}
 	var cfg struct {
 		Document string `yaml:"document"`
+		Mail     bool   `yaml:"mail"`
 	}
 	if err := yaml.Unmarshal(cfgBytes, &cfg); err != nil {
 		return nil, fmt.Errorf("client.yaml: %w", err)
+	}
+	if cfg.Mail && cfg.Document == "" {
+		// A mail client has no document: its digest is the empty input's.
+		sum := sha256.Sum256(nil)
+		return &codegenpb.VerifyEgressClientRequest{
+			Lock: lock, Name: name, Proto: proto, ClientYaml: cfgBytes, DocumentSha256: hex.EncodeToString(sum[:]),
+		}, nil
 	}
 	if cfg.Document != "openapi.json" && cfg.Document != "openapi.yaml" && cfg.Document != "service.wsdl" {
 		return nil, fmt.Errorf("client.yaml names the document %q", cfg.Document)

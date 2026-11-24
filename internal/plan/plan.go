@@ -2,8 +2,10 @@ package plan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -245,13 +247,24 @@ func DevSync(ctx context.Context, base, current []byte, applierFor migrate.Appli
 	// store that DID apply described by the previous checkpoint — and a
 	// store this client cannot read is planned from nothing else, so the
 	// next sync re-planned the change it already held and collided.
-	var applied []string
+	//
+	// A failure on one connection does not stop the others: each is its own
+	// database, and stopping at the first left every connection after it
+	// unsynced behind an error about a different one — a build for one
+	// service refused by a store it was not about.
+	var applied, failed []string
+	var errs []error
 	for _, m := range res.Plan.GetMigrations() {
 		one := &applyplanpb.DevApplyPlan{Migrations: []*applyplanpb.DevMigration{m}}
 		if err := migrate.DevApply(ctx, one, applierFor); err != nil {
-			return partialRecord(base, current, observed, p.checkpoint, applied, m.GetConnection(), logf), wrapDesync(base, err)
+			failed = append(failed, m.GetConnection())
+			errs = append(errs, wrapDesync(base, err))
+			continue
 		}
 		applied = append(applied, m.GetConnection())
+	}
+	if len(errs) > 0 {
+		return partialRecord(base, current, observed, p.checkpoint, applied, failed, logf), errors.Join(errs...)
 	}
 	return res, nil
 }
@@ -263,8 +276,8 @@ func DevSync(ctx context.Context, base, current []byte, applierFor migrate.Appli
 // honestly record (nothing applied, an older console that composes no
 // checkpoint, or a failure in the unnamed default bucket, which no target
 // list can leave out).
-func partialRecord(base, current []byte, observed []*codegenpb.ObservedStore, checkpoint []byte, applied []string, failed string, logf func(string, ...any)) *SyncResult {
-	if len(applied) == 0 || checkpoint == nil || failed == "" {
+func partialRecord(base, current []byte, observed []*codegenpb.ObservedStore, checkpoint []byte, applied, failed []string, logf func(string, ...any)) *SyncResult {
+	if len(applied) == 0 || checkpoint == nil || slices.Contains(failed, "") {
 		return nil
 	}
 	named := make([]string, 0, len(applied))
@@ -275,11 +288,11 @@ func partialRecord(base, current []byte, observed []*codegenpb.ObservedStore, ch
 	}
 	p, err := planObserved(base, current, nil, observed, named)
 	if err != nil || p.checkpoint == nil {
-		logf("⚠ %v applied before %q failed, but the record of it could not be composed (%v): "+
+		logf("⚠ %v applied and %v failed, but the record of it could not be composed (%v): "+
 			"the next sync plans them from the previous checkpoint", applied, failed, err)
 		return nil
 	}
-	logf("⚠ %v applied before %q failed — recording what applied, so the next sync plans only what is missing", applied, failed)
+	logf("⚠ recording what applied to %v, so the next sync plans only what is missing", applied)
 	return &SyncResult{Checkpoint: p.checkpoint}
 }
 

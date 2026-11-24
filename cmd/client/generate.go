@@ -24,13 +24,16 @@ import (
 
 // GenerateCmd is `w17ctl client generate`.
 type GenerateCmd struct {
-	Source     string   `arg:"" help:"The OpenAPI document (JSON or YAML) or the WSDL of a SOAP service: an http(s) URL, or a path to a file."`
-	Name       string   `name:"name" help:"The client's name (snake_case). Default: derived from the source — the organisation in the host name, or the directory of the file."`
-	Endpoint   []string `name:"endpoint" help:"An operation to include, as its request line: \"GET /users/{id}\" (path as the document writes it; * for any method; a trailing /* for a subtree). Repeatable."`
-	Operation  []string `name:"operation" help:"An operation to include, by its operationId (a WSDL: by its operation name). Repeatable."`
-	Idempotent []string `name:"idempotent" help:"A SOAP operation that only reads and may be repeated: it is retried on a 429 or 5xx, as a GET is. A SOAP call is a POST, so none is retried unless named. Repeatable."`
-	Console    string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
-	Force      bool     `name:"force" help:"Replace an existing client of the same name. Without it generate refuses one — 'client update' is how an existing client is regenerated."`
+	Source             string   `arg:"" optional:"" help:"The OpenAPI document (JSON or YAML) or the WSDL of a SOAP service: an http(s) URL, or a path to a file. None with --mail."`
+	Name               string   `name:"name" help:"The client's name (snake_case). Default: derived from the source — the organisation in the host name, or the directory of the file."`
+	Endpoint           []string `name:"endpoint" help:"An operation to include, as its request line: \"GET /users/{id}\" (path as the document writes it; * for any method; a trailing /* for a subtree). Repeatable."`
+	Operation          []string `name:"operation" help:"An operation to include, by its operationId (a WSDL: by its operation name). Repeatable."`
+	Idempotent         []string `name:"idempotent" help:"A SOAP operation that only reads and may be repeated: it is retried on a 429 or 5xx, as a GET is. A SOAP call is a POST, so none is retried unless named. Repeatable."`
+	Console            string   `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
+	PerCallCredential  bool     `name:"per-call-credential" help:"The credential comes with each call, not with the deployment (a customer's own token at the upstream): the project's getter takes it as a parameter, and the DSN writes it per_call (?auth=bearer&token=per_call)."`
+	PerCallDestination bool     `name:"per-call-destination" help:"The destination comes with each call (a customer's webhook URL): the getter takes it (egress.To(url)), and the DSN is a policy, dynamic?…, that refuses private, loopback and link-local addresses unless allow= names them."`
+	Mail               bool     `name:"mail" help:"A mail client instead of an API's: no document, one method, Send(w17.MailMessage) — the getter egress.Mail() sends through the SMTP server or the transactional-mail API (Postmark, SendGrid, Mailgun, Resend) its DSN names. --name defaults to mail."`
+	Force              bool     `name:"force" help:"Replace an existing client of the same name. Without it generate refuses one — 'client update' is how an existing client is regenerated."`
 }
 
 func (c *GenerateCmd) Run() error {
@@ -40,6 +43,12 @@ func (c *GenerateCmd) Run() error {
 	}
 	if c.Name != "" && !nameRE.MatchString(c.Name) {
 		return fmt.Errorf("client generate: --name %q: a client name is snake_case", c.Name)
+	}
+	if err := c.checkMail(); err != nil {
+		return fmt.Errorf("client generate: %w", err)
+	}
+	if c.Mail && c.Name == "" {
+		c.Name = "mail"
 	}
 	if c.Name != "" && !c.Force {
 		// Before fetching and generating: refusing after would waste both.
@@ -51,9 +60,12 @@ func (c *GenerateCmd) Run() error {
 	if err != nil {
 		return fmt.Errorf("client generate: %w", err)
 	}
-	doc, source, err := fetch(c.Source, p.root, cwd)
-	if err != nil {
-		return fmt.Errorf("client generate: %w", err)
+	var doc []byte
+	var source string
+	if !c.Mail {
+		if doc, source, err = fetch(c.Source, p.root, cwd); err != nil {
+			return fmt.Errorf("client generate: %w", err)
+		}
 	}
 	cl, conn, err := dial(c.Console)
 	if err != nil {
@@ -62,11 +74,32 @@ func (c *GenerateCmd) Run() error {
 	defer func() { _ = conn.Close() }()
 	resp, err := generate(cl, p, &codegenpb.GenerateEgressClientRequest{
 		Lock: p.lock, Source: source, Name: c.Name, Endpoints: c.Endpoint, Operations: c.Operation, Idempotent: c.Idempotent,
+		PerCallCredential: c.PerCallCredential, PerCallDestination: c.PerCallDestination, Mail: c.Mail,
 	}, doc, c.Force)
 	if err != nil {
 		return fmt.Errorf("client generate: %w", err)
 	}
 	report(resp, nil)
+	return nil
+}
+
+// checkMail refuses what a mail client does not take, and a missing
+// source for any other.
+func (c *GenerateCmd) checkMail() error {
+	if !c.Mail {
+		if c.Source == "" {
+			return errors.New("name the document: `client generate <url|path>` (or --mail for a mail client)")
+		}
+		return nil
+	}
+	switch {
+	case c.Source != "":
+		return errors.New("--mail takes no document: a mail client has one method, Send")
+	case len(c.Endpoint)+len(c.Operation)+len(c.Idempotent) > 0:
+		return errors.New("--endpoint, --operation and --idempotent select an API's operations; a mail client has one, Send")
+	case c.PerCallCredential || c.PerCallDestination:
+		return errors.New("a mail client's server and credential come from its DSN: --per-call-credential and --per-call-destination do not apply")
+	}
 	return nil
 }
 
@@ -317,11 +350,15 @@ func write(p *project, resp *codegenpb.GenerateEgressClientResponse, doc []byte,
 	for _, d := range documentNames {
 		allowed[d] = true
 	}
-	docBase := strings.TrimPrefix(resp.GetDocumentPath(), dir)
-	if !slices.Contains(documentNames, docBase) {
-		return fmt.Errorf("the console put the document at %q, not %s{%s}", resp.GetDocumentPath(), dir, strings.Join(documentNames, ","))
+	files := map[string][]byte{}
+	// A mail client has no document (and the request sent none).
+	if resp.GetDocumentPath() != "" || len(doc) > 0 {
+		docBase := strings.TrimPrefix(resp.GetDocumentPath(), dir)
+		if !slices.Contains(documentNames, docBase) {
+			return fmt.Errorf("the console put the document at %q, not %s{%s}", resp.GetDocumentPath(), dir, strings.Join(documentNames, ","))
+		}
+		files[resp.GetDocumentPath()] = doc
 	}
-	files := map[string][]byte{resp.GetDocumentPath(): doc}
 	for _, f := range resp.GetFiles() {
 		files[f.GetRelativePath()] = f.GetContents()
 	}

@@ -393,8 +393,11 @@ func (c *RestartCmd) Run() error {
 	return c.composeVerb(root, append([]string{"restart"}, c.Services...)...)
 }
 
-// CleanCmd — remove codegen output (pb stubs, FE clients, languages, the
-// generated bits of each bundle) while preserving hand-written packages.
+// CleanCmd — remove codegen output (pb stubs, FE clients, the generated
+// bits of each bundle) while preserving hand-written packages. The
+// translation catalogs (languages_dir) stay: their msgstr lines are a
+// translator's work, not output — codegen merges into them and never needs
+// them gone.
 type CleanCmd struct {
 	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock — read for the codegen-owned paths). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
@@ -411,7 +414,12 @@ func (c *CleanCmd) Run() error {
 		return fmt.Errorf("clean: %w", err)
 	}
 	servicesDir := view.GetServicesDir()
+	languagesDir := view.GetLanguagesDir()
 	for _, rel := range view.GetCleanPaths() {
+		if languagesDir != "" && filepath.Clean(rel) == filepath.Clean(languagesDir) {
+			fmt.Fprintf(core.Stdout, "kept %s (translations)\n", rel)
+			continue
+		}
 		abs := filepath.Join(root, rel)
 		if _, statErr := os.Stat(abs); statErr != nil {
 			continue
