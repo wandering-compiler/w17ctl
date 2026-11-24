@@ -67,6 +67,18 @@ func (c *GenerateCmd) Run() error {
 			return fmt.Errorf("client generate: %w", err)
 		}
 	}
+	if c.Mail || c.PerCallCredential || c.PerCallDestination {
+		// The console writes these clients' proto whatever the project's
+		// engine, but only an engine from 0.2 compiles it (w17/mail.proto,
+		// the per-call options) and only SDK 0.2 runs it.
+		view, err := core.DescribeLock(c.Console, p.lock)
+		if err != nil {
+			return fmt.Errorf("client generate: %w", err)
+		}
+		if core.EngineBefore(view, "v0.2") {
+			return fmt.Errorf("client generate: --mail and --per-call-* need codegen 0.2 or newer, and this project's engine is %s — its codegen could not compile the client; `w17ctl codegen-version` moves the project forward", view.GetSdkFloor())
+		}
+	}
 	cl, conn, err := dial(c.Console)
 	if err != nil {
 		return fmt.Errorf("client generate: %w", err)

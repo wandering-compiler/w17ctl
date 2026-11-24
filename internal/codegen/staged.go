@@ -146,16 +146,16 @@ func GenerateClientViaConsole(root, console, protoDir, lockPath string) error {
 			if err := stream.Send(&codegenpb.GenerateClientRequest{
 				Lock: signedLock, GoModule: goModule, PoFiles: poFiles,
 			}); err != nil {
-				return err
+				return core.RecvStatus(stream, err)
 			}
 			if err := core.SendProtoChunks(files,
 				func(b []*codegenpb.ProtoFile) *codegenpb.GenerateClientRequest {
 					return &codegenpb.GenerateClientRequest{Files: b}
 				}, stream.Send); err != nil {
-				return err
+				return core.RecvStatus(stream, err)
 			}
 			if err := stream.CloseSend(); err != nil {
-				return err
+				return core.RecvStatus(stream, err)
 			}
 			_, err = core.RecvGeneratedFiles(stream, func(f *codegenpb.GeneratedFile) error {
 				got = append(got, f)

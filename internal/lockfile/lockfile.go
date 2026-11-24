@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -41,6 +42,14 @@ func WriteAtomic(path string, data []byte, perm fs.FileMode) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("lockfile: write %s: %w", path, err)
 	}
+	// Durable before it becomes the lock: without the fsync a power loss after
+	// the rename can leave the NAME pointing at a file whose data never reached
+	// the disk — an empty lock where a whole one was.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("lockfile: sync %s: %w", path, err)
+	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("lockfile: close %s: %w", path, err)
@@ -53,7 +62,35 @@ func WriteAtomic(path string, data []byte, perm fs.FileMode) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("lockfile: rename %s: %w", path, err)
 	}
+	// The rename is durable once the directory is; best effort, since not
+	// every filesystem lets a directory be opened for it.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	sweepStaleTemps(dir, filepath.Base(path))
 	return nil
+}
+
+// staleTempAge is how old a leftover temp must be before a later write
+// removes it. A live writer holds its temp for milliseconds; an hour-old one
+// belongs to a writer that was killed between creating it and renaming it.
+const staleTempAge = time.Hour
+
+// sweepStaleTemps removes the temps writers of `base` left behind when they
+// were killed mid-write — every crash used to add one, and nothing ever took
+// them away. A temp younger than [staleTempAge] may be another writer's in
+// flight, and is left alone.
+func sweepStaleTemps(dir, base string) {
+	matches, err := filepath.Glob(filepath.Join(dir, "."+base+".tmp-*"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		if fi, err := os.Lstat(m); err == nil && fi.Mode().IsRegular() && time.Since(fi.ModTime()) > staleTempAge {
+			_ = os.Remove(m)
+		}
+	}
 }
 
 // Lock is the subset of w17/lock.yaml the offline deploy path reads. Unknown

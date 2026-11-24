@@ -99,11 +99,10 @@ func (s *Stress) testFilter() string {
 	}
 }
 
-// run fires the compiled runner in stress mode against the target. It
-// filters to the generated Test_*_stress cases with -test.run so the e2e
-// assertion scenarios (which mutate + assert) never run against the load
-// target, and forwards the -stress.* plan overrides.
-func (s *Stress) run(bin string) error {
+// args are the runner's flags for a stress run. Like suiteArgs, every one
+// must exist in the oldest runner the console still serves
+// (TestSuiteArgs_TheOldestRunnerTakesThem).
+func (s *Stress) args() []string {
 	args := []string{"-target", s.Target, "-stress", "-test.run", s.testFilter()}
 	if s.Verbose {
 		args = append(args, "-test.v")
@@ -117,7 +116,15 @@ func (s *Stress) run(bin string) error {
 	if s.Total > 0 {
 		args = append(args, "-stress.total", fmt.Sprint(s.Total))
 	}
-	cmd := exec.Command(bin, args...)
+	return args
+}
+
+// run fires the compiled runner in stress mode against the target. It
+// filters to the generated Test_*_stress cases with -test.run so the e2e
+// assertion scenarios (which mutate + assert) never run against the load
+// target, and forwards the -stress.* plan overrides.
+func (s *Stress) run(bin string) error {
+	cmd := exec.Command(bin, s.args()...)
 	if s.RPC != "" {
 		// An environment variable, as w17ctl test passes it.
 		cmd.Env = append(os.Environ(), "E2E_RPC="+rpcAddress(s.RPC))

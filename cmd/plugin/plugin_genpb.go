@@ -90,16 +90,16 @@ func (c *GenPbCmd) Run() error {
 			}
 			// Header alone, then the tree in chunks (see core.SendProtoChunks).
 			if err := stream.Send(&codegenpb.GeneratePluginPbRequest{PluginYaml: pluginYaml}); err != nil {
-				return err
+				return core.RecvStatus(stream, err)
 			}
 			if err := core.SendProtoChunks(protoFiles,
 				func(b []*codegenpb.ProtoFile) *codegenpb.GeneratePluginPbRequest {
 					return &codegenpb.GeneratePluginPbRequest{Files: b}
 				}, stream.Send); err != nil {
-				return err
+				return core.RecvStatus(stream, err)
 			}
 			if err := stream.CloseSend(); err != nil {
-				return err
+				return core.RecvStatus(stream, err)
 			}
 			_, err = core.RecvGeneratedFiles(stream, func(f *codegenpb.GeneratedFile) error {
 				got = append(got, f)

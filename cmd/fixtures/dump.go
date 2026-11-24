@@ -87,17 +87,46 @@ func (c *DumpCmd) Run() error {
 	}
 	defer func() { _ = db.Close(ctx) }()
 
-	rows, err := c.readAll(ctx, db, resp.GetQueries())
+	rows, err := c.readSnapshot(ctx, db, resp.GetQueries())
 	if err != nil {
 		return err
 	}
 	return c.write(rows)
 }
 
+// dumpConn is what the dump needs of a connection; *pgx.Conn is one.
+type dumpConn interface {
+	dumpQueryer
+	BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error)
+}
+
+type dumpQueryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// readSnapshot reads every table inside ONE read-only REPEATABLE READ
+// transaction, so the whole dump is one snapshot of the store.
+//
+// The statements run one per table, parents first. Each on its own, in
+// autocommit, saw the store at a different moment: a writer committing a
+// parent and its child between the two reads exported the child without its
+// parent — a fixture that fails on the foreign key at apply, or seeds an
+// orphan where there is no FK while looking whole. One snapshot cannot see
+// half of a commit. Read only: there is nothing to commit, so it ends with a
+// rollback.
+func (c *DumpCmd) readSnapshot(ctx context.Context, db dumpConn, queries []*codegenpb.DumpFixtureQuery) ([]json.RawMessage, error) {
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("fixtures dump: begin a snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	return c.readAll(ctx, tx, queries)
+}
+
 // readAll runs the console's statements in the order they came — that order
 // is an FK toposort, so re-applying what this writes never puts a child
 // before its parent — and collects the JSON values.
-func (c *DumpCmd) readAll(ctx context.Context, db *pgx.Conn, queries []*codegenpb.DumpFixtureQuery) ([]json.RawMessage, error) {
+func (c *DumpCmd) readAll(ctx context.Context, db dumpQueryer, queries []*codegenpb.DumpFixtureQuery) ([]json.RawMessage, error) {
 	var out []json.RawMessage
 	for _, q := range queries {
 		rs, err := db.Query(ctx, q.GetSql())

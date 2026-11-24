@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -107,6 +108,29 @@ func domainSurfaces(services map[string]composeService, gatewaySvc, adminSvc str
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].key() < out[j].key() })
+	return out
+}
+
+// rpcScenariosFile is the runner file that holds its RPC scenarios. A
+// runner without it has none.
+const rpcScenariosFile = "rpc_gen_test.go"
+
+// runnerAccepts drops the surfaces the generated runner cannot take. An
+// `rpc` endpoint goes only to a runner with RPC scenarios (rpcScenariosFile).
+// The runner comes from whichever engine the project's codegen pin selects,
+// so it may be older than this w17ctl. A runner from an engine before the
+// RPC surface (v0.1.x) refuses `-endpoint <domain>/rpc=` and stops before
+// any test runs. A runner without RPC scenarios never dials it anyway.
+func runnerAccepts(surfaces []domainSurface, runnerDir string) []domainSurface {
+	if _, err := os.Stat(filepath.Join(runnerDir, rpcScenariosFile)); err == nil {
+		return surfaces
+	}
+	out := surfaces[:0:0]
+	for _, s := range surfaces {
+		if s.surface != "rpc" {
+			out = append(out, s)
+		}
+	}
 	return out
 }
 

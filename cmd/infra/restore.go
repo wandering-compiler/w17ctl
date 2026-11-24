@@ -81,12 +81,26 @@ func (c *RestoreCmd) Run() error {
 		args += " --no-drain"
 	}
 
+	// Whether the script is there, and whether it drains: the script is the
+	// one the project's codegen engine rendered at its last deploy, which can
+	// be older than this w17ctl. A v0.1 script takes neither --to nor
+	// --no-drain and stops nothing while it restores.
 	var has strings.Builder
-	if err := target.Run(nil, &has, target.Sudo("sh -c "+remote.ShellQuote("test -x "+script+" && echo yes || echo no"))); err != nil {
+	probe := "test -x " + script + " || { echo no; exit 0; }; if grep -q -e '--no-drain' " + script + "; then echo drains; else echo yes; fi"
+	if err := target.Run(nil, &has, target.Sudo("sh -c "+remote.ShellQuote(probe))); err != nil {
 		return fmt.Errorf("infra restore: reaching %s: %w", ssh, err)
 	}
-	if f := strings.Fields(has.String()); len(f) == 0 || f[len(f)-1] != "yes" {
+	f := strings.Fields(has.String())
+	answer := ""
+	if len(f) > 0 {
+		answer = f[len(f)-1]
+	}
+	if answer != "yes" && answer != "drains" {
 		return fmt.Errorf("infra restore: %s has no %s — environment %s backs no database up, or its last deploy predates the command; deploy it once", ssh, script, c.Env)
+	}
+	drains := answer == "drains"
+	if !drains && (to != "" || c.NoDrain) {
+		return fmt.Errorf("infra restore: the %s on %s predates --to and --no-drain (the project's codegen engine is older than 0.2) — restore the latest backup without them, or move the project forward (`w17ctl codegen-version`) and deploy", script, ssh)
 	}
 
 	step("what the restore would do, on " + ssh)
@@ -99,6 +113,9 @@ func (c *RestoreCmd) Run() error {
 		text = fmt.Sprintf("\nThis drops %s_before_restore_%s from environment %s's server for good.\n\n", c.DB, c.DropPrevious, c.Env)
 	} else {
 		state, during := "its state in the latest backup", "the services using it are stopped (above)"
+		if !drains {
+			during = "the services using it keep running and fail their queries"
+		}
 		if to != "" {
 			state = "its state at " + to
 		}

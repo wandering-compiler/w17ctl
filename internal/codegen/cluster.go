@@ -64,6 +64,11 @@ var placeAgainReasons = map[string]bool{
 	// reservation (the w17-cluster-engine header). The console's resolution
 	// is binding; a fresh placement carries a fresh pair.
 	"ENGINE_MISMATCH": true,
+	// A queued reservation for an engine no attached worker carries any more
+	// — the fleet rolled its window while the run waited. A fresh placement
+	// binds an engine the fleet does carry. (The worker's own refusal of an
+	// engine it does not carry travels in WorkerErrorDomain, below.)
+	"ENGINE_NOT_CARRIED": true,
 }
 
 // WorkerErrorDomain is the google.rpc.ErrorInfo domain a codegen worker's
@@ -81,6 +86,43 @@ var lostReasons = map[string]bool{
 	// The worker's engine was killed for memory during the run. The same
 	// input may be killed again, so once, not five times.
 	"ENGINE_OUT_OF_MEMORY": true,
+}
+
+// oomBystanderLines is the upload, in proto lines, under which a run killed
+// with its engine for memory is taken for a bystander rather than the cause.
+//
+// The shell names EVERY run on an engine the kernel killed
+// ENGINE_OUT_OF_MEMORY: the engine is dead, and which of its runs grew is not
+// known. A small run beside a large one then spent its single re-run, and if
+// it landed beside the large one again it failed for good, told that IT had
+// run out of memory. A run this small is placed again up to
+// oomBystanderPlacements times; a larger one is still run again --retries
+// times, since the same input may be killed again. 50k uploaded lines is about
+// 300 MiB at the console's cost model — a fraction of any worker's budget,
+// and nearly twice the largest example project this repository generates.
+const oomBystanderLines = 50_000
+
+// oomBystanderPlacements bounds the re-placements of a run taken for a
+// bystander. Lines are the client's measure; the engine's cost is per line,
+// so a tree of few, very long lines is small here and large there. If such a
+// run IS what filled the engine, each re-placement kills the engine again,
+// with every run beside it — so twice more (three runs in all), not as often
+// as a refused placement.
+const oomBystanderPlacements = 2
+
+// isEngineOutOfMemory is whether err is a run lost with its engine to the
+// kernel's OOM killer.
+func isEngineOutOfMemory(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	for _, d := range st.Details() {
+		if info, ok := d.(*errdetails.ErrorInfo); ok && info.GetDomain() == WorkerErrorDomain && info.GetReason() == "ENGINE_OUT_OF_MEMORY" {
+			return true
+		}
+	}
+	return false
 }
 
 // workerPlaceAgainReasons are ErrorInfo reasons (domain WorkerErrorDomain)
@@ -135,9 +177,10 @@ var (
 	// 744 s measured at 206 662 lines. 7 ms a line gives that run ~2.7x headroom; see attemptDeadline.
 	streamPerLine = 7 * time.Millisecond
 	// queueTimeout bounds how long a run waits in the queue for a worker.
-	// Long enough for a deploy (a worker drains its run, up to 15 min, before
-	// the new one starts) and a busy pool; short enough that a pool with no
-	// worker at all fails a CI job instead of hanging it.
+	// Long enough for a busy pool and most deploys (a worker drains its run
+	// before the new one starts; a run may last up to 45 min, most take
+	// minutes); short enough that a pool with no worker at all fails a CI job
+	// instead of hanging it.
 	queueTimeout = 30 * time.Minute
 	// maxPollBlips is how many bare Unavailable polls in a row keep the place.
 	maxPollBlips = 3
@@ -319,7 +362,7 @@ func placeAndRun(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSi
 	deadline time.Duration, attempt func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string, engine string) error) error {
 	start.W17CtlVersion = core.VersionString()
 	start.SupportedStreamProtocols = SupportedStreamProtocols
-	placeFailures, reruns := 0, 0
+	placeFailures, reruns, oomPlacements := 0, 0, 0
 	told := false
 	for {
 		granted, signed, placeWarnings, envelope, err := place(placer, start, needSigned, out)
@@ -357,6 +400,14 @@ func placeAndRun(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSi
 			return final.error
 		}
 		class, cause := classifyFailure(err)
+		if class == failLost && start.GetProtoLines() < oomBystanderLines && isEngineOutOfMemory(err) {
+			if oomPlacements >= oomBystanderPlacements {
+				return fmt.Errorf("codegen: the worker's engine ran out of memory with this run on it %d times in a row; gave up: %w",
+					oomPlacements+1, err)
+			}
+			oomPlacements++
+			class, cause = failPlaceAgain, "the worker's engine ran out of memory with this run on it, and a run this small is not what filled it"
+		}
 		switch class {
 		case failPlaceAgain:
 			placeFailures++
@@ -675,23 +726,11 @@ func (r *clusterRun) stream(g *codegenpb.PlaceGenerateGranted, signed []byte, en
 	}
 }
 
-// recvStatus turns a Send failure into the stream's real status. A Send that
-// fails returns io.EOF when the SERVER ended the stream; the reason (a refusal
-// from the relay, the worker's own error) is only on Recv.
+// recvStatus is core.RecvStatus for the GenerateProject stream.
 func recvStatus(stream interface {
 	Recv() (*codegenpb.GeneratedOp, error)
 }, sendErr error) error {
-	if !errors.Is(sendErr, io.EOF) {
-		return sendErr
-	}
-	for {
-		if _, err := stream.Recv(); err != nil {
-			if errors.Is(err, io.EOF) {
-				return sendErr
-			}
-			return err
-		}
-	}
+	return core.RecvStatus(stream, sendErr)
 }
 
 // countProtoLines is the upload size the console admits against: newline

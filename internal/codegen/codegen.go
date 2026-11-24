@@ -1127,14 +1127,21 @@ const (
 	floorFromConsole = "the console generated this code against"
 )
 
-// effectiveSdkFloor is the highest of the floor this client was published
-// with, the one the console declared (LockView.sdk_floor), and any the
-// generated code declared (an activated plugin's requires_sdk, carried as a
-// GeneratedOp). The code comes from the console and the plugins, both of which
-// can be newer than the client — the case core.SdkFloor's own comment says it
-// cannot see. Anything that declares nothing leaves the others in charge.
+// effectiveSdkFloor is the floor the generated code needs: the one the
+// console declared (LockView.sdk_floor) — the floor of the ENGINE the lock's
+// codegen_version resolves to, since that engine wrote the code — raised by
+// any the generated code declared (an activated plugin's requires_sdk,
+// carried as a GeneratedOp). The floor this client was published with stands
+// in only when the console declares none (a console from before sdk_floor).
+//
+// It used to be the highest of all three, so a w17ctl published with
+// v0.2.0-rc.2 refused every project on the v0.1.2 engine and SDK v0.1.2 —
+// code the v0.1.2 engine wrote, which needs v0.1.2 and nothing newer.
 func effectiveSdkFloor(consoleFloor string, reqs ...*codegenpb.SdkRequirement) (floor, source string) {
 	floor, source = core.SdkFloor, floorFromClient
+	if semver.IsValid(consoleFloor) {
+		floor, source = consoleFloor, floorFromConsole
+	}
 	raise := func(v, from string) {
 		if !semver.IsValid(v) {
 			return

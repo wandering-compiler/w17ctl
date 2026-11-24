@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"golang.org/x/mod/semver"
 	"google.golang.org/grpc"
 
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
@@ -156,4 +157,19 @@ func dialLockConsole(console string) (CodegenConsole, *grpc.ClientConn, error) {
 		return nil, nil, fmt.Errorf("connect %s: %w", addr, err)
 	}
 	return cl, conn, nil
+}
+
+// EngineBefore reports whether the engine the lock's codegen_version resolves
+// to is older than minor (e.g. "v0.2"), read from LockView.sdk_floor — the
+// console lowers that floor to the engine's own version when the engine is
+// older than the console (see codegenversion.Window.SdkFloorFor). A feature
+// whose generated half only a newer engine writes is refused for an older
+// one with this, before anything is generated. An unknown floor (an older
+// console, a dev one) reports false: nothing to refuse on.
+func EngineBefore(view *codegenpb.LockView, minor string) bool {
+	f := view.GetSdkFloor()
+	if !semver.IsValid(f) || !semver.IsValid(minor) {
+		return false
+	}
+	return semver.Compare(semver.MajorMinor(f), semver.MajorMinor(minor)) < 0
 }
