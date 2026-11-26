@@ -206,7 +206,8 @@ type WorkloadAddCmd struct {
 	Protocol     string            `name:"protocol" help:"http (default) | grpc."`
 	HealthHTTP   string            `name:"health-http" help:"An HTTP path answering 2xx when healthy."`
 	HealthCmd    []string          `name:"health-cmd" sep:"none" help:"A health check command, one argument per flag (repeatable)."`
-	RouteHost    string            `name:"route-host" help:"Publish it on the edge: a label (www → www.<domain>) or a host name."`
+	RouteHost    []string          `name:"route-host" sep:"none" help:"Publish it on the edge: a label (www → www.<domain>) or a host name. Repeatable: every host it serves, the first its main one (swarm)."`
+	RedirectFrom []string          `name:"redirect-from" sep:"none" help:"A host answered with a permanent redirect to the first --route-host, path and query kept: --redirect-from www.example.com. Repeatable (swarm)."`
 	PathPrefix   string            `name:"path-prefix" help:"Only this path of the route's host."`
 	EnvVar       map[string]string `name:"env-var" mapsep:"none" help:"Environment variables in clear: --env-var LOG_LEVEL=info."`
 	Secret       []string          `name:"secret" sep:"none" help:"Secret keys it reads, set on the console (repeatable). On a generated bundle: the keys its hand-written code reads, which codegen cannot see."`
@@ -247,10 +248,18 @@ func (c *WorkloadAddCmd) Run() error {
 		}
 		m.raw("health", h.String())
 	}
-	if c.RouteHost != "" || c.PathPrefix != "" {
+	if len(c.RouteHost) > 0 || c.PathPrefix != "" || len(c.RedirectFrom) > 0 {
 		var r mapping
-		r.str("host", c.RouteHost)
+		// One host keeps the one-host form, `host:`; more are `hosts:`.
+		if len(c.RouteHost) == 1 {
+			r.str("host", c.RouteHost[0])
+		} else if len(c.RouteHost) > 1 {
+			r.raw("hosts", list(c.RouteHost))
+		}
 		r.str("path_prefix", c.PathPrefix)
+		if len(c.RedirectFrom) > 0 {
+			r.raw("redirect_from", list(c.RedirectFrom))
+		}
 		m.raw("route", r.String())
 	}
 	if len(c.EnvVar) > 0 {

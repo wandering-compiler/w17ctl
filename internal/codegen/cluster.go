@@ -397,7 +397,7 @@ func placeAndRun(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSi
 		}
 		var final finalError
 		if errors.As(err, &final) {
-			return final.error
+			return withOlderEngineHint(envelope, final.error)
 		}
 		class, cause := classifyFailure(err)
 		if class == failLost && start.GetProtoLines() < oomBystanderLines && isEngineOutOfMemory(err) {
@@ -427,7 +427,7 @@ func placeAndRun(placer core.Placer, start *codegenpb.PlaceGenerateStart, needSi
 			fmt.Fprintf(out, "codegen: %s to the codegen worker mid-run — running again on a new placement (re-run %d of %d)\n",
 				cause, reruns, retries)
 		default:
-			return fatalStreamError(cause, err, deadline)
+			return withOlderEngineHint(envelope, fatalStreamError(cause, err, deadline))
 		}
 	}
 }
@@ -502,6 +502,19 @@ func withEngine(ctx context.Context, engine string) context.Context {
 		return ctx
 	}
 	return metadata.AppendToOutgoingContext(ctx, EngineHeader, engine)
+}
+
+// withOlderEngineHint adds the way forward to a run that failed on an engine
+// older than the newest the console carries: a project moved back to v0.1
+// (or never pinned) that uses something only a newer minor knows is refused by
+// the older engine's own diagnostics, which do not say that the engine is the
+// cause.
+func withOlderEngineHint(env *codegenpb.CodegenEnvelope, err error) error {
+	if err == nil || !env.GetUpdateAvailable() || env.GetSupersededBy() == "" {
+		return err
+	}
+	return fmt.Errorf("%w\n  note: this project generates with engine %s, older than the newest this console carries (%s). If it uses something only %s knows, that is the cause — `w17ctl codegen-version %s` moves it forward",
+		err, env.GetEngineVersion(), env.GetSupersededBy(), env.GetSupersededBy(), env.GetSupersededBy())
 }
 
 // printEnvelope says what the console said about the engine: its notices,

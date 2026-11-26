@@ -114,7 +114,8 @@ func (c *Cmd) Run() error {
 	// from their own machine — under a read code they type or pass in
 	// $W17_SECRETS_CODE. Checked before anything runs: a run with neither
 	// (CI without its secret) would mint migrations and then stop.
-	if os.Getenv(fetchTokenVar) == "" && os.Getenv("W17_SECRETS_CODE") == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
+	if (kind != "swarm" || readsValues(filepath.Join(root, "deploy", c.Env))) &&
+		os.Getenv(fetchTokenVar) == "" && os.Getenv("W17_SECRETS_CODE") == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
 		return fmt.Errorf("deploy: the values come from the console — set %s to the token of a machine account given Deploy access to %s on the project's page, "+
 			"or deploy from a terminal (or with W17_SECRETS_CODE) to read them as yourself with a read code from that page", fetchTokenVar, c.Env)
 	}
@@ -152,17 +153,25 @@ func (c *Cmd) Run() error {
 			return fmt.Errorf("deploy: the e2e suite failed — nothing was deployed: %w", err)
 		}
 	}
-	step("mint and pin the migrations")
-	// migrate generate and codegen both run in root with their default lock,
-	// w17/lock.yaml: that is the file generate pins and the images are built
-	// for, so it is the one compared around the pin.
-	pinned := filepath.Join(root, "w17", "lock.yaml")
-	lockBefore, _ := os.ReadFile(pinned) // #nosec G304 -- the project's own lock
-	if err := w17("migrate", "generate"); err != nil {
-		return fmt.Errorf("deploy: migrate generate: %w", err)
+	// A project with no proto tree deploys only its infrastructure (its
+	// websites): it has no schema, so no migrations to mint.
+	protoDir := strings.Trim(view.GetProtoDir(), "/")
+	if protoDir == "" {
+		protoDir = "proto"
 	}
-	lockAfter, _ := os.ReadFile(pinned) // #nosec G304 -- the project's own lock
-	c.lockPinned = !bytes.Equal(lockBefore, lockAfter)
+	if dirExists(filepath.Join(root, protoDir)) {
+		step("mint and pin the migrations")
+		// migrate generate and codegen both run in root with their default lock,
+		// w17/lock.yaml: that is the file generate pins and the images are built
+		// for, so it is the one compared around the pin.
+		pinned := filepath.Join(root, "w17", "lock.yaml")
+		lockBefore, _ := os.ReadFile(pinned) // #nosec G304 -- the project's own lock
+		if err := w17("migrate", "generate"); err != nil {
+			return fmt.Errorf("deploy: migrate generate: %w", err)
+		}
+		lockAfter, _ := os.ReadFile(pinned) // #nosec G304 -- the project's own lock
+		c.lockPinned = !bytes.Equal(lockBefore, lockAfter)
+	}
 	step("render the code and deploy/" + c.Env + " for the pinned lock")
 	// --force as the workflows run it: the images are built from what the console
 	// generates for this lock, whatever an older run left on disk.
@@ -199,7 +208,6 @@ func (c *Cmd) Run() error {
 	// must see the services and keys this deploy runs, not the ones an older
 	// render left on disk; and a fetch is a hand-out the console records, so a
 	// deploy that was never going to run should not make one.
-	fmt.Fprintf(core.Stdout, "env values: from the console\n")
 	ref := sha
 	if dirty {
 		ref += "-dirty"
@@ -209,8 +217,14 @@ func (c *Cmd) Run() error {
 		return err
 	}
 	defer func() { _ = os.RemoveAll(valuesDir) }()
-	if err := fetchEnv(root, selfPath, abs, c.Console, c.Env, ref, valuesDir, kind != "swarm"); err != nil {
-		return fmt.Errorf("deploy: fetching %s's values: %w", c.Env, err)
+	if kind == "swarm" && !readsValues(envDir) {
+		// A stack of websites: no service reads a value the console holds.
+		fmt.Fprintf(core.Stdout, "env values: none — no service of the stack reads one\n")
+	} else {
+		fmt.Fprintf(core.Stdout, "env values: from the console\n")
+		if err := fetchEnv(root, selfPath, abs, c.Console, c.Env, ref, valuesDir, kind != "swarm"); err != nil {
+			return fmt.Errorf("deploy: fetching %s's values: %w", c.Env, err)
+		}
 	}
 
 	if kind != "swarm" {
@@ -241,18 +255,23 @@ func (c *Cmd) Run() error {
 	if dirty {
 		tag += "-dirty"
 	}
-	pgTag, err := dirHash(filepath.Join(envDir, "services", "postgres"))
-	if err != nil {
-		return fmt.Errorf("deploy: %w", err)
+	// A stack that runs no database (a project of websites only) has no
+	// services/postgres and no stack-postgres image: PG_TAG goes out empty.
+	pgTag := ""
+	if pgDir := filepath.Join(envDir, "services", "postgres"); dirExists(pgDir) {
+		h, err := dirHash(pgDir)
+		if err != nil {
+			return fmt.Errorf("deploy: %w", err)
+		}
+		pgTag = "pg-" + h
 	}
-	pgTag = "pg-" + pgTag
 	prefix := "w17local/" + imageName(view.GetProject())
 
 	step("build the images for " + platform + ", the server's platform")
 	var refs []string
 	for _, im := range images {
 		ref := prefix + "/" + im.name + ":" + tag
-		if im.name == "stack-postgres" {
+		if im.name == stackPostgres {
 			ref = prefix + "/stack-postgres:" + pgTag
 		}
 		args := []string{"build", "-q"}
@@ -304,7 +323,7 @@ func (c *Cmd) Run() error {
 		mainFP := fingerprints(minted.String())
 		var machineFP []string
 		for _, m := range machines {
-			fp, err := c.deployMachine(m, prefix, tag, refs, mainFP)
+			fp, err := c.deployMachine(m, prefix, tag, pgTag, refs, mainFP, valuesDir)
 			if err != nil {
 				return err
 			}
@@ -324,6 +343,10 @@ func (c *Cmd) Run() error {
 	return nil
 }
 
+// stackPostgres is the image every Postgres server runs, tagged by its
+// content (PG_TAG) rather than the deploy's tag.
+const stackPostgres = "stack-postgres"
+
 // rsyncFlags copy a stack's files to a server as root's, read-only to others.
 var rsyncFlags = stackship.RsyncFlags
 
@@ -341,14 +364,20 @@ func fingerprints(out string) []string {
 	return fps
 }
 
-// deployMachine deploys one plugin target: its images, its files, and its
-// deploy-server.sh with this server's fingerprints. It returns the
-// fingerprints minted there that this server reads.
-func (c *Cmd) deployMachine(m remote.Machine, prefix, tag string, refs, mainFP []string) ([]string, error) {
+// deployMachine deploys one other machine — a plugin target, or a database
+// server's machine: its images, its files (and the values of the services it
+// runs, for a database machine), and its deploy-server.sh with this server's
+// fingerprints. It returns the fingerprints minted there that this server
+// reads.
+func (c *Cmd) deployMachine(m remote.Machine, prefix, tag, pgTag string, refs, mainFP []string, valuesDir string) ([]string, error) {
 	stack := "/opt/stack/" + c.Env
 	var ship []string
 	for _, name := range m.Images {
 		ref := prefix + "/" + name + ":" + tag
+		if name == stackPostgres {
+			// Tagged by its content, like on this server.
+			ref = prefix + "/" + name + ":" + pgTag
+		}
 		if !slices.Contains(refs, ref) {
 			return nil, fmt.Errorf("deploy: target %s runs image %s, which this deploy did not build (install/images.txt, deploy/images.custom.txt) — run `w17ctl codegen`", m.Name, name)
 		}
@@ -361,6 +390,10 @@ func (c *Cmd) deployMachine(m remote.Machine, prefix, tag string, refs, mainFP [
 	step("target " + m.Name + "'s files")
 	args := append(append([]string(nil), rsyncFlags...), m.Target.RsyncArgs()...)
 	srcs := []string{"services", "install"}
+	if _, err := os.Stat(filepath.Join(m.Dir, "stack-limits.sh")); err == nil {
+		// A database machine's: its scripts and compose files read the environment's limits.
+		srcs = append(srcs, "stack-limits.sh")
+	}
 	if st, err := os.Stat(filepath.Join(m.Dir, "hooks")); err == nil && st.IsDir() {
 		srcs = append(srcs, "hooks")
 	} else if err := m.Target.Run(nil, io.Discard, m.Target.Sudo("rm -rf "+stack+"/hooks")); err != nil {
@@ -369,8 +402,17 @@ func (c *Cmd) deployMachine(m remote.Machine, prefix, tag string, refs, mainFP [
 	if err := run(nil, core.Stdout, m.Dir, "rsync", append(append(args, "--exclude", ".env*"), append(srcs, m.Target.Dest()+":"+stack+"/")...)...); err != nil {
 		return nil, fmt.Errorf("deploy: rsync to %s: %w", m.SSH, err)
 	}
+	if len(m.Envs) > 0 {
+		step("the env files of " + strings.Join(m.Envs, ", ") + ", into ssh on " + m.SSH)
+		if err := stackship.SendEnvOf(m.Target, valuesDir, stack, m.Envs); err != nil {
+			return nil, fmt.Errorf("deploy: target %s: %w", m.Name, err)
+		}
+	}
 	step("deploy-server.sh — target " + m.Name + " on " + m.SSH)
 	exports := fmt.Sprintf("export DEPLOY_TAG=%s IMAGE_PREFIX=%s\n", remote.ShellQuote(tag), remote.ShellQuote(prefix))
+	if slices.Contains(m.Images, stackPostgres) {
+		exports += "export PG_TAG=" + remote.ShellQuote(pgTag) + "\n"
+	}
 	if len(mainFP) > 0 {
 		exports += "export " + strings.Join(mainFP, " ") + "\n"
 	}
@@ -543,7 +585,7 @@ func withCustomImages(images []image, path string) ([]image, []string, error) {
 	}
 	var added []string
 	for _, c := range custom {
-		if c.name == "stack-postgres" {
+		if c.name == stackPostgres {
 			return nil, nil, fmt.Errorf("%s: stack-postgres is the stack's own (content-hashed from deploy/<env>/services/postgres) and cannot be replaced", path)
 		}
 		if !imageRef.MatchString(c.name) {
@@ -560,6 +602,23 @@ func withCustomImages(images []image, path string) ([]image, []string, error) {
 }
 
 var imageRef = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
+// readsValues reports whether a service of the stack rendered in envDir reads
+// values the console holds — has a services/<name>/.env.example — or the stack
+// is not rendered yet (and so may). A stack of websites has none.
+func readsValues(envDir string) bool {
+	if !dirExists(filepath.Join(envDir, "services")) {
+		return true
+	}
+	examples, _ := filepath.Glob(filepath.Join(envDir, "services", "*", ".env.example"))
+	return len(examples) > 0
+}
+
+// dirExists reports whether dir is a directory.
+func dirExists(dir string) bool {
+	fi, err := os.Stat(dir)
+	return err == nil && fi.IsDir()
+}
 
 // dirHash is the content hash of a directory's files (names and bytes, .env*
 // excluded): the stack-postgres tag changes exactly when its files do.

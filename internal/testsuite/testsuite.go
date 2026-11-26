@@ -330,7 +330,11 @@ func (c *Config) Run() (err error) {
 	if err = requireRPCScenarios(c.Transport, runnerDir); err != nil {
 		return err
 	}
-	if err = c.requireRequestedTransport(mcp, admin, rpc); err != nil {
+	// A transport another domain's service serves counts too: in a project
+	// of several domains the RPC (or MCP, or admin) surface may be one
+	// domain's only, and its scenarios are dialled there.
+	if err = c.requireRequestedTransport(orDomainSurface(mcp, domains, "mcp"),
+		orDomainSurface(admin, domains, "admin"), orDomainSurface(rpc, domains, "rpc")); err != nil {
 		return err
 	}
 
@@ -484,6 +488,20 @@ func requireRPCScenarios(transport, runnerDir string) error {
 	return fmt.Errorf("--transport=%s: this project's suite has no RPC scenarios — its codegen engine predates the RPC transport (`w17ctl codegen-version` moves the project to one that has it), or nothing it serves is exposed over RPC; leave rpc out of --transport", transport)
 }
 
+// orDomainSurface is url, or else the first of the other domains' surfaces
+// of that kind, or "" when neither serves it.
+func orDomainSurface(url string, domains []resolvedSurface, surface string) string {
+	if url != "" {
+		return url
+	}
+	for _, d := range domains {
+		if d.surface == surface {
+			return d.url
+		}
+	}
+	return ""
+}
+
 // requireRequestedTransport refuses a --transport whose endpoint is not
 // configured. Asking for one transport and getting a green run of zero
 // scenarios is the worst outcome available here: it reads as "the admin
@@ -500,7 +518,7 @@ func (c *Config) requireRequestedTransport(mcp, admin, rpc string) error {
 		switch strings.TrimSpace(t) {
 		case "mcp":
 			if mcp == "" {
-				return fmt.Errorf("--transport=%s: no MCP endpoint — the gateway service publishes no :%d, "+
+				return fmt.Errorf("--transport=%s: no MCP endpoint — neither the gateway service nor another domain's service publishes :%d, "+
 					"so every MCP scenario would skip and the run would pass without testing them; "+
 					"pass --mcp http://localhost:<port> (or leave mcp out of --transport)", c.Transport, mcpContainerPort)
 			}
@@ -514,7 +532,7 @@ func (c *Config) requireRequestedTransport(mcp, admin, rpc string) error {
 			}
 		case "rpc":
 			if rpc == "" {
-				return fmt.Errorf("--transport=%s: no RPC endpoint — the gateway service publishes no :%d, "+
+				return fmt.Errorf("--transport=%s: no RPC endpoint — neither the gateway service nor another domain's service publishes :%d, "+
 					"so every RPC scenario would skip and the run would pass without testing them; "+
 					"pass --rpc localhost:<port> (or leave rpc out of --transport)", c.Transport, rpcContainerPort)
 			}

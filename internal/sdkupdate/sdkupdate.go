@@ -626,6 +626,88 @@ func latestVersion(ctx context.Context, mod string) (string, error) {
 	return info.Version, nil
 }
 
+// LatestOnMinor is the newest release (no prerelease) of sdk/go on minor
+// (v0.1): what a project moved back to that codegen minor builds against.
+func LatestOnMinor(ctx context.Context, minor string) (string, error) {
+	body, err := proxyGet(ctx, SdkModule, "@v/list")
+	if err != nil {
+		return "", err
+	}
+	versions := strings.Fields(string(body))
+	retracted, err := retractedVersions(ctx, versions)
+	if err != nil {
+		return "", err
+	}
+	v := newestOnMinor(versions, minor, retracted)
+	if v == "" {
+		return "", fmt.Errorf("the module proxy lists no %s release of %s", minor, SdkModule)
+	}
+	return v, nil
+}
+
+// retractedVersions are the versions the module retracts. The proxy's
+// @v/list lists a retracted version like any other (only @latest honours a
+// retraction), and a retraction lives in the go.mod of the module's highest
+// version — as `go` reads it: the highest release, or the highest prerelease
+// when there is no release.
+func retractedVersions(ctx context.Context, versions []string) (func(string) bool, error) {
+	top, topPre := "", ""
+	for _, v := range versions {
+		if !semver.IsValid(v) {
+			continue
+		}
+		if semver.Prerelease(v) == "" {
+			if top == "" || semver.Compare(v, top) > 0 {
+				top = v
+			}
+		} else if topPre == "" || semver.Compare(v, topPre) > 0 {
+			topPre = v
+		}
+	}
+	if top == "" {
+		top = topPre
+	}
+	if top == "" {
+		return func(string) bool { return false }, nil
+	}
+	body, err := proxyGet(ctx, SdkModule, "@v/"+top+".mod")
+	if err != nil {
+		return nil, fmt.Errorf("read the retractions of %s (its %s go.mod): %w", SdkModule, top, err)
+	}
+	return retractedBy(body)
+}
+
+// retractedBy reads the retract directives of a go.mod.
+func retractedBy(gomod []byte) (func(string) bool, error) {
+	f, err := modfile.ParseLax("go.mod", gomod, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parse go.mod for its retractions: %w", err)
+	}
+	return func(v string) bool {
+		for _, r := range f.Retract {
+			if semver.Compare(v, r.Low) >= 0 && semver.Compare(v, r.High) <= 0 {
+				return true
+			}
+		}
+		return false
+	}, nil
+}
+
+// newestOnMinor picks the newest release on minor from a version list,
+// skipping a retracted one.
+func newestOnMinor(versions []string, minor string, retracted func(string) bool) string {
+	best := ""
+	for _, v := range versions {
+		if !semver.IsValid(v) || semver.Prerelease(v) != "" || semver.MajorMinor(v) != minor || retracted(v) {
+			continue
+		}
+		if best == "" || semver.Compare(v, best) > 0 {
+			best = v
+		}
+	}
+	return best
+}
+
 // moduleHashes downloads the module's .zip + .mod and returns their go.sum
 // hashes, computed with the same library `go` uses.
 //

@@ -397,18 +397,26 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 			filepath.Join(root, genDir, "go.mod"))
 	}
 
-	files, err := readProtoTree(root, protoDir)
-	if err != nil {
-		return err
-	}
 	// w17/infra.yaml — the project's infrastructure. Its bytes travel as they
 	// are; the console decodes and validates them and renders deploy/.
 	infraYAML, err := core.ReadInfra(filepath.Join(root, "w17", "lock.yaml"))
 	if err != nil {
 		return fmt.Errorf("codegen: %w", err)
 	}
-	if len(files) == 0 {
-		return fmt.Errorf("no .proto files found under %s", filepath.Join(root, protoDir))
+	// No proto is a project that runs only its infrastructure — its websites,
+	// say: w17/infra.yaml is then all there is to generate from, and the
+	// project has no proto tree at all.
+	var files []*codegenpb.ProtoFile
+	if _, statErr := os.Stat(filepath.Join(root, protoDir)); statErr == nil || len(infraYAML) == 0 {
+		if files, err = readProtoTree(root, protoDir); err != nil {
+			return err
+		}
+	}
+	if err := checkPluginEngines(root, protoDir, view.GetCodegenVersion()); err != nil {
+		return err
+	}
+	if len(files) == 0 && len(infraYAML) == 0 {
+		return fmt.Errorf("no .proto files found under %s, and no w17/infra.yaml — a project generates its API from proto, or only its infrastructure (websites) from w17/infra.yaml", filepath.Join(root, protoDir))
 	}
 
 	// dep_versions + the gen Go tree + w17_path are the ONLY inputs the server

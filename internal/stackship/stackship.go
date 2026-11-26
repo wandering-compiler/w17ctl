@@ -107,16 +107,41 @@ func SendEnv(t remote.Target, valuesDir, stack string) error {
 	envFiles, _ := filepath.Glob(filepath.Join(valuesDir, "*.env"))
 	sort.Strings(envFiles)
 	for _, p := range envFiles {
-		svc := strings.TrimSuffix(filepath.Base(p), ".env")
-		body, err := os.ReadFile(p) // #nosec G304 -- the fetch's own output
-		if err != nil {
+		if err := sendEnvFile(t, p, stack); err != nil {
 			return err
 		}
-		dst := remote.ShellQuote(stack + "/env/" + svc + ".env")
-		write := fmt.Sprintf("umask 077; mkdir -p %s && cat > %s.new && mv %s.new %s", remote.ShellQuote(stack+"/env"), dst, dst, dst)
-		if err := t.Run(bytes.NewReader(body), io.Discard, t.Sudo("sh -c "+remote.ShellQuote(write))); err != nil {
-			return fmt.Errorf("delivering %s.env: %w", svc, err)
+	}
+	return nil
+}
+
+// SendEnvOf delivers the env files of the named services only — what another
+// machine of the environment needs (a database server's, on its machine). A
+// service the fetch handed no file for is refused, never skipped.
+func SendEnvOf(t remote.Target, valuesDir, stack string, services []string) error {
+	for _, svc := range services {
+		p := filepath.Join(valuesDir, svc+".env")
+		if _, err := os.Stat(p); err != nil {
+			return fmt.Errorf("delivering %s.env: the console handed no values for %s (services/%s/.env.example)", svc, svc, svc)
 		}
+		if err := sendEnvFile(t, p, stack); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendEnvFile writes one env file into stack/env on t, replacing the old one
+// only once the new one is whole.
+func sendEnvFile(t remote.Target, p, stack string) error {
+	svc := strings.TrimSuffix(filepath.Base(p), ".env")
+	body, err := os.ReadFile(p) // #nosec G304 -- the fetch's own output
+	if err != nil {
+		return err
+	}
+	dst := remote.ShellQuote(stack + "/env/" + svc + ".env")
+	write := fmt.Sprintf("umask 077; mkdir -p %s && cat > %s.new && mv %s.new %s", remote.ShellQuote(stack+"/env"), dst, dst, dst)
+	if err := t.Run(bytes.NewReader(body), io.Discard, t.Sudo("sh -c "+remote.ShellQuote(write))); err != nil {
+		return fmt.Errorf("delivering %s.env: %w", svc, err)
 	}
 	return nil
 }
