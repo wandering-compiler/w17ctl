@@ -1167,6 +1167,12 @@ func effectiveSdkFloor(consoleFloor string, reqs ...*codegenpb.SdkRequirement) (
 
 // checkSdkFloorAgainst is checkSdkFloor over an explicit floor and the words
 // for where it came from.
+//
+// The fix names the floor. A bare `w17ctl sdk update` takes the proxy's
+// @latest, which is the newest STABLE release: under a codegen release
+// candidate the floor is itself a pre-release above it, so the advised
+// command stayed below the floor and codegen refused again. The floor is
+// the one version that is always enough.
 func checkSdkFloorAgainst(ver, how, floor, source string) error {
 	if floor == "" || ver == "" {
 		return nil // local / co-dev build, or nothing resolved to compare
@@ -1182,9 +1188,9 @@ func checkSdkFloorAgainst(ver, how, floor, source string) error {
 		"why: codegen has just written code against the NEWER surface, so the "+
 		"build will fail inside the build image with `undefined: …` and nothing "+
 		"there will point back at the pin\n"+
-		"fix: `w17ctl sdk update` (then `w17ctl sdk pin <version>` if you keep a "+
+		"fix: `w17ctl sdk update --version %s` (then `w17ctl sdk pin %s` if you keep a "+
 		"deliberate pin), and re-run codegen",
-		ErrSdkFloor, core.SdkModuleBase+"/sdk/go", ver, how, core.SdkModuleBase+"/sdk/go", source, floor)
+		ErrSdkFloor, core.SdkModuleBase+"/sdk/go", ver, how, core.SdkModuleBase+"/sdk/go", source, floor, floor, floor)
 }
 
 // priorPin returns the snapshotted version for one of targets ("" when the
@@ -1572,6 +1578,10 @@ func applyWriteOps(root, languagesDir, servicesDir string, writes []*codegenpb.G
 			// --force run, which is the habit that turns the guard off where
 			// it matters.
 			ownUnchanged := record != nil && record.wrote(rel, target)
+			// A generated pipeline that differs only in the w17ctl version it
+			// installs holds no edit either — the record that would say so is
+			// gitignored, so a fresh clone has none (onlyClientVersionDiffers).
+			ownUnchanged = ownUnchanged || onlyClientVersionDiffers(target, contents)
 			if !isPoCatalog && !isLock && !force && !ownUnchanged {
 				collisions = append(collisions, target)
 				continue
