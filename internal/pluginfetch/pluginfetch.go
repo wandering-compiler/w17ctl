@@ -21,6 +21,7 @@ package pluginfetch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -238,6 +239,11 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 		}
 	}
 
+	// Before isAuthorTree, which takes a present plugin.sig as the mark of a
+	// release: a blank or unreadable one is neither a release nor unsigned.
+	if _, serr := readSignatureFile(tree); serr != nil {
+		return Fetched{}, fmt.Errorf("plugin fetch: %s: %w", src.Tag(), serr)
+	}
 	if isAuthorTree(tree) {
 		// A directory of its own: rendering into `work/<anything>` would be the
 		// plugin's own directory for a plugin of that name, and the render
@@ -271,18 +277,20 @@ func Fetch(ctx context.Context, src Source, dest string) (Fetched, error) {
 		return Fetched{}, err
 	}
 	// Read before the digest is trusted for anything: a missing file is the
-	// unsigned case and not an error, so ReadFile's error is deliberately
-	// dropped rather than surfaced as a fetch failure.
-	sig, _ := os.ReadFile(filepath.Join(dest, SignatureFile))
+	// unsigned case and not an error (readSignatureFile says which).
+	sig, err := readSignatureFile(dest)
+	if err != nil {
+		return Fetched{}, fmt.Errorf("plugin fetch: %s: %w", src.Tag(), err)
+	}
 	if tagSig != "" {
 		// The claim is about the tree as tagged, so it is checked against that
 		// tree's digest. The landed digest stays the lock's pin either way.
-		published, sig = taggedDigest, []byte(tagSig)
+		published, sig = taggedDigest, tagSig
 	}
 
 	return Fetched{
 		Dir: dest, Repo: src.Repo, Ref: src.Ref(), Version: version,
-		SHA: sha, Digest: digest, PublishedDigest: published, Signature: string(sig),
+		SHA: sha, Digest: digest, PublishedDigest: published, Signature: sig,
 	}, nil
 }
 
@@ -350,6 +358,33 @@ func signatureFromTagMessage(tag, msg string) (string, error) {
 		return "", fmt.Errorf("plugin fetch: the signature block in the message of %s is empty", tag)
 	}
 	return body + "\n", nil
+}
+
+// readSignatureFile returns the root plugin.sig of dir verbatim, "" when there
+// is none.
+//
+// Only a MISSING file is the unsigned case. A release's signature is never
+// empty (`plugin sign` writes a header and a signature line), so a file that is
+// present but blank is not one — and taking it for one has two readers
+// disagree: isAuthorTree treats any present plugin.sig as the mark of a
+// release and lands its Go live, while the console reads the empty string it
+// is sent as UNSIGNED. A file that cannot be read is not the unsigned case
+// either; swallowing that error turned a permission problem into "nothing
+// travelled with this tree to verify".
+func readSignatureFile(dir string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(dir, SignatureFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("the tree carries a %s this client cannot read: %w — "+
+			"a release's signature has to be readable to be verified", SignatureFile, err)
+	}
+	if strings.TrimSpace(string(b)) == "" {
+		return "", fmt.Errorf("the tree carries an empty %s — a release's signature is never empty, "+
+			"so this is neither a signed release nor an unsigned tree; remove the file, or fetch the release again", SignatureFile)
+	}
+	return string(b), nil
 }
 
 // isAuthorTree reports whether a fetched plugin directory is an author tree
@@ -788,6 +823,9 @@ func FromDir(src, dest string) (Fetched, error) {
 	// release's, signed or not, or one with no Go at all — lands as it is.
 	// Rendering a published tree again lost all of its Go without an error.
 	published := filepath.Join(work, "published")
+	if _, serr := readSignatureFile(abs); serr != nil {
+		return Fetched{}, fmt.Errorf("plugin install: %s: %w", abs, serr)
+	}
 	if isAuthorTree(abs) {
 		if _, rerr := pluginrender.Plugin(abs, published); rerr != nil {
 			return Fetched{}, rerr
@@ -819,10 +857,13 @@ func FromDir(src, dest string) (Fetched, error) {
 	if err != nil {
 		return Fetched{}, err
 	}
-	sig, _ := os.ReadFile(filepath.Join(dest, SignatureFile))
+	sig, err := readSignatureFile(dest)
+	if err != nil {
+		return Fetched{}, fmt.Errorf("plugin install: %s: %w", abs, err)
+	}
 
 	return Fetched{
-		Dir: dest, Version: version, Digest: digest, PublishedDigest: pubDigest, Signature: string(sig),
+		Dir: dest, Version: version, Digest: digest, PublishedDigest: pubDigest, Signature: sig,
 	}, nil
 }
 

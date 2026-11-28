@@ -35,6 +35,9 @@ import (
 type GenPbCmd struct {
 	Dir     string `arg:"" optional:"" name:"dir" default:"." help:"Plugin source directory (holds plugin.yaml + proto/ + src/). Default: current directory."`
 	Console string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console CodegenService. Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
+	// CodegenVersion is the engine the stubs are generated with, in the
+	// shape a lock's codegen_version takes. A plugin has no lock to pin it in.
+	CodegenVersion string `name:"codegen-version" placeholder:"VERSION" help:"The codegen engine to generate the stubs with: a release minor (v0.1) or an exact release candidate (v0.2.0-rc.3) the console carries — no opt-in is needed, the stubs are your own. Default: the console's newest release."`
 }
 
 func (c *GenPbCmd) Run() error {
@@ -80,7 +83,8 @@ func (c *GenPbCmd) Run() error {
 	// gen/pb exactly as it was. It used to be wiped before the first file
 	// arrived, so any of those left the plugin without its stubs.
 	var got []*codegenpb.GeneratedFile
-	start := &codegenpb.PlaceGenerateStart{ProtoLines: codegen.ProtoLines(protoFiles), Op: codegenpb.PlacementOp_PLACEMENT_OP_PLUGIN_PB}
+	start := &codegenpb.PlaceGenerateStart{ProtoLines: codegen.ProtoLines(protoFiles), Op: codegenpb.PlacementOp_PLACEMENT_OP_PLUGIN_PB,
+		CodegenVersion: strings.TrimSpace(c.CodegenVersion)}
 	err = codegen.RunOnWorker(core.PlacerFn(conn), start, core.Stdout,
 		func(ctx context.Context, worker codegenpb.CodegenServiceClient, _ []byte) error {
 			got = nil // a re-run starts afresh

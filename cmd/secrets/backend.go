@@ -2,7 +2,6 @@ package secrets
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
@@ -23,20 +22,15 @@ func (c *BackendCmd) Run() error {
 	if !secretsBackends[name] {
 		return fmt.Errorf("secrets backend: unknown backend %q (plain|eso|vault|cloud-csi)", c.Name)
 	}
-	lockBytes, err := os.ReadFile(c.LockPath)
-	if err != nil {
-		return fmt.Errorf("secrets backend: read lock %s: %w", c.LockPath, err)
-	}
-	newBytes, err := core.EditLock(c.Console, lockBytes, &codegenpb.LockEditIntent{
+	// Read → EditLock → atomic write under the update lock, so a concurrent
+	// `push` cannot interleave and drop this edit, and a crash leaves the old
+	// lock rather than a truncated one.
+	if err := core.EditLockOnDisk("secrets backend", c.Console, c.LockPath, &codegenpb.LockEditIntent{
 		Intent: &codegenpb.LockEditIntent_SetSecretsBackend{
 			SetSecretsBackend: &codegenpb.SetSecretsBackendIntent{Backend: name},
 		},
-	})
-	if err != nil {
-		return fmt.Errorf("secrets backend: %w", err)
-	}
-	if err := os.WriteFile(c.LockPath, newBytes, 0o644); err != nil {
-		return fmt.Errorf("secrets backend: write lock: %w", err)
+	}); err != nil {
+		return err
 	}
 	fmt.Fprintf(core.Stdout, "secrets backend: %s → %s\n", name, c.LockPath)
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/wandering-compiler/w17ctl/internal/core"
+	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
 	"github.com/wandering-compiler/sdk/go/service/secret"
 )
@@ -26,6 +27,13 @@ type InitCmd struct {
 }
 
 func (c *InitCmd) Run() error {
+	// The update lock spans the read, the key mint and the write: a
+	// concurrent `push` cannot interleave and drop one of the two edits.
+	release, err := lockfile.ForUpdate(c.LockPath)
+	if err != nil {
+		return fmt.Errorf("secrets init: lock for update: %w", err)
+	}
+	defer release()
 	lockBytes, err := os.ReadFile(c.LockPath)
 	if err != nil {
 		return fmt.Errorf("secrets init: read lock %s: %w", c.LockPath, err)
@@ -74,7 +82,7 @@ func (c *InitCmd) Run() error {
 	if err != nil {
 		return fmt.Errorf("secrets init: %w", err)
 	}
-	if err := os.WriteFile(c.LockPath, newBytes, 0o644); err != nil {
+	if err := lockfile.WriteAtomic(c.LockPath, newBytes, 0o644); err != nil {
 		return fmt.Errorf("secrets init: write lock: %w", err)
 	}
 

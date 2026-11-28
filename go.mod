@@ -9,7 +9,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/wandering-compiler/sdk/go v0.2.0-rc.3
+	github.com/wandering-compiler/sdk/go v0.2.0-rc.4
 	golang.org/x/mod v0.41.0
 	golang.org/x/term v0.46.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc

@@ -61,8 +61,9 @@ var skipDirs = map[string]bool{
 	".git": true, "node_modules": true, "vendor": true, "dist": true, ".w17": true,
 }
 
-// Run bumps every project module that requires the SDK onto version (or the
-// proxy's @latest when version is empty), writing go.mod + go.sum.
+// Run bumps every project module that requires the SDK onto version (or, when
+// version is empty, the proxy's @latest capped at the newest release on the
+// project's codegen minor), writing go.mod + go.sum.
 //
 // Returns the version every module ended up on — resolved from the proxy when
 // the caller named none. The caller needs it to decide whether anything
@@ -100,16 +101,25 @@ func RunOpts(stdout io.Writer, root, version string, opts Options) (string, erro
 
 	ctx := context.Background()
 	if version == "" {
-		if version, err = latestVersion(ctx, SdkModule); err != nil {
+		latest, err := latestVersion(ctx, SdkModule)
+		if err != nil {
 			return "", fmt.Errorf("sdk update: %w", err)
 		}
+		capped, note, err := capToCodegenMinor(ctx, root, latest)
+		if err != nil {
+			return "", fmt.Errorf("sdk update: %w", err)
+		}
+		version = capped
 		// The proxy caches @latest, so for a while after a release it still
 		// answers the one before. A bare update then moved a project that had
 		// just pinned the new release BACK onto the old one. "The newest" is
-		// never older than what the project already records.
+		// never older than what the project already records. The cap's own
+		// note ("taking …") is printed only when the update takes it.
 		if have := highestRecorded(root, mods); semver.Compare(have, version) > 0 {
-			fmt.Fprintf(stdout, "sdk update: the proxy's @latest is %s, older than the %s this project already records — staying on %s (pass --version to choose another)\n", version, have, have)
+			fmt.Fprintf(stdout, "sdk update: %s\n", stayNote(root, latest, version, have))
 			version = have
+		} else if note != "" {
+			fmt.Fprintf(stdout, "sdk update: %s\n", note)
 		}
 	}
 
@@ -853,4 +863,82 @@ func goModHash(data []byte) (string, error) {
 		return "", fmt.Errorf("hash go.mod: %w", err)
 	}
 	return h, nil
+}
+
+// LatestForProject is the version a bare `w17ctl sdk update` moves the project
+// at root to: the proxy's @latest, capped at the newest release on the minor
+// the project generates with (capToCodegenMinor). `update --check` asks this,
+// so its row names what the update would do.
+func LatestForProject(ctx context.Context, root string) (string, error) {
+	latest, err := latestVersion(ctx, SdkModule)
+	if err != nil {
+		return "", err
+	}
+	v, _, err := capToCodegenMinor(ctx, root, latest)
+	return v, err
+}
+
+// codegenMinor is the release minor the project at root generates with, read
+// off its lock: its codegen_version, or v0.1 for a lock without one (the
+// guide topic cli.codegen-versions). ok is false with no lock,
+// and for an exact release-candidate pin — an owner's hand-made choice, SDK
+// included — or one that is not a minor.
+func codegenMinor(root string) (minor string, ok bool) {
+	if _, err := os.Stat(filepath.Join(root, "w17", "lock.yaml")); err != nil {
+		return "", false
+	}
+	cv := LockedCodegenVersion(root)
+	if cv == "" {
+		return "v0.1", true
+	}
+	if !semver.IsValid(cv) || semver.MajorMinor(cv) != cv {
+		return "", false
+	}
+	return cv, true
+}
+
+// stayNote says why a bare update keeps the version the project already
+// records (have) rather than the one it resolved (resolved, from the proxy's
+// @latest, capped at the codegen minor when that differs): it names where the
+// resolved value came from, and — when have sits ABOVE the minor the project
+// generates with — that the pair is one the cap exists to avoid, and the two
+// ways out of it.
+func stayNote(root, latest, resolved, have string) string {
+	origin := "the proxy's @latest is " + resolved
+	minor, ok := codegenMinor(root)
+	if ok && resolved != latest {
+		origin = fmt.Sprintf("the newest release on the codegen %s minor is %s (the proxy's @latest is %s)", minor, resolved, latest)
+	}
+	msg := fmt.Sprintf("%s, older than the %s this project already records — staying on %s; an update never moves a project back", origin, have, have)
+	if ok && semver.Compare(semver.MajorMinor(have), minor) > 0 {
+		msg += fmt.Sprintf("\n  ⚠ %s is above the codegen %s minor this project generates with: that engine's code is not built against a newer minor's SDK. "+
+			"Move the project with `w17ctl codegen-version %s`, or choose an SDK on %s with `w17ctl sdk update --version <v>`",
+			have, minor, semver.MajorMinor(have), minor)
+	} else {
+		msg += " (pass --version to choose another)"
+	}
+	return msg
+}
+
+// latestOnMinorFn is a seam for tests.
+var latestOnMinorFn = LatestOnMinor
+
+// capToCodegenMinor keeps a bare update on the project's codegen minor: the
+// code that minor's engine writes builds against that minor's SDK, and an SDK
+// of a newer minor under it fails in the build image with `undefined:` — a
+// pair nothing else checks. latest above the minor becomes the minor's newest
+// release, and note says so; --version, or `w17ctl codegen-version <minor>`,
+// is how a project crosses.
+func capToCodegenMinor(ctx context.Context, root, latest string) (version, note string, err error) {
+	minor, ok := codegenMinor(root)
+	if !ok || !semver.IsValid(latest) || semver.Compare(semver.MajorMinor(latest), minor) <= 0 {
+		return latest, "", nil
+	}
+	v, err := latestOnMinorFn(ctx, minor)
+	if err != nil {
+		return "", "", fmt.Errorf("the project generates with codegen %s, the proxy's @latest is %s, and no %s release could be found (%w) — pass --version to choose one, or move the project with `w17ctl codegen-version %s`",
+			minor, latest, minor, err, semver.MajorMinor(latest))
+	}
+	return v, fmt.Sprintf("the proxy's @latest is %s, on a newer minor than the codegen %s this project generates with — taking %s, the newest %s release (pass --version %s to cross, or move the project with `w17ctl codegen-version %s`)",
+		latest, minor, v, minor, latest, semver.MajorMinor(latest)), nil
 }

@@ -65,19 +65,21 @@ func (c *Cmd) clientLatest() (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// sdkFloor is the higher of this client's floor and the console's — what the
-// code about to be generated needs. A console that cannot be asked leaves the
+// sdkFloor is the floor the code about to be generated needs — the one rule
+// codegen's own floor check uses (core.GeneratedSdkFloor): the console's floor
+// for the engine the lock's codegen_version reaches, and this client's only
+// when the console declares none. A console that cannot be asked leaves the
 // client's own.
 func sdkFloor(console, root string) (floor, source string) {
-	floor, source = core.SdkFloor, "this w17ctl"
-	view, err := core.DescribeLockFromRoot(console, root)
-	if err != nil {
-		return floor, source
+	consoleFloor := ""
+	if view, err := core.DescribeLockFromRoot(console, root); err == nil {
+		consoleFloor = view.GetSdkFloor()
 	}
-	if f := view.GetSdkFloor(); semver.IsValid(f) && (!semver.IsValid(floor) || semver.Compare(floor, f) < 0) {
-		floor, source = f, "the console"
+	floor, fromConsole := core.GeneratedSdkFloor(consoleFloor)
+	if fromConsole {
+		return floor, "the console"
 	}
-	return floor, source
+	return floor, "this w17ctl"
 }
 
 // report is the command's own check: its flags decide the client track.
@@ -303,6 +305,11 @@ func PreGenerate(console, root string) error {
 	)
 	options := []string{optUpdate, optAbort}
 	question := "a REQUIRED update is missing — the code would not build without it:"
+	if len(required) > 0 {
+		// No "continue" is offered, so the way past the question is named:
+		// codegen itself still refuses a pin below the floor afterwards.
+		fmt.Fprintln(core.Stdout, "codegen: to generate without this check, `w17ctl codegen --no-update-check`; a pipeline (CI=1) is never asked")
+	}
 	if len(required) == 0 {
 		options = []string{optUpdate, optContinue, optAbort}
 		question = "w17 is in alpha: releases can carry breaking fixes, and staying current is the advice:"

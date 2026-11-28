@@ -293,8 +293,9 @@ func updateFromGit(to, name string, existing lockfile.Plugin, staging string) ([
 //     is refused WITH `--all`, so every sweep hit it. The plugin is what cannot
 //     be upgraded, not the command.
 //
-// The `url:` source in the same loop already had exactly this shape, which is
-// where the wording below comes from.
+// The legacy `url:` source in the same loop (a lock the console no longer
+// decodes, read here offline) has exactly this shape, which is where the
+// wording below comes from.
 type commitPinnedError struct {
 	Name   string
 	Repo   string

@@ -326,7 +326,7 @@ prepare inputs.
 | `deploy --env <env> [--with-tests]` | One person's MVP/PoC shortcut: mint + pin migrations, codegen, fetch the environment's values from the console, build the images, then — for a swarm environment — ship them over SSH (no registry) and deploy blue/green on its server, or — for aws-ecs / gcp-cloudrun — apply its Terraform (`--state-bucket`). Always warns that it is not the recommended way. |
 | `infra <cmd>` | Where and how the project is deployed — swarm (your own servers), aws-ecs or gcp-cloudrun: environments, edge, TLS, backups, server setup. `init` / `update` prompt and write `w17/infra.yaml`; `show` / `remove`; the next codegen renders `deploy/<env>/`. |
 | `client <cmd>` | Generated gRPC clients of THIRD-PARTY APIs (REST from OpenAPI, SOAP from WSDL): `generate` / `update` / `list` / `remove`, under `proto/clients/<name>/`. |
-| `sdk update` / `codegen-version [<v>]` | Move the project onto a new sdk/go release (no local Go toolchain needed) / pin the codegen engine it generates with (a minor, or an exact release candidate). `update --all` does both. |
+| `sdk update` / `codegen-version [<v>]` | Move the project onto a new sdk/go release (no local Go toolchain needed; a bare update stays on the codegen minor the project generates with, `--version` crosses) / pin the codegen engine it generates with (a minor, or an exact release candidate; the SDK pin follows the minor). `update --all` does both. |
 | `certs` | Fill a directory with a local dev PKI (self-signed CA + CA-signed leaf) for the internal-mesh TLS switch (`W17_INTERNAL_TLS=on`). Idempotent — never overwrites. |
 
 ### Codegen & schema

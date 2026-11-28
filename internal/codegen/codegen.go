@@ -472,6 +472,7 @@ func Run(console string, force bool, adoptGitignore bool, gofmt string, retries 
 		out:            core.Stdout,
 		root:           root,
 		codegenVersion: view.GetCodegenVersion(),
+		sdkVersion:     buildSdkVersion(root, sdkVersion),
 	}
 	res, runErr := run.run()
 	if runErr != nil {
@@ -1112,23 +1113,6 @@ func resolveSdkGoPinsAt(root, servicesDir, w17Stubs, genDir string, prior map[st
 // refusal: it is a promise the reader acts on.
 var ErrSdkFloor = errors.New("sdk/go pin predates this client")
 
-// checkSdkFloor refuses a pin older than the sdk/go this client was published
-// with. See core.SdkFloor for why, and for the limit of what it can catch.
-//
-// It REFUSES rather than raising the pin, because a project's pin is a
-// deliberate statement and silently moving it forward would be a different
-// defect — and because refusing here stops at the step that caused the problem
-// instead of at a build image three commands later. The refusal names the one
-// command that fixes it.
-//
-// A version that is not a comparable semver (a placeholder, a replace target,
-// anything hand-edited into a shape semver cannot order) is left alone: this
-// check exists to catch a stale pin, not to become a second validator of what
-// a pin may look like.
-func checkSdkFloor(ver, how string) error {
-	return checkSdkFloorAgainst(ver, how, core.SdkFloor, floorFromClient)
-}
-
 // The two places a floor can come from, worded for the refusal.
 const (
 	floorFromClient  = "this w17ctl was published with"
@@ -1136,37 +1120,38 @@ const (
 )
 
 // effectiveSdkFloor is the floor the generated code needs: the one the
-// console declared (LockView.sdk_floor) — the floor of the ENGINE the lock's
-// codegen_version resolves to, since that engine wrote the code — raised by
-// any the generated code declared (an activated plugin's requires_sdk,
-// carried as a GeneratedOp). The floor this client was published with stands
-// in only when the console declares none (a console from before sdk_floor).
+// console declared, else this client's (core.GeneratedSdkFloor — the one rule
+// every reader of it shares), raised by any the generated code declared (an
+// activated plugin's requires_sdk, carried as a GeneratedOp).
 //
-// It used to be the highest of all three, so a w17ctl published with
-// v0.2.0-rc.2 refused every project on the v0.1.2 engine and SDK v0.1.2 —
-// code the v0.1.2 engine wrote, which needs v0.1.2 and nothing newer.
+// It used to be the highest of the console's and the client's, so a w17ctl
+// published with v0.2.0-rc.2 refused every project on the v0.1.2 engine and
+// SDK v0.1.2 — code the v0.1.2 engine wrote, which needs v0.1.2 and nothing
+// newer.
 func effectiveSdkFloor(consoleFloor string, reqs ...*codegenpb.SdkRequirement) (floor, source string) {
-	floor, source = core.SdkFloor, floorFromClient
-	if semver.IsValid(consoleFloor) {
-		floor, source = consoleFloor, floorFromConsole
+	floor, fromConsole := core.GeneratedSdkFloor(consoleFloor)
+	source = floorFromClient
+	if fromConsole {
+		source = floorFromConsole
 	}
-	raise := func(v, from string) {
-		if !semver.IsValid(v) {
-			return
-		}
-		if !semver.IsValid(floor) || semver.Compare(v, floor) > 0 {
-			floor, source = v, from
-		}
-	}
-	raise(consoleFloor, floorFromConsole)
 	for _, r := range reqs {
-		raise(r.GetVersion(), r.GetSource()+" needs")
+		if v := r.GetVersion(); semver.IsValid(v) && (!semver.IsValid(floor) || semver.Compare(v, floor) > 0) {
+			floor, source = v, r.GetSource()+" needs"
+		}
 	}
 	return floor, source
 }
 
-// checkSdkFloorAgainst is checkSdkFloor over an explicit floor and the words
-// for where it came from.
+// checkSdkFloorAgainst refuses a pin older than floor; source says where the
+// floor came from (floorFromClient, floorFromConsole, a plugin's
+// requires_sdk). See core.SdkFloor for why, and for the limit of what it can
+// catch.
+//
+// It REFUSES rather than raising the pin, because a project's pin is a
+// deliberate statement and silently moving it forward would be a different
+// defect — and because refusing here stops at the step that caused the
+// problem instead of at a build image three commands later. A version that is
+// not a comparable semver (a placeholder, a replace target) is left alone.
 //
 // The fix names the floor. A bare `w17ctl sdk update` takes the proxy's
 // @latest, which is the newest STABLE release: under a codegen release

@@ -15,6 +15,8 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 // Stdout is the writer every command renders user-facing output to.
@@ -72,11 +74,33 @@ var (
 //
 // ⚠️ A FLOOR, not a ceiling. The code being generated comes from the CONSOLE,
 // which can be newer than the client, so on its own this only catches a pin
-// older than the client itself. A console ahead of w17ctl now declares its own
-// floor (LockView.sdk_floor, set at deploy) and codegen checks against the
-// higher of the two — see effectiveSdkFloor. A console that declares nothing
-// leaves this one in charge.
+// older than the client itself. A console declares the floor of the engine
+// the lock's codegen_version reaches (LockView.sdk_floor) and that floor
+// decides — see GeneratedSdkFloor. A console that declares nothing leaves
+// this one in charge.
 var SdkFloor = ""
+
+// GeneratedSdkFloor is the sdk/go floor the code the console is about to
+// generate needs, before any plugin of it raises it: the console's floor
+// (LockView.sdk_floor — the floor of the ENGINE the lock's codegen_version
+// resolves to, since that engine writes the code) when it declares one, and
+// this client's own SdkFloor only when it does not (a console from before
+// the field). fromConsole says which one answered.
+//
+// It is never the higher of the two. The console can carry an older engine
+// than the client was published with: a w17ctl of the 0.2 line generating a
+// v0.1 project gets code the v0.1 engine wrote, which builds on v0.1's SDK
+// and needs nothing newer — the higher of the two told every such project
+// its SDK was too old, and the way it named moved the project onto a minor
+// the console then refused. Every reader of "the SDK the generated code
+// needs" (codegen's floor check, `update --check`, the check codegen runs
+// first) answers it here, so they cannot disagree.
+func GeneratedSdkFloor(consoleFloor string) (floor string, fromConsole bool) {
+	if semver.IsValid(consoleFloor) {
+		return consoleFloor, true
+	}
+	return SdkFloor, false
+}
 
 // ClientCtx is the default per-call deadline for console RPCs.
 func ClientCtx() (context.Context, context.CancelFunc) {

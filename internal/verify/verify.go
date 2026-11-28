@@ -159,21 +159,9 @@ func Run(out io.Writer, console string, allowStalePins bool) error {
 	// version promised is re-hashing it here. Purely local — no console round
 	// trip — and skipped entirely by a project with no git-sourced plugins.
 	if lk, lerr := lockfile.Load(filepath.Join(root, "w17", "lock.yaml")); lerr == nil {
-		if pluginErrs := verifyPluginTrees(root, protoDir, lk.Plugins); len(pluginErrs) > 0 {
-			checked++
-			errs = append(errs, pluginErrs...)
-		} else if hasPinnedPlugins(lk.Plugins) {
-			checked++
-			fmt.Fprintln(out, "verify: plugin trees match their pinned digests")
-		}
-		// Named rather than passed over. The line above is true about what was
-		// checked and a reader takes it as true about their plugins; a locally
-		// installed tree has no digest to check against, and a skip nobody is
-		// told about turns a true sentence into a false impression.
-		if local := locallyInstalled(lk.Plugins); len(local) > 0 {
-			fmt.Fprintf(out, "verify: %s installed from a directory — no pin to check, "+
-				"and a dev tree is meant to be edited in place\n", pluginList(local))
-		}
+		n, pluginErrs := reportPluginTrees(out, root, protoDir, lk.Plugins)
+		checked += n
+		errs = append(errs, pluginErrs...)
 	}
 
 	// Egress clients: each committed client's signature, checked by the

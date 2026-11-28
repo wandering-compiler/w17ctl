@@ -42,7 +42,7 @@ type Cmd struct {
 // proxy alone.
 type UpdateCmd struct {
 	ProjectRoot string `arg:"" optional:"" default:"." help:"Project root. Defaults to cwd."`
-	Version     string `name:"version" placeholder:"VERSION" help:"Pin this exact version (e.g. v0.0.0-20260716201145-36e33cc8168a). Default: the proxy's @latest."`
+	Version     string `name:"version" placeholder:"VERSION" help:"Pin this exact version (e.g. v0.0.0-20260716201145-36e33cc8168a). Default: the proxy's @latest, kept on the minor the project generates with (its codegen_version, v0.1 without one) — a newer minor is crossed with this flag, or with w17ctl codegen-version."`
 	NoTidy      bool   `name:"no-tidy" help:"Skip the closing go mod tidy of each module (a local go of the module's version, or docker). The update then writes only what the module proxy answers: the SDK and the modules the project already lists, raised to what the SDK needs."`
 }
 

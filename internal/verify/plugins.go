@@ -3,6 +3,7 @@ package verify
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,7 +80,7 @@ func verifyPluginTrees(root, protoDir string, plugins []lockfile.Plugin) []error
 		// Absent is not empty. An `internal` plugin has no git provenance, and
 		// a lock written before the pin existed carries none either — neither
 		// is a tree that failed a check, so neither is reported as one.
-		if p.Source != "git" || p.Git == nil || p.Git.Digest == "" {
+		if !pinned(p) {
 			continue
 		}
 		dir := filepath.Join(root, protoDir, "plugins", p.Name)
@@ -107,8 +108,53 @@ func verifyPluginTrees(root, protoDir string, plugins []lockfile.Plugin) []error
 					"       as a release and pin that",
 				p.Name, p.Git.Ref, p.Git.Digest, got, p.Name, versionOf(p.Git.Ref))})
 		}
+		if uerr := refuseUncovered(p, dir); uerr != nil {
+			errs = append(errs, uerr)
+		}
 	}
 	return errs
+}
+
+// refuseUncovered refuses a pinned tree that carries files the digest never
+// covered.
+//
+// The digest leaves out the locations a toolchain regenerates (`src/gen`,
+// `node_modules`, `.w17dev`), because covering them would make the first
+// codegen break every pin, and any `.git` directory, which below the plugin
+// root is no part of a release (git cannot commit one). The flip side is that a file placed there by
+// anything else is invisible to the comparison above — and the upload and the
+// console's staging still read those locations, so a matching digest would be
+// vouching for a tree whose compiled set is larger than what it covers. The
+// install prunes them, so nothing a release shipped is ever there; what is
+// there came afterwards.
+//
+// The one exception is what w17's own toolchain writes there
+// (plugindigest.ToolchainWritten): the pb codegen writes back under
+// `src/gen/pb`, and the contract and feature constants `w17ctl plugin gen`
+// writes — regenerated, and never compiled into a bundle. The upload and the
+// console's staging ask the same predicate, so a tree this gate accepts is one
+// they accept, and the other way round.
+func refuseUncovered(p lockfile.Plugin, dir string) error {
+	unc, err := plugindigest.Uncovered(dir)
+	if err != nil {
+		return &pluginTreeError{plugin: p.Name, cause: fmt.Errorf("plugin %s: %w", p.Name, err)}
+	}
+	var extra []string
+	for _, rel := range unc {
+		if !plugindigest.ToolchainWritten(rel) {
+			extra = append(extra, rel)
+		}
+	}
+	if len(extra) == 0 {
+		return nil
+	}
+	return &pluginTreeError{plugin: p.Name, cause: fmt.Errorf(
+		"plugin %s: the tree carries %d file(s) its pinned digest does not cover:\n    %s\n"+
+			"  why: these locations are regenerated, so the digest leaves them out — and a file\n"+
+			"       placed there would be compiled under a pin that never saw it; an install\n"+
+			"       removes them, so these arrived afterwards\n"+
+			"  fix: `w17ctl plugin update %s --to %s` to restore the tree as released",
+		p.Name, len(extra), strings.Join(extra, "\n    "), p.Name, versionOf(p.Git.Ref))}
 }
 
 // shortRef abbreviates a commit for a message. Display only — the lock keeps
@@ -131,17 +177,61 @@ func versionOf(ref string) string {
 	return ref
 }
 
-// locallyInstalled names the plugins this check CANNOT speak for.
+// pinned is the one predicate for "this gate can check it": a git-sourced
+// plugin whose pin records a digest. verifyPluginTrees checks exactly these,
+// hasPinnedPlugins asks whether there is one, and uncheckedPlugins names every
+// other — three readers of one rule rather than three copies of it.
+func pinned(p lockfile.Plugin) bool {
+	return p.Source == "git" && p.Git != nil && p.Git.Digest != ""
+}
+
+// uncheckedPlugin is a plugin the digest gate could not speak for, and why.
+type uncheckedPlugin struct {
+	name, reason string
+}
+
+// uncheckedPlugins names every plugin this check CANNOT speak for, each with
+// its reason.
 //
 // ⚠️ Saying so is the whole point. The line this gate prints — "plugin trees
 // match their pinned digests" — is true about what it checked, and a reader
-// takes it as true about their plugins. A `local` install has no digest to
-// check against (it has no repository and no commit; `source: local` is the
-// lock admitting provenance was not available), so it is skipped — and a skip
-// nobody is told about turns a true sentence into a false impression.
+// takes it as true about their plugins. A plugin with no digest to compare is
+// skipped, and a skip nobody is told about turns a true sentence into a false
+// impression:
 //
-// It is not an error. A dev tree is MEANT to be edited in place, which is the
-// one thing this gate exists to catch everywhere else.
+//   - `local`: installed from a directory. It has no repository and no commit
+//     (`source: local` is the lock admitting provenance was not available), and
+//     a dev tree is MEANT to be edited in place — not an error;
+//   - `internal` or empty: installed before pins existed. `plugin update`
+//     records the repository, commit and digest, after which this gate checks
+//     it;
+//   - anything else (`url:`, a `git` entry with no digest): a source this
+//     client has no pin for.
+func uncheckedPlugins(plugins []lockfile.Plugin) []uncheckedPlugin {
+	var out []uncheckedPlugin
+	for _, p := range plugins {
+		if pinned(p) {
+			continue
+		}
+		var reason string
+		switch p.Source {
+		case "local":
+			reason = "installed from a directory — no pin to check, and a dev tree is meant to be edited in place"
+		case "internal", "":
+			reason = fmt.Sprintf("installed before plugin pins existed (source %q) — "+
+				"`w17ctl plugin update %s` records its repository, commit and digest", p.Source, p.Name)
+		case "git":
+			reason = fmt.Sprintf("a git entry with no digest — `w17ctl plugin update %s` re-pins it", p.Name)
+		default:
+			reason = fmt.Sprintf("source %q carries no pin this client can check — "+
+				"`w17ctl plugin install` it from a repository", p.Source)
+		}
+		out = append(out, uncheckedPlugin{name: p.Name, reason: reason})
+	}
+	return out
+}
+
+// locallyInstalled names the `local` plugins among them.
 func locallyInstalled(plugins []lockfile.Plugin) []string {
 	var out []string
 	for _, p := range plugins {
@@ -158,7 +248,7 @@ func locallyInstalled(plugins []lockfile.Plugin) []string {
 // covered.
 func hasPinnedPlugins(plugins []lockfile.Plugin) bool {
 	for _, p := range plugins {
-		if p.Source == "git" && p.Git != nil && p.Git.Digest != "" {
+		if pinned(p) {
 			return true
 		}
 	}
@@ -173,4 +263,33 @@ func pluginList(names []string) string {
 		return "plugin " + names[0]
 	}
 	return "plugins " + strings.Join(names, ", ")
+}
+
+// reportPluginTrees runs the digest gate over the lock's plugins and prints
+// what it covered. It returns 1 when it checked anything (the count the
+// caller sums into "N lock(s) in sync") and the refusals.
+func reportPluginTrees(out io.Writer, root, protoDir string, plugins []lockfile.Plugin) (int, []error) {
+	checked := 0
+	unchecked := uncheckedPlugins(plugins)
+	pluginErrs := verifyPluginTrees(root, protoDir, plugins)
+	if len(pluginErrs) > 0 {
+		checked++
+	} else if hasPinnedPlugins(plugins) {
+		checked++
+		if len(unchecked) == 0 {
+			fmt.Fprintln(out, "verify: plugin trees match their pinned digests")
+		} else {
+			fmt.Fprintf(out, "verify: plugin trees match their pinned digests (%d of %d plugins checked)\n",
+				len(plugins)-len(unchecked), len(plugins))
+		}
+	}
+	// Named rather than passed over. The line above is true about what was
+	// checked and a reader takes it as true about their plugins.
+	if len(unchecked) > 0 {
+		fmt.Fprintf(out, "verify: %d plugin(s) not checked against a pin:\n", len(unchecked))
+		for _, u := range unchecked {
+			fmt.Fprintf(out, "  %s: %s\n", u.name, u.reason)
+		}
+	}
+	return checked, pluginErrs
 }

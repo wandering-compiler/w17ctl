@@ -15,6 +15,7 @@ import (
 	"github.com/wandering-compiler/w17ctl/internal/authstore"
 	"github.com/wandering-compiler/w17ctl/internal/core"
 	"github.com/wandering-compiler/w17ctl/internal/devconfig"
+	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	"github.com/wandering-compiler/w17ctl/internal/prompter"
 	"github.com/wandering-compiler/w17ctl/internal/scaffold"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
@@ -188,7 +189,9 @@ func (c *Cmd) Run() error {
 			return fmt.Errorf("init: mkdir %s: %w", dir, err)
 		}
 	}
-	if err := os.WriteFile(c.LockPath, lockBytes, 0o644); err != nil {
+	// Atomic: a crash leaves no partial lock behind for the next `init` to
+	// refuse as an existing one.
+	if err := lockfile.WriteAtomic(c.LockPath, lockBytes, 0o644); err != nil {
 		return fmt.Errorf("init: write lock: %w", err)
 	}
 

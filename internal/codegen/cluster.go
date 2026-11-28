@@ -289,6 +289,10 @@ type clusterRun struct {
 	// codegenVersion is the lock's codegen_version (DescribeLock), sent typed
 	// in the handshake.
 	codegenVersion string
+	// sdkVersion is the sdk/go version the project builds against
+	// (buildSdkVersion), sent in the handshake's metadata so the console's
+	// SDK advisory reaches a lock that pins none.
+	sdkVersion string
 }
 
 // clusterResult is a run's buffered output plus what the placement handed back.
@@ -321,6 +325,9 @@ func (r *clusterRun) run() (*clusterResult, error) {
 	var res *clusterResult
 	start := &codegenpb.PlaceGenerateStart{Lock: r.lock, ProtoLines: r.protoLines, Op: codegenpb.PlacementOp_PLACEMENT_OP_GENERATE_PROJECT,
 		CodegenVersion: r.codegenVersion}
+	if r.sdkVersion != "" {
+		start.Metadata = map[string]string{MetadataSdkVersion: r.sdkVersion}
+	}
 	err := placeAndRun(r.placer, start, true, r.retries, r.out, attemptDeadline(r.protoLines),
 		func(g *codegenpb.PlaceGenerateGranted, signed []byte, placeWarnings []string, engine string) error {
 			var err error

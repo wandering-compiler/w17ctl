@@ -635,23 +635,34 @@ func (c *InstallCmd) Run() error {
 
 	// Record the install in the lock via the InstallPlugin EditLock intent
 	// (the server appends + re-signs; the client ships opaque lock bytes).
-	lockBytes, readErr := os.ReadFile(lockPath)
-	if readErr != nil && !os.IsNotExist(readErr) {
+	// Read → EditLock → atomic write under the update lock (a concurrent
+	// `push` cannot interleave and drop this entry; a crash leaves the old
+	// lock, never a truncated one). A missing lock is still bootstrapped.
+	if err := func() error {
+		release, err := lockfile.ForUpdate(lockPath)
+		if err != nil {
+			return fmt.Errorf("plugin install: lock for update: %w", err)
+		}
+		defer release()
+		lockBytes, readErr := os.ReadFile(lockPath)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return fmt.Errorf("plugin install: read lock: %w", readErr)
+		}
+		newBytes, err := core.EditLock(c.Console, lockBytes, &codegenpb.LockEditIntent{
+			Intent: &codegenpb.LockEditIntent_InstallPlugin{
+				InstallPlugin: installIntent(manifest.GetName(), manifest.GetVersion(), git, local, fetched),
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("plugin install: record in lock: %w", err)
+		}
+		if err := lockfile.WriteAtomic(lockPath, newBytes, 0o644); err != nil {
+			return fmt.Errorf("plugin install: write lock: %w", err)
+		}
+		return nil
+	}(); err != nil {
 		_ = os.RemoveAll(staging)
-		return fmt.Errorf("plugin install: read lock: %w", readErr)
-	}
-	newBytes, err := core.EditLock(c.Console, lockBytes, &codegenpb.LockEditIntent{
-		Intent: &codegenpb.LockEditIntent_InstallPlugin{
-			InstallPlugin: installIntent(manifest.GetName(), manifest.GetVersion(), git, local, fetched),
-		},
-	})
-	if err != nil {
-		_ = os.RemoveAll(staging)
-		return fmt.Errorf("plugin install: record in lock: %w", err)
-	}
-	if err := os.WriteFile(lockPath, newBytes, 0o644); err != nil {
-		_ = os.RemoveAll(staging)
-		return fmt.Errorf("plugin install: write lock: %w", err)
+		return err
 	}
 	// Lock persisted — same-filesystem sibling rename, so the tree appears
 	// whole or not at all.
@@ -824,8 +835,13 @@ func (c *UpdateCmd) Run() error {
 		}
 		isGit := existing.Source == "git" || existing.Source == "internal" || existing.Source == ""
 		if c.From == "" && !isGit {
-			// A source nothing here can refresh (a `url:` entry). Skip with a
-			// warning rather than abort, so --all still updates what it can.
+			// A source nothing here can refresh: a legacy `url:` entry. No
+			// w17ctl or console ever wrote one, and the console now refuses
+			// to decode a lock carrying one, so a project holding it cannot
+			// codegen or push until the entry is removed — this branch is
+			// reached only because the client reads the lock offline. Skip
+			// with a warning rather than abort, so --all still updates what
+			// it can and says what it left.
 			// "catalogue" used to be one of the answers here, and it is not a
 			// place any more — naming it sends the reader looking for a console
 			// that no longer serves plugins. `internal` is this organisation's
@@ -875,7 +891,7 @@ func (c *UpdateCmd) Run() error {
 		manifestData, fetched, err = updateFromGit(c.To, name, existing, staging)
 		if pinned, isPinned := asCommitPinned(err); isPinned && c.All {
 			// A sweep skips what it cannot move and keeps going, exactly as
-			// it already does for a `url:` source two branches up. Returning
+			// it does for a legacy `url:` source two branches up. Returning
 			// here aborted the whole run — and since `--to` is refused WITH
 			// `--all`, EVERY sweep over a project holding one commit-pinned
 			// plugin updated nothing at all.
@@ -931,25 +947,16 @@ func (c *UpdateCmd) Run() error {
 	}
 	// Persist all version bumps via one SetPluginVersions EditLock (server
 	// mutates + re-signs; client ships opaque lock bytes).
-	lockBytes, readErr := os.ReadFile(lockPath)
-	if readErr != nil {
-		removeStaging()
-		return fmt.Errorf("plugin update: read lock: %w", readErr)
-	}
-	newBytes, err := core.EditLock(c.Console, lockBytes, &codegenpb.LockEditIntent{
+	// Read → EditLock → atomic write under the update lock.
+	if err := core.EditLockOnDisk("plugin update", c.Console, lockPath, &codegenpb.LockEditIntent{
 		Intent: &codegenpb.LockEditIntent_SetPluginVersions{
 			SetPluginVersions: &codegenpb.SetPluginVersionsIntent{Plugins: pending},
 		},
-	})
-	if err != nil {
+	}); err != nil {
 		// Lock not updated → leave every live dir untouched; drop the
 		// staged trees so a retry starts clean.
 		removeStaging()
-		return fmt.Errorf("plugin update: record in lock: %w", err)
-	}
-	if err := os.WriteFile(lockPath, newBytes, 0o644); err != nil {
-		removeStaging()
-		return fmt.Errorf("plugin update: write lock: %w", err)
+		return err
 	}
 	// Lock persisted. Swap each staged tree into place — same-filesystem
 	// sibling rename, so the replace is atomic per plugin.

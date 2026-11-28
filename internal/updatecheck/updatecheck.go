@@ -91,9 +91,11 @@ type Sources struct {
 
 	SdkCurrent string // what the project builds against; "" = unknown (co-dev, no pin)
 	SdkLatest  func() (string, error)
-	// SdkFloor is the highest SDK floor known before generating: this
-	// client's and the console's. A plugin's own requires_sdk is known only
-	// once the code is generated, and codegen still checks that after.
+	// SdkFloor is the SDK floor known before generating: the console's for
+	// the engine the project's codegen_version reaches, this client's only
+	// when the console declares none (core.GeneratedSdkFloor). A plugin's own
+	// requires_sdk is known only once the code is generated, and codegen
+	// still checks that after.
 	SdkFloor       string
 	SdkFloorSource string
 

@@ -26,19 +26,31 @@ var (
 // "dev" rather than inventing a number — a made-up version in a bug report is
 // worse than an honest absence, because it reads as a release nobody can find.
 func VersionString() string {
+	bi, _ := debug.ReadBuildInfo()
+	return versionFromBuildInfo(bi)
+}
+
+func versionFromBuildInfo(bi *debug.BuildInfo) string {
 	v := Version
 	if v == "" {
 		v = "dev"
 	}
 	c := Commit
-	if c == "" {
+	if c == "" && bi != nil {
 		// A `go install`ed binary has VCS stamps even with no ldflags.
-		if bi, ok := debug.ReadBuildInfo(); ok {
-			for _, s := range bi.Settings {
-				if s.Key == "vcs.revision" && len(s.Value) >= 7 {
-					c = s.Value[:7]
-				}
+		modified := false
+		for _, s := range bi.Settings {
+			switch {
+			case s.Key == "vcs.revision" && len(s.Value) >= 7:
+				c = s.Value[:7]
+			case s.Key == "vcs.modified" && s.Value == "true":
+				modified = true
 			}
+		}
+		// Built from a tree with uncommitted changes: the revision alone
+		// would name a commit this binary's code is not.
+		if c != "" && modified {
+			c += "+dirty"
 		}
 	}
 	if c != "" {

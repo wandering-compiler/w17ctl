@@ -10,6 +10,7 @@ import (
 
 	"github.com/wandering-compiler/w17ctl/internal/lockfile"
 	codegenpb "github.com/wandering-compiler/sdk/go/pb/w17compiler"
+	"github.com/wandering-compiler/sdk/go/tooling/plugindigest"
 )
 
 // LockProjectIDBestEffort reads project_id from <root>/w17/lock.yaml via the
@@ -113,6 +114,8 @@ func realReadProtoTree(root, protoDir string) ([]*codegenpb.ProtoFile, error) {
 	}
 	pluginsPrefix := "plugins" + string(filepath.Separator)
 	var out []*codegenpb.ProtoFile
+	uncovered := map[string][]string{}
+	var uncoveredOrder []string
 	err = filepath.WalkDir(protoRoot, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -142,6 +145,18 @@ func realReadProtoTree(root, protoDir string) ([]*codegenpb.ProtoFile, error) {
 			if !keep {
 				return nil
 			}
+			if parts := strings.SplitN(filepath.ToSlash(rel), "/", 3); len(parts) == 3 {
+				switch uploadable(parts[2]) {
+				case dropFile:
+					return nil
+				case refuseFile:
+					if _, seen := uncovered[parts[1]]; !seen {
+						uncoveredOrder = append(uncoveredOrder, parts[1])
+					}
+					uncovered[parts[1]] = append(uncovered[parts[1]], parts[2])
+					return nil
+				}
+			}
 		}
 		contents, err := os.ReadFile(path)
 		if err != nil {
@@ -156,7 +171,53 @@ func realReadProtoTree(root, protoDir string) ([]*codegenpb.ProtoFile, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(uncoveredOrder) > 0 {
+		var b strings.Builder
+		for _, name := range uncoveredOrder {
+			fmt.Fprintf(&b, "\n  plugin %s:\n    %s", name, strings.Join(uncovered[name], "\n    "))
+		}
+		return nil, fmt.Errorf("plugin trees carry files in locations their digest does not cover, "+
+			"which codegen would compile:%s\n"+
+			"  why: `src/gen`, `node_modules` and `.w17dev` are regenerated and a `.git` below the plugin root\n"+
+			"       is no part of any release, so a plugin's pin leaves them out and an install removes them —\n"+
+			"       a file there is one no release shipped\n"+
+			"  fix: remove the files; for an installed plugin, `w17ctl plugin update <name> --to <version>` "+
+			"restores the tree as released", b.String())
+	}
 	return out, nil
+}
+
+// uploadVerdict is what the upload does with one file of a plugin tree.
+type uploadVerdict int
+
+const (
+	sendFile uploadVerdict = iota
+	dropFile
+	refuseFile
+)
+
+// uploadable classifies a file, relative to its plugin's root, by the plugin
+// digest's own rule: anything the digest covers is sent; metadata it leaves
+// out (the plugin's own `.git`, `plugin.sig`, `.DS_Store`) is dropped, never
+// sent; and a file in a location it leaves out that codegen would compile
+// (`src/gen`, `node_modules`, `.w17dev`, a `.git` below the plugin root) is
+// refused — save what this toolchain itself writes there
+// (plugindigest.ToolchainWritten: the pb, and the contract and feature
+// constants `plugin gen` writes), which the console's staging regenerates for
+// each activation rather than compiles. Everything else in such a location is
+// a file no release shipped and no pin vouches for. `w17ctl verify` and the
+// console ask the same two predicates, so the three answer alike.
+func uploadable(rel string) uploadVerdict {
+	switch plugindigest.Classify(rel) {
+	case plugindigest.Covered:
+		return sendFile
+	case plugindigest.Metadata:
+		return dropFile
+	}
+	if plugindigest.ToolchainWritten(rel) {
+		return sendFile
+	}
+	return refuseFile
 }
 
 // ReadGoModuleFn defaults to realReadGoModule; tests override.

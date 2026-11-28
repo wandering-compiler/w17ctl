@@ -23,7 +23,7 @@ import (
 // is for the other two cases — an exact release candidate, and going back.
 type Cmd struct {
 	Version  string `arg:"" optional:"" name:"version" help:"A release minor (v0.1) — the project then gets that minor's newest patch — or an exact release candidate (v0.2.0-rc.3), which the console serves only to a project opted in on its page in the console (Codegen). Omit it with --clear."`
-	Clear    bool   `name:"clear" help:"Remove the pin. A lock without one generates with v0.1, whatever newer minor the console carries; a new project is always given a pin."`
+	Clear    bool   `name:"clear" help:"Remove the pin. A lock without one generates with v0.1, whatever newer minor the console carries, so the SDK pin moves back to v0.1 like a move to v0.1 does; a new project is always given a pin."`
 	LockPath string `name:"lock" placeholder:"PATH" default:"w17/lock.yaml" help:"Path to the lock file."`
 	Console  string `name:"console" placeholder:"HOST:PORT" env:"W17_CONSOLE_ADDR" help:"gRPC endpoint of the console (owns the lock). Optional — falls back to the console you are logged in to, then the binary's compile-time default."`
 }
@@ -43,20 +43,26 @@ func (c *Cmd) Run() error {
 		return err
 	}
 	if c.Clear {
-		fmt.Fprintf(core.Stdout, "codegen-version: cleared (lock re-signed — the console generates with its newest minor)\n")
-		return nil
+		// A lock without a pin generates with v0.1, whatever newer minor the
+		// console carries — so clearing is a move to v0.1, and the SDK pin
+		// follows it like any other.
+		fmt.Fprintf(core.Stdout, "codegen-version: cleared — a lock without a pin generates with %s (lock re-signed)\n", noPinMinor)
+		return c.followSdk(noPinMinor)
 	}
 	fmt.Fprintf(core.Stdout, "codegen-version: %s (lock re-signed — the next codegen generates with it)\n", c.Version)
-	return c.followSdk()
+	return c.followSdk(c.Version)
 }
+
+// noPinMinor is what a lock without codegen_version generates with (the
+// guide topic cli.codegen-versions); the console holds the same rule.
+const noPinMinor = "v0.1"
 
 // followSdk keeps the lock's SDK pin on the codegen minor: the code a minor's
 // engine writes builds against that minor's SDK, in both directions. Back
 // (v0.2 → v0.1), the engine's code may not build against a newer SDK; forward,
 // the SDK floor refuses the codegen until the SDK moves. Either way the pin
 // moves to that minor's newest release, and nothing else would move it.
-func (c *Cmd) followSdk() error {
-	v := c.Version
+func (c *Cmd) followSdk(v string) error {
 	if !semver.IsValid(v) || semver.MajorMinor(v) != v {
 		return nil // an exact release candidate is pinned by hand, SDK included
 	}
@@ -67,6 +73,16 @@ func (c *Cmd) followSdk() error {
 	root := filepath.Dir(filepath.Dir(lockAbs))
 	cur := sdkupdate.LockedVersion(root)
 	if !semver.IsValid(cur) {
+		// Nothing to move, and nothing that says which SDK the project
+		// builds on: codegen falls back to the modules or the proxy. Said, so
+		// the pair is not left to chance.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if target, err := latestOnMinor(ctx, v); err == nil {
+			fmt.Fprintf(core.Stdout, "codegen-version: the lock pins no SDK — `w17ctl sdk pin %s` pins the newest %s release, which the %s engine's code builds on\n", target, v, v)
+		} else {
+			fmt.Fprintf(core.Stdout, "codegen-version: the lock pins no SDK — `w17ctl sdk pin <a %s release>` pins one the %s engine's code builds on\n", v, v)
+		}
 		return nil
 	}
 	cmp := semver.Compare(semver.MajorMinor(cur), v)
